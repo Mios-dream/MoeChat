@@ -26,3 +26,4 @@ pysilero
 IPython
 praat-parselmouth
 transformers==4.55.4
+colorlog
