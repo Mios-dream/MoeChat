@@ -63,6 +63,7 @@
 
 import os
 import sys
+
 # import io
 now_dir = os.getcwd()
 sys.path.append(now_dir)
@@ -94,12 +95,15 @@ from funasr.utils.postprocess_utils import rich_transcription_postprocess
 from utilss.sv import SV
 import numpy as np
 from utilss.agent import Agent
+
 # import torch
 import re
+
 # import unicodedata
 import jionlp
 from pysilero import VADIterator
 from scipy.signal import resample
+
 # import scipy.io.wavfile as wavfile
 
 
@@ -138,10 +142,11 @@ try:
 except:
     Log.logger.warning("[提示]未安装ASR模型，开始自动安装ASR模型。")
     from modelscope import snapshot_download
+
     model_dir = snapshot_download(
         model_id="iic/SenseVoiceSmall",
         local_dir="./utilss/models/SenseVoiceSmall",
-        revision="master"
+        revision="master",
     )
     model_dir = "./utilss/models/SenseVoiceSmall"
     asr_model = AutoModel(
@@ -159,36 +164,55 @@ if CConfig.config["Core"]["sv"]["is_up"]:
 else:
     is_sv = False
 
+
 # 提交到大模型
-def to_llm(msg: list, res_msg_list: list, full_msg: list, tmp_msg_list: list, event: Event):
+def to_llm(
+    msg: list, res_msg_list: list, full_msg: list, tmp_msg_list: list, event: Event
+):
+    """
+    将消息发送到大语言模型(LLM)并处理返回的流式响应
+
+    Args:
+        msg (list): 包含对话历史和当前用户消息的消息列表
+        res_msg_list (list): 存储处理后的消息片段的列表，用于TTS合成
+        full_msg (list): 存储完整回复消息的列表
+        tmp_msg_list (list): 存储临时消息内容的列表
+        event (Event): 用于控制线程中断的事件对象，当客户端打断时设置该事件
+
+    功能说明:
+        1. 构造请求头和请求数据
+        2. 发送POST请求到LLM API
+        3. 流式处理返回的数据
+        4. 解析情绪标签并设置相应的参考音频
+        5. 按标点符号分割文本，分批加入TTS队列
+        6. 处理完整响应并更新智能体上下文(如果启用)
+    """
+
     # 获取多线程锁
     # if CConfig.config["Agent"]["is_up"]:
     #     agent.lock.acquire()
     def get_emotion(msg: str):
-        res = re.findall(r'\[(.*?)\]', msg)
+        res = re.findall(r"\[(.*?)\]", msg)
         if len(res) > 0:
             match = res[-1]
             if match and CConfig.config["extra_ref_audio"]:
                 if match in CConfig.config["extra_ref_audio"]:
                     return match
+
     # def add_msg(msg: str):
     key = CConfig.config["LLM"]["key"]
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}"
-    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
 
-    data = {
-        "model": CConfig.config["LLM"]["model"] ,
-        "stream": True
-    }
+    data = {"model": CConfig.config["LLM"]["model"], "stream": True}
     if CConfig.config["LLM"]["extra_config"]:
         data.update(CConfig.config["LLM"]["extra_config"])
     data["messages"] = msg
 
     t_t = time.time()
     try:
-        response = requests.post(url = CConfig.config["LLM"]["api"], json=data, headers=headers,stream=True)
+        response = requests.post(
+            url=CConfig.config["LLM"]["api"], json=data, headers=headers, stream=True
+        )
         # print(response.status_code)
     except:
         Log.logger.error("无法链接到LLM服务器")
@@ -199,15 +223,17 @@ def to_llm(msg: list, res_msg_list: list, full_msg: list, tmp_msg_list: list, ev
         Log.logger.error("无法链接到LLM服务器")
         return
         # return JSONResponse(status_code=400, content={"message": "无法链接到LLM服务器"})
-    
+
     # 信息处理
     # biao_dian_2 = ["…", "~", "～", "。", "？", "！", "?", "!"]
     biao_dian_3 = ["…", "~", "～", "。", "？", "！", "?", "!", ",", "，"]
-    biao_dian_4 = ["…", "~", "～",  ",", "，"]
+    biao_dian_4 = ["…", "~", "～", ",", "，"]
 
     res_msg = ""
     tmp_msg = ""
+    # 记录首次输出模型延迟的flag
     j = True
+    # 记录首句输出延迟的flag
     j2 = True
     ref_audio = ""
     ref_text = ""
@@ -224,7 +250,7 @@ def to_llm(msg: list, res_msg_list: list, full_msg: list, tmp_msg_list: list, ev
                     Log.logger.info(f"\n[大模型延迟]{time.time() - t_t}")
                     t_t = time.time()
                     j = False
-                decoded_line = line.decode('utf-8')
+                decoded_line = line.decode("utf-8")
                 if decoded_line.startswith("data:"):
                     data_str = decoded_line[5:].strip()
                     if data_str:
@@ -255,7 +281,11 @@ def to_llm(msg: list, res_msg_list: list, full_msg: list, tmp_msg_list: list, ev
                     continue
                 if tmp_msg[ii] not in biao_dian_3:
                     continue
-                if (tmp_msg[ii] in biao_dian_4) and j2 == False and len(re.sub(r'[$(（[].*?[]）)]', '', tmp_msg[:ii+1])) <= 10:
+                if (
+                    (tmp_msg[ii] in biao_dian_4)
+                    and j2 == False
+                    and len(re.sub(r"[$(（[].*?[]）)]", "", tmp_msg[: ii + 1])) <= 10
+                ):
                     continue
 
                 # 提取文本中的情绪标签，并设置参考音频
@@ -264,7 +294,7 @@ def to_llm(msg: list, res_msg_list: list, full_msg: list, tmp_msg_list: list, ev
                     if emotion in CConfig.config["extra_ref_audio"]:
                         ref_audio = CConfig.config["extra_ref_audio"][emotion][0]
                         ref_text = CConfig.config["extra_ref_audio"][emotion][1]
-                ress = tmp_msg[:ii+1]
+                ress = tmp_msg[: ii + 1]
                 ress = jionlp.remove_html_tag(ress)
                 ttt = ress
                 if j2:
@@ -272,7 +302,7 @@ def to_llm(msg: list, res_msg_list: list, full_msg: list, tmp_msg_list: list, ev
                     for i in range(len(ress)):
                         if ress[i] == "\n" or ress[i] == " ":
                             try:
-                                ttt = ress[i+1:]
+                                ttt = ress[i + 1 :]
                             except:
                                 ttt = ""
                 # if not j2:
@@ -284,7 +314,7 @@ def to_llm(msg: list, res_msg_list: list, full_msg: list, tmp_msg_list: list, ev
                 if j2:
                     j2 = False
                 try:
-                    tmp_msg = tmp_msg[ii+1:]
+                    tmp_msg = tmp_msg[ii + 1 :]
                 except:
                     tmp_msg = ""
                 break
@@ -298,7 +328,7 @@ def to_llm(msg: list, res_msg_list: list, full_msg: list, tmp_msg_list: list, ev
                     ref_text = CConfig.config["extra_ref_audio"][emotion][1]
             res_msg_list.append([ref_audio, ref_text, tmp_msg])
 
-        # 返回完整上下文 
+        # 返回完整上下文
         res_msg = jionlp.remove_html_tag(res_msg)
         if len(res_msg) == 0:
             full_msg.append(res_msg)
@@ -309,42 +339,85 @@ def to_llm(msg: list, res_msg_list: list, full_msg: list, tmp_msg_list: list, ev
             if res_msg[i] != "\n" and res_msg[i] != " ":
                 ttt = res_msg[i:]
                 break
-                
+
         full_msg.append(ttt)
         Log.logging.info(f"完整回复：{full_msg[0]}")
 
     # print(res_msg_list)
     res_msg_list.append("DONE_DONE")
-    if CConfig.config["Agent"]["is_up"] and len(full_msg[0]) != 0:    # 刷新智能体上下文内容
-        agent.add_msg(re.sub(r'<.*?>', '', full_msg[0]).strip())
+    if (
+        CConfig.config["Agent"]["is_up"] and len(full_msg[0]) != 0
+    ):  # 刷新智能体上下文内容
+        agent.add_msg(re.sub(r"<.*?>", "", full_msg[0]).strip())
 
     # 释放多线程锁
     # if CConfig.config["Agent"]["is_up"]:
     #     agent.lock.release()
 
-def tts(datas: dict):
-    res = requests.post(CConfig.config["GSV"]["api"], json=datas, timeout=10)
+
+def tts(data: dict):
+    """
+    语音合成
+
+    Parameters
+        data : dict
+    """
+    res = requests.post(CConfig.config["GSV"]["api"], json=data, timeout=10)
     if res.status_code == 200:
         return res.content
     else:
-        Log.logger.warning(f"语音合成失败：{datas}")
+        Log.logger.warning(f"语音合成失败：{data}")
         # print(f"[错误]tts语音合成失败！！！")
-        # print(datas)
+        # print(data)
         return None
 
+
 def clear_text(msg: str):
-    msg = re.sub(r'[$(（[].*?[]）)]', '', msg)
+    """
+    清洗文本内容，去除无效字符和多余空白
+
+    该函数用于清理输入文本，去除括号内容、空格、换行符等无效字符，
+    并确保文本以非标点符号开头，为后续的语音合成做准备。
+
+    Args:
+        msg (str): 需要清洗的原始文本字符串
+
+    Returns:
+        str: 清洗后的文本字符串
+
+    处理步骤:
+        1. 使用正则表达式去除所有括号及其中的内容（包括中文和英文括号）
+        2. 移除所有空格和换行符
+        3. 找到第一个非标点符号字符，返回从该字符开始的子字符串
+        4. 如果文本全为标点符号，则返回空字符串
+
+    Example:
+        >>> clear_text(" (旁白) 你好，世界！ ")
+        '你好，世界！'
+        >>> clear_text("   \n  ")
+        ''
+    """
+    msg = re.sub(r"[$(（[].*?[]）)]", "", msg)
     msg = msg.replace(" ", "").replace("\n", "")
     tmp_msg = ""
-    biao = ["…", "~", "～", "。", "？", "！", "?", "!",  ",",  "，"]
+    punctuation_table = ["…", "~", "～", "。", "？", "！", "?", "!", ",", "，"]
     for i in range(len(msg)):
-        if msg[i] not in biao:
-          tmp_msg = msg[i:]
-          break
+        if msg[i] not in punctuation_table:
+            tmp_msg = msg[i:]
+            break
     # msg = jionlp.remove_exception_char(msg)
     return tmp_msg
+
+
 # TTS并写入队
 def to_tts(tts_data: list):
+    """
+    TTS并写入队列
+
+    Parameters
+        tts_data : list
+            包含参考音频、参考文本和合成文本的列表
+    """
     # def is_punctuation(char):
     #     return unicodedata.category(char).startswith('P')
     msg = clear_text(tts_data[2])
@@ -353,11 +426,11 @@ def to_tts(tts_data: list):
         return
     ref_audio = tts_data[0]
     ref_text = tts_data[1]
-    datas = {
+    data = {
         "text": msg,
         "text_lang": CConfig.config["GSV"]["text_lang"],
         "ref_audio_path": CConfig.config["GSV"]["ref_audio_path"],
-        "prompt_text": CConfig.config["GSV"]["prompt_text"],   
+        "prompt_text": CConfig.config["GSV"]["prompt_text"],
         "prompt_lang": CConfig.config["GSV"]["prompt_lang"],
         "seed": CConfig.config["GSV"]["seed"],
         "top_k": CConfig.config["GSV"]["top_k"],
@@ -365,19 +438,34 @@ def to_tts(tts_data: list):
     }
     if CConfig.config["GSV"]["ex_config"]:
         for key in CConfig.config["GSV"]["ex_config"]:
-            datas[key] = CConfig.config["GSV"]["ex_config"][key]
+            data[key] = CConfig.config["GSV"]["ex_config"][key]
     if ref_audio:
-        datas["ref_audio_path"] = ref_audio
-        datas["prompt_text"] = ref_text
+        data["ref_audio_path"] = ref_audio
+        data["prompt_text"] = ref_text
     try:
-        byte_data = tts(datas)
+        byte_data = tts(data)
         # audio_b64 = base64.urlsafe_b64encode(byte_data).decode("utf-8")
         # return audio_b64
         return byte_data
     except:
         return
 
+
 def ttts(res_list: list, audio_list: list, event: Event):
+    """
+    合并多个语音并返回
+
+    Parameters
+        res_list : list
+            合成文本列表
+        audio_list : list
+            合成音频列表
+        event : Event
+            事件对象，用于控制合成进程
+
+    Returns
+        list: 合成音频列表，包含合成音频和DONE_DONE标识符
+    """
     i = 0
     while True:
         if event.is_set():
@@ -393,8 +481,19 @@ def ttts(res_list: list, audio_list: list, event: Event):
             i += 1
         time.sleep(0.05)
 
+
 # asr功能
 def asr(audio_data: bytes):
+    """
+    语音识别
+
+    Parameters
+        audio_data : bytes
+            语音数据
+
+    Returns
+        str: 识别结果文本
+    """
     global asr_model
     global is_sv
     global sv_pipeline
@@ -410,7 +509,7 @@ def asr(audio_data: bytes):
         input=audio_data,
         # input=f"{model.model_path}/example/zh.mp3",
         cache={},
-        language="zh", # "zh", "en", "yue", "ja", "ko", "nospeech"
+        language="zh",  # "zh", "en", "yue", "ja", "ko", "nospeech"
         ban_emo_unk=True,
         use_itn=False,
         disable_pbar=True,
@@ -430,8 +529,10 @@ def asr(audio_data: bytes):
 
 app = FastAPI()
 
+
 class tts_data(BaseModel):
     msg: list
+
 
 # 聊天接口
 async def text_llm_tts(params: tts_data, start_time):
@@ -448,11 +549,27 @@ async def text_llm_tts(params: tts_data, start_time):
     else:
         msg_list = params.msg
     llm_stop = Event()
-    llm_t = Thread(target=to_llm, args=(msg_list, res_list, full_msg, tmp_msg, llm_stop, ))
+    llm_t = Thread(
+        target=to_llm,
+        args=(
+            msg_list,
+            res_list,
+            full_msg,
+            tmp_msg,
+            llm_stop,
+        ),
+    )
     llm_t.daemon = True
     llm_t.start()
     tts_stop = Event()
-    tts_t = Thread(target=ttts, args=(res_list, audio_list, tts_stop, ))
+    tts_t = Thread(
+        target=ttts,
+        args=(
+            res_list,
+            audio_list,
+            tts_stop,
+        ),
+    )
     tts_t.daemon = True
     tts_t.start()
 
@@ -480,17 +597,20 @@ async def text_llm_tts(params: tts_data, start_time):
             i += 1
         await asyncio.sleep(0.05)
 
+
 @app.post("/api/chat")
-async def tts_api(params: tts_data):
-    return StreamingResponse(text_llm_tts(params, time.time()), media_type="text/event-stream")
+async def tts_api_api(params: tts_data):
+    return StreamingResponse(
+        text_llm_tts(params, time.time()), media_type="text/event-stream"
+    )
 
 
 async def text_llm_tts2(params: tts_data, start_time):
     # print(params)
-    res_list = []       # 储存需要tts的文本
-    audio_list = []     # 储存合成好的音频
-    full_msg = []       # 储存大模型的完整上下文
-    tmp_list = [""]       # 储存需要返回客户端的文本
+    res_list = []  # 储存需要tts的文本
+    audio_list = []  # 储存合成好的音频
+    full_msg = []  # 储存大模型的完整上下文
+    tmp_list = [""]  # 储存需要返回客户端的文本
 
     if CConfig.config["Agent"]["is_up"]:
         global agent
@@ -500,18 +620,33 @@ async def text_llm_tts2(params: tts_data, start_time):
     else:
         msg_list = params.msg
     llm_stop = Event()
-    llm_t = Thread(target=to_llm, args=(msg_list, res_list, full_msg, tmp_list, llm_stop, ))
+    llm_t = Thread(
+        target=to_llm,
+        args=(
+            msg_list,
+            res_list,
+            full_msg,
+            tmp_list,
+            llm_stop,
+        ),
+    )
     llm_t.daemon = True
     llm_t.start()
     tts_stop = Event()
-    tts_t = Thread(target=ttts, args=(res_list, audio_list, tts_stop, ))
+    tts_t = Thread(
+        target=ttts,
+        args=(
+            res_list,
+            audio_list,
+            tts_stop,
+        ),
+    )
     tts_t.daemon = True
     tts_t.start()
 
-    audio_index = 0     # 标记当前音频索引
-    msg_index = 0       # 标记当前文本索引
+    audio_index = 0  # 标记当前音频索引
+    msg_index = 0  # 标记当前文本索引
     stat = True
-    
 
     while True:
         await asyncio.sleep(0.05)
@@ -527,7 +662,9 @@ async def text_llm_tts2(params: tts_data, start_time):
                     break
                 try:
                     # message = audio_list[audio_index]
-                    audio_b64 = base64.urlsafe_b64encode(audio_list[audio_index]).decode("utf-8")
+                    audio_b64 = base64.urlsafe_b64encode(
+                        audio_list[audio_index]
+                    ).decode("utf-8")
                     data = {"type": "audio", "data": audio_b64, "done": False}
                     yield f"data: {json.dumps(data)}\n\n"
                 except:
@@ -559,26 +696,32 @@ async def text_llm_tts2(params: tts_data, start_time):
         #         stat = False
         #     yield f"data: {json.dumps(data)}\n\n"
         #     i += 1
-    
+
     # llm_stop.set()
     # tts_stop.set()
     llm_t.join()
     tts_t.join()
     # print("[提示]完成...")
 
+
 @app.post("/api/chat_v2")
 async def tts_api(params: tts_data):
-    return StreamingResponse(text_llm_tts2(params, time.time()), media_type="text/event-stream")
+    return StreamingResponse(
+        text_llm_tts2(params, time.time()), media_type="text/event-stream"
+    )
 
 
 # asr接口
 class asr_data(BaseModel):
     data: str
+
+
 @app.post("/api/asr")
 async def asr_api(params: asr_data):
     audio_data = base64.urlsafe_b64decode(params.data.encode("utf-8"))
     text = asr(audio_data)
     return text
+
 
 # vad接口
 @app.websocket("/api/asr_ws")
@@ -637,16 +780,19 @@ async def websocket_endpoint(c_websocket: WebSocket):
         except:
             break
 
+
 # 客户端获取聊天记录
 @app.post("/api/get_context")
 async def get_context():
     global agent
     return agent.msg_data
 
+
 # 客户端获取配置信息
 @app.post("/api/get_config")
 async def get_config():
     return CConfig.config
+
 
 # 更新配置文件
 @app.post("/api/update_config")
@@ -656,7 +802,7 @@ async def update_config(data: dict):
     CConfig.update_config(data)
     if CConfig.config["Agent"]["is_up"]:
         agent.update_config()
-    
+
 
 # -----------------------------------API接口部分----------------------------------------------------------
 
@@ -664,26 +810,38 @@ async def update_config(data: dict):
 if __name__ == "__main__":
     # global config_data
     t2s_weights = CConfig.config["GSV"]["GPT_weight"]
-    vits_weights =  CConfig.config["GSV"]["SoVITS_weight"]
+    vits_weights = CConfig.config["GSV"]["SoVITS_weight"]
     if t2s_weights:
         Log.logger.info(f"设置GPT_weights...")
-        params = {
-            "weights_path": t2s_weights
-        }
+        params = {"weights_path": t2s_weights}
         try:
-            requests.get(str(CConfig.config["GSV"]["api"]).replace("/tts", "/set_gpt_weights"), params=params)
+            requests.get(
+                str(CConfig.config["GSV"]["api"]).replace("/tts", "/set_gpt_weights"),
+                params=params,
+            )
         except:
             Log.logger.warning(f"设置GPT_weights失败")
     if vits_weights:
         Log.logger.info(f"设置SoVITS...")
-        params = {
-            "weights_path": vits_weights
-        }
+        params = {"weights_path": vits_weights}
         try:
-            requests.get(str(CConfig.config["GSV"]["api"]).replace("/tts", "/set_sovits_weights"), params=params)
+            requests.get(
+                str(CConfig.config["GSV"]["api"]).replace(
+                    "/tts", "/set_sovits_weights"
+                ),
+                params=params,
+            )
         except:
-             Log.logger.warning(f"设置SoVITS失败")
-    Thread(target=Socket_asr.start_server, args=("0.0.0.0", 8002, asr_model, ), daemon=True).start()
+            Log.logger.warning(f"设置SoVITS失败")
+    Thread(
+        target=Socket_asr.start_server,
+        args=(
+            "0.0.0.0",
+            8002,
+            asr_model,
+        ),
+        daemon=True,
+    ).start()
     # s_asr = Socket_asr.ImprovedFullDuplexServer(host="0.0.0.0", port=8002, asr_model=asr_model)
     # Thread(target=s_asr.start_server, args=(), daemon=True).start()
     # socket_asr_t = Thread(target=)
