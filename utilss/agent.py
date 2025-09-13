@@ -35,7 +35,7 @@ class Agent:
 
         self.is_core_mem = CConfig.config["Agent"]["is_core_mem"]
 
-        self.llm_config = CConfig.config["LLM"]
+        self.llm_config = CConfig.config["LLM2"]
 
          # 载入提示词
         self.prompt = []
@@ -207,7 +207,12 @@ class Agent:
         mem_msg = []
         res_msg = []
         core_mem = []
-        res_msg += self.prompt
+        res_msg.append(
+            {
+                "role": "system",
+                "content": self.prompt
+            }
+        )
 
         # 检索世界书
         if self.is_data_base:
@@ -260,7 +265,7 @@ class Agent:
         self.msg_data_tmp.append(
             {
                 "role": "user",
-                "content": msg
+                "content": tmp_msg
             }
         )
         # self.msg_data_tmp = tmp_msg_data
