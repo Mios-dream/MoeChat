@@ -1,6 +1,6 @@
-<p align="left"><img src="/screen/logo1.png" alt="logo1" style="zoom:20%;" /></p>
+<p align="left"><img src="/doc/screen/logo1.png" alt="logo1" style="zoom:20%;" /></p>
 
-![banner](/screen/banner.png)
+![banner](/doc/screen/banner.png)
 
 [![百度云](https://custom-icon-badges.demolab.com/badge/百度云-Link-4169E1?style=flat&logo=baidunetdisk)](https://pan.baidu.com/share/init?surl=mf6hHJt8hVW3G2Yp2gC3Sw&pwd=2333)
 [![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-967981851-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/6pfdCFxJcc)
@@ -8,7 +8,7 @@
 [![Discord](https://custom-icon-badges.demolab.com/badge/Discord-Moechat-FF5024?style=flat&logo=Discord)](https://discord.gg/2JJ6J2T9P7)
 
 <a href="/README.md">English</a> |
-<a href="doc/README_zh.md">Chinese</a>
+<a href="/doc/README_zh.md">Chinese</a>
 
 </div>
 
@@ -41,7 +41,7 @@
 
 ### 测试结果
 
-![](/screen/img.png)
+![](/doc/screen/img.png)
 
 ## 更新日志
 
@@ -49,18 +49,18 @@
 
 - Moechat 现在可以发送表情包了。
 
-  <p align="left"><img src="/screen/sample2.png" alt="image-20250810165346882" style="zoom: 33%;" /></p>
+  <p align="left"><img src="/doc/screen/sample2.png" alt="image-20250810165346882" style="zoom: 33%;" /></p>
 
 - 添加了简单的财务系统，使用复式记账。
 
-  <p align="left"><img src="/screen/sample_booking_zh.png" alt="sample_booking_zh" style="zoom: 50%;" /></p>
+  <p align="left"><img src="/doc/screen/sample_booking_zh.png" alt="sample_booking_zh" style="zoom: 50%;" /></p>
 
 ### 2025.06.29
 
 - 设计了全新的情绪系统。
 - 为 Moechat 添加了简易的 web 端，可以识别关键词进行表情飘屏，和其他例子特效。
 
-  <div style="text-align: left;"><img src="/screen/sample1.png" alt="sample1" style="zoom: 55%;" /></div>
+  <div style="text-align: left;"><img src="/doc/screen/sample1.png" alt="sample1" style="zoom: 55%;" /></div>
 
 ### 2025.06.11
 

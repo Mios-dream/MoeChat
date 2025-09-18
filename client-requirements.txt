@@ -1,7 +1,0 @@
-sounddevice
-numpy<2.0
-noisereduce
-requests
-flet[all]
-flet-audio
-websockets

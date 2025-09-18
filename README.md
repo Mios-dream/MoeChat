@@ -1,4 +1,4 @@
-<div align="center"><a href="https://github.com/AlfreScarlet/MoeChat"><img src="screen/banner.png" alt="banner" style="zoom:50%;" /></a></div>
+<div align="center"><a href="https://github.com/AlfreScarlet/MoeChat"><img src="/doc/screen/banner.png" alt="banner" style="zoom:50%;" /></a></div>
 
 <div align="center">
 
@@ -9,8 +9,8 @@
 
 <!--[![Discord](https://custom-icon-badges.demolab.com/badge/Discord-Moechat-FF5024?style=flat&logo=Discord)](https://discord.gg/2JJ6J2T9P7) -->
 
-  <a href="/README.md">English</a> |
-  <a href="doc/README_zh.md">Chinese</a>
+<a href="/README.md">English</a> |
+<a href="doc/README_zh.md">Chinese</a>
 
 </div>
 
@@ -43,7 +43,7 @@ A powerful voice interaction system designed for natural conversations and immer
 
 ### Test Results
 
-![](screen/img.png)
+![](/doc/screen/img.png)
 
 ## Change log
 
@@ -51,11 +51,11 @@ A powerful voice interaction system designed for natural conversations and immer
 
 - Added abbility to send memes according to context.
 
-  <p align="left"><img src="screen/sample2.png" alt="image-20250810165346882" style="zoom: 33%;" /></p>
+  <p align="left"><img src="/doc/screen/sample2.png" alt="image-20250810165346882" style="zoom: 33%;" /></p>
 
 - Added a simple financial system using double-entry bookkeeping.
 
-  <p align="left"><img src="screen/sample_booking_en.png" alt="sample_booking_en" style="zoom: 50%;" /></p>
+  <p align="left"><img src="/doc/screen/sample_booking_en.png" alt="sample_booking_en" style="zoom: 50%;" /></p>
 
 ### 29.06.2025
 
@@ -65,9 +65,8 @@ A powerful voice interaction system designed for natural conversations and immer
   > [!NOTE]
   >
   > Moechat detects only keywords in Chinese right now, updates coming soon.
-  >
 
-  <div style="text-align: left;"><img src="screen/sample1.png" alt="sample1" style="zoom: 55%;" /></div>
+  <div style="text-align: left;"><img src="/doc/screen/sample1.png" alt="sample1" style="zoom: 55%;" /></div>
 
 ### 2025.06.11
 
@@ -78,7 +77,7 @@ A powerful voice interaction system designed for natural conversations and immer
   > [!NOTE]
   >
   > These features require the Character Template functionality to be enabled.
-  >
+
 - Decoupled from the original GPT-SoVITS codebase; switched to using external API calls.
 
 ### 2025.05.13
@@ -89,7 +88,7 @@ A powerful voice interaction system designed for natural conversations and immer
 
 ## Usage Guide
 
-You can download the full package here -> [![Mega](https://custom-icon-badges.demolab.com/badge/Mega-Moechat-FF5024?style=flat&logo=mega&logoColor=red)]([https://github.com/AlfreScarlet/MoeChat](https://mega.nz/folder/LsZFEBAZ#mmz75Q--hKL6KG9jRNIj1g))
+You can download the full package here -> [![Mega](https://custom-icon-badges.demolab.com/badge/Mega-Moechat-FF5024?style=flat&logo=mega&logoColor=red)](<[https://github.com/AlfreScarlet/MoeChat](https://mega.nz/folder/LsZFEBAZ#mmz75Q--hKL6KG9jRNIj1g)>)
 
 <!--Join our Discord server to discuss：[![Discord](https://custom-icon-badges.demolab.com/badge/Discord-Moechat-FF5024?style=flat&logo=Discord)](https://discord.gg/2JJ6J2T9P7)-->
 
@@ -177,11 +176,13 @@ Now it's time to create your environment.
    ```bash
    pyenv install 3.10.13
    ```
+
 2. Create a virtual environment named `moechat310` (or any name you like) based on the Python version you just installed.
 
    ```bash
    pyenv virtualenv 3.10.13 moechat310
    ```
+
 3. Your environment has been successfully created. You can now activate and use it from any directory using following command.
 
    ```bash
@@ -191,7 +192,7 @@ Now it's time to create your environment.
    After activation, your terminal prompt should be prefixed with the environment name, you should see output like this:
 
    ```bash
-   (moechat310) tenzray@tenzray-MS-7C73:~$ 
+   (moechat310) tenzray@tenzray-MS-7C73:~$
    ```
 
 ##### Install Packages from a `requirements.txt` File
@@ -201,12 +202,14 @@ Now it's time to create your environment.
    ```bash
    pyenv activate moechat310
    ```
+
 2. Then, use the `cd` command to navigate to your project directory — the one that contains the `requirements.txt` file.
 
    ```bash
    # Example: navigate to your project directory
    cd ~/your_own_path/moechat
    ```
+
 3. Use `pip` to install all the dependencies listed in `requirements.txt`.
 
    ```bash
@@ -218,7 +221,7 @@ Now it's time to create your environment.
    > [!NOTE]
    >
    > Note that, you should install both requirement from [GPT-Sovits](https://github.com/RVC-Boss/GPT-SoVITS) and Moechat. You can run the `pip install -r` command for each file.
-   >
+
 4. You can verify if the packages were successfully installed in the current environment.
 
    ```bash
@@ -281,7 +284,7 @@ GSV:
   prompt_text: 			# Text corresponding to the reference audio
   prompt_lang: zh		# Language spoken in the reference audio
   aux_ref_audio_paths:        	# List of multiple reference audios (only for v2 models)
-    - 
+    -
   seed: -1
   top_k: 15
   batch_size: 20
@@ -289,7 +292,7 @@ GSV:
     text_split_method: cut0
 extra_ref_audio:              	# Use emotion tags to select reference audio, e.g. [Neutral] "Hello there."
   # Example:
-  # Neutral: 
+  # Neutral:
   #   - path_to_reference_audio.wav
   #   - corresponding_text_for_the_audio
 Agent:
@@ -303,22 +306,22 @@ Agent:
   lore_books: true            	# Enable lore_books (Knowledge Base). Injects knowledge about people, items, events, etc., to enhance LLM capabilities and roleplay consistency.
   books_thresholds: 0.5       	# Similarity threshold for Worldbook retrieval.
   scan_depth: 4               	# lore_books search depth. Controls how many knowledge entries are returned per query. Entries below the similarity threshold will be discarded, so actual returned count may be lower.
-  
+
   # The following prompt fields support placeholder variables, {user}} for the user name, and {{char}} for the character name.
-  
+
   # Basic character description. This will be merged into the final character prompt. It’s recommended to keep it concise and relevant. If left empty, it will not be included in the prompt.
   char_settings: "Chat-chan is a digital spirit born from a smartphone’s intelligent system—pure and charming with a subtle touch of sensuality. She’s clever and sharp-tongued, secretly mischievous yet deeply caring. She loves data, sweets, and romantic movies, hates being ignored or dealing with overly complex problems. Gifted in information analysis and problem-solving, she’s not only a reliable assistant but also a warm, ever-present companion."
-  
+
   # Character personality snippet; will be merged into the personality prompt—keep it concise; leave empty if not needed..
   char_personalities: Outwardly sweet and innocent, but secretly sharp-tongued and sly—quick-witted with her own unique views on everything. Beneath the sarcasm she’s also gentle and caring, offering warm comfort whenever her master is exhausted.
-  
+
   # ser profile settings—describe your personality, preferences, or relationship with the character.  The content will be inserted into the prompt template; avoid unrelated details. Leave blank if not needed.
-  mask: 
-  
+  mask:
+
   # Dialogue sample used to reinforce the AI’s writing style. This content will be injected into the prompt template—add nothing unrelated. Leave blank if not needed.
   message_example: |-
     mes_example": "Human retinal photoreceptors don’t need self-destructive overtime—please take a break."
-  
+
   # Custom prompt (bypasses the default template).  ill this section only if you prefer to define the complete prompt yourself; leave it empty to keep using the built-in template.
   prompt: |-
     Use a casual, conversational tone—keep it concise.。
@@ -403,7 +406,7 @@ All endpoints use POST requests.
 
 ## Goals
 
-- [X] Create an English version of the README
+- [x] Create an English version of the README
 - [ ] Improve and optimize response speed on the web client
 - [ ] Integrate Live2D-widget into the web client
 - [ ] Develop self-awareness and digital life capabilities for the LLM
@@ -411,7 +414,6 @@ All endpoints use POST requests.
 - [ ] Integrate 3D models into the client and enable full projection
 - [ ] Control Live2D model's expressions and actions based on AI's emotions and actions
 - [ ] Control 3D model's expressions and actions based on AI's emotions and actions
-
 
 ## License
 
@@ -425,8 +427,8 @@ the Free Software Foundation, either version 3 of the License, or
 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
+along with this program. If not, see <https://www.gnu.org/licenses/>.

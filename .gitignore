@@ -1,0 +1,8 @@
+env
+__pycache__
+.venv
+.vscode
+
+/data/models/*
+!/data/models/silero_vad.onnx
+/data/agents/*
