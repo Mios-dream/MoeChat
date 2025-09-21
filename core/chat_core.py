@@ -10,7 +10,6 @@ from utils.agent import Agent
 from plugins.financial.plugin import financial_plugin_hook
 import re
 from utils.socket_asr import ASRServer
-import jionlp
 from utils.log import logger
 import httpx
 from utils.llm_request import llm_request
