@@ -43,11 +43,13 @@ async def asr_websocket(c_websocket: WebSocket):
                 audio_data = base64.urlsafe_b64decode(str(data["data"]).encode("utf-8"))
                 samples = np.frombuffer(audio_data, dtype=np.int16)
                 current_speech_tmp.append(samples)
-                if len(current_speech_tmp) < 4:
-                    continue
-                resampled = np.concatenate(current_speech_tmp.copy())
+                # if len(current_speech_tmp) < 4:
+                #     continue
+                # resampled = np.concatenate(current_speech_tmp.copy())
+                resampled = np.concatenate(current_speech_tmp)
                 resampled = (resampled / 32768.0).astype(np.float32)
-                current_speech_tmp = []
+                if len(resampled) < 800:
+                    continue
 
                 for speech_dict, speech_samples in vad_iterator(resampled):
                     if "start" in speech_dict:
