@@ -64,6 +64,7 @@ async def asr_websocket(c_websocket: WebSocket):
             if len(resampled) < 800:
                 continue
 
+            current_speech_tmp = []
             for speech_dict, speech_samples in vad_iterator(resampled):
                 if "start" in speech_dict:
                     current_speech = []
