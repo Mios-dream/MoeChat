@@ -319,7 +319,8 @@ class Agent:
 {msg}
 </用户对话内容或动作>
 """
-        self.msg_data_tmp.append({"role": "user", "content": tmp_msg})
+        # self.msg_data_tmp.append({"role": "user", "content": tmp_msg})
+        self.msg_data_tmp = [{"role": "user", "content": tmp_msg}]
         # self.msg_data_tmp = tmp_msg_data
         return res_msg + self.msg_data + self.msg_data_tmp
 
