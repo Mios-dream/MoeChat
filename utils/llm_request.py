@@ -1,4 +1,6 @@
 import json
+import re
+import aiohttp
 import httpx
 from utils import config as CConfig
 
@@ -15,7 +17,7 @@ if CConfig.config["LLM"]["extra_config"]:
 
 async def llm_request(msg: list):
     """
-    流式HTTP请求函数，用于与大语言模型进行通信并流式返回输出内容
+    流式HTTP请求函数，用于与大语言模型进行通信并流式返回输出内容,流式协议为sse
 
     Args:
         msg (list): 包含对话历史和当前用户消息的消息列表
@@ -74,3 +76,50 @@ async def llm_request(msg: list):
         raise Exception(f"LLM API请求错误: {str(e)}")
     except Exception as e:
         raise Exception(f"LLM处理过程中发生错误: {str(e)}")
+
+
+async def slm_request(messages: list) -> str | None:
+    """
+    SLM(小参数模型)快速请求
+    :param data: 消息链
+    :return: 请求结果
+    """
+
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    data = {
+        "model": "qwen3:0.6b",
+        "messages": messages,
+        "stream": False,
+        "max_tokens": 4096,
+        "temperature": 0.6,
+    }
+
+    # 异步发送post请求
+    # 创建一个aiohttp的session
+    async with aiohttp.ClientSession() as session:
+
+        # 发送post请求
+        async with session.post(
+            f" http://localhost:11434/v1/chat/completions",
+            headers=headers,
+            data=json.dumps(data),
+        ) as response:
+            if response.status != 200:
+                raise Exception(f"请求失败，状态码: {response.status}")
+            response_json = await response.json()
+
+            content = response_json["choices"][0]["message"]["content"]
+            reasoning_content = response_json["choices"][0]["message"]["reasoning"]
+            print("reasoning_content:", reasoning_content)
+            print("content:", content)
+            return content
+            # content = response_json["choices"][0]["message"]["content"]
+
+            # content = re.split(r"</think>", content)
+
+            # return content[1]
+
+    return None
