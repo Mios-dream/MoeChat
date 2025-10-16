@@ -13,7 +13,7 @@ from utils.socket_asr import ASRServer
 from utils.log import logger
 import httpx
 from utils.llm_request import llm_request
-from utils.split_text import remove_parentheses_content_and_split
+from utils.split_text import remove_parentheses_content_and_split_v2
 
 if CConfig.config["Agent"]["is_up"]:
     agent = Agent()
@@ -210,7 +210,10 @@ async def to_llm(
     logger.info("[LLM]：开始处理")
 
     try:
-        res_msg = ""  # 完整的回复
+        res_msg = ""  # 完整的原始回复
+        tmp_msg = ""  # 切句后剩余文本
+        # 标记是否首句
+        is_first_msg = True
         # 标记第一次打印时间
         first_print_time_flag = True
         # 参考音频
@@ -228,21 +231,27 @@ async def to_llm(
 
                 # 累积文本
                 res_msg += line
+                tmp_msg += line
 
-                res_msg = res_msg.replace("（", "(").replace("）", ")")
+                # res_msg = res_msg.replace("（", "(").replace("）", ")")
 
                 # 立即将新文本发送到文本队列（流式输出）
                 await text_queue.put(("text", line))
 
-                split_texts = remove_parentheses_content_and_split(res_msg)
+                # split_texts = remove_parentheses_content_and_split(res_msg)
+                message_chuck, tmp_msg = remove_parentheses_content_and_split_v2(res_msg, is_first_msg)
 
-                if len(split_texts) <= message_index:
+                if len(message_chuck) == 0:
                     continue
-                # 获取最新拆分文本
-                message_chuck = split_texts[-1]
-                # 更新消息索引
-                message_index += 1
-                print(split_texts)
+
+                # if len(split_texts) <= message_index:
+                #     continue
+                # # 获取最新拆分文本
+                # message_chuck = split_texts[-1]
+                # # 更新消息索引
+                # message_index += 1
+                # print(split_texts)
+
                 full_msg.append(message_chuck)
 
                 # 检查情绪标签
@@ -263,12 +272,31 @@ async def to_llm(
             except Exception as e:
                 logger.error(f"[错误]：{e}", exc_info=True)
                 continue
+        
+        if len(tmp_msg) > 0:
+            full_msg.append(tmp_msg)
+
+            # 检查情绪标签
+            emotion = get_emotion(tmp_msg)
+
+            if emotion and emotion in CConfig.config.get("extra_ref_audio", {}):
+                ref_audio = CConfig.config["extra_ref_audio"][emotion][0]
+                ref_text = CConfig.config["extra_ref_audio"][emotion][1]
+            # 发送到tts队列，进行语音合成
+            await res_msg_queue.put(
+                TTSData(
+                    text=tmp_msg,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                )
+            )
 
         logger.info(f"完整回复: {full_msg}")
 
         # 发送完成信号
         await res_msg_queue.put("DONE_DONE")
         await text_queue.put(("done", None))
+
 
     except Exception as e:
         logger.error(f"无法链接到LLM服务器: {e}", exc_info=True)
@@ -449,6 +477,8 @@ async def text_llm_tts_v2(params: tts_data):
     """
     主处理函数：同时处理LLM流式文本输出和TTS音频合成
     """
+    global agent
+
     start_time = time.time()
 
     # 初始化消息列表
@@ -456,7 +486,6 @@ async def text_llm_tts_v2(params: tts_data):
 
     # 处理Agent上下文
     if CConfig.config["Agent"]["is_up"]:
-        global agent
         t = time.time()
         msg_list_for_llm = agent.get_msg_data(params.msg[-1]["content"])
         print(f"[提示]获取上下文耗时：{time.time() - t}")
@@ -583,6 +612,8 @@ async def text_llm_tts_v2(params: tts_data):
                     "done": True,
                 }
                 yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                # agent写入上下文、日记
+                agent.add_msg("".join(full_msg))
                 break
 
         except asyncio.TimeoutError:
