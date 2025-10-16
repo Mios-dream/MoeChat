@@ -211,9 +211,12 @@ class EmotionEngine:
 
         # 状态三：正常状态
         else:  # EmotionState.NORMAL
-            new_valence, new_arousal, sentiment, impact_strength = (
-                await self._update_emotion_state(text)
-            )
+            (
+                new_valence,
+                new_arousal,
+                sentiment,
+                impact_strength,
+            ) = await self._update_emotion_state(text)
 
             self.latent_emotions["frustration"] = self._update_latent_emotions(
                 self.latent_emotions["frustration"],

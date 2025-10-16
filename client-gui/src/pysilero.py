@@ -110,7 +110,11 @@ class SileroVAD:
         else:
             x = np.concatenate((self.context, x[np.newaxis, :]), axis=1)
             self.context = x[:, -self.context_size :]
-            ort_inputs = {"input": x, "state": self.state, "sr": np.array(sr, dtype=np.int64)}
+            ort_inputs = {
+                "input": x,
+                "state": self.state,
+                "sr": np.array(sr, dtype=np.int64),
+            }
             output, self.state = self.session.run(ort_inputs)
         return output
 
@@ -139,7 +143,9 @@ class SileroVAD:
         speech_probs: list of speech probabilities
         """
         self.reset()
-        audio, _ = load_audio(wav_path, dtype=np.float32, rate=self.sample_rate, to_mono=True)
+        audio, _ = load_audio(
+            wav_path, dtype=np.float32, rate=self.sample_rate, to_mono=True
+        )
         progress_bar = tqdm(
             total=math.ceil(info(wav_path).duration / 0.032),
             desc="VAD processing",
@@ -161,12 +167,20 @@ class SileroVAD:
                 denoiser = RNNoise(self.sample_rate)
                 wav = self.denoise_chunk(denoiser, wav, True)
             if flat_layout:
-                save_audio(str(save_path) + f"_{index:05d}.wav", wav[np.newaxis, :], self.sample_rate)
+                save_audio(
+                    str(save_path) + f"_{index:05d}.wav",
+                    wav[np.newaxis, :],
+                    self.sample_rate,
+                )
             else:
                 save_path = Path(save_path)
                 if not save_path.exists():
                     save_path.mkdir(parents=True, exist_ok=True)
-                save_audio(str(save_path / f"{index:05d}.wav"), wav[np.newaxis, :], self.sample_rate)
+                save_audio(
+                    str(save_path / f"{index:05d}.wav"),
+                    wav[np.newaxis, :],
+                    self.sample_rate,
+                )
         if return_seconds:
             start = round(start / self.sample_rate, 3)
             end = round(end / self.sample_rate, 3)
@@ -209,7 +223,9 @@ class SileroVAD:
             based on return_seconds)
         """
         self.reset()
-        audio, sample_rate = load_audio(wav_path, dtype=np.float32, rate=self.sample_rate, to_mono=True)
+        audio, sample_rate = load_audio(
+            wav_path, dtype=np.float32, rate=self.sample_rate, to_mono=True
+        )
         progress_bar = tqdm(
             total=math.ceil(info(wav_path).duration / 0.032),
             desc="VAD processing",
@@ -288,7 +304,10 @@ class SileroVAD:
                 if frame_end - temp_end >= self.min_silence_samples:
                     current_speech["end"] = temp_end
                     # keep the speech segment if it is longer than min_speech_samples
-                    if current_speech["end"] - current_speech["start"] > min_speech_samples:
+                    if (
+                        current_speech["end"] - current_speech["start"]
+                        > min_speech_samples
+                    ):
                         current_speech["segment"] = self.segment
                         self.segment += 1
                         yield fn(current_speech)

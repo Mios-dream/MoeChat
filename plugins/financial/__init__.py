@@ -17,16 +17,16 @@ from .plugin import (
     get_plugin,
     initialize_plugin,
     process_message,
-    financial_plugin_hook
+    financial_plugin_hook,
 )
 
 # 包级别的公开接口
 __all__ = [
-    'FinancialPlugin',
-    'FinancialAPIClient', 
-    'SessionStateManager',
-    'get_plugin',
-    'initialize_plugin',
-    'process_message',
-    'financial_plugin_hook'
+    "FinancialPlugin",
+    "FinancialAPIClient",
+    "SessionStateManager",
+    "get_plugin",
+    "initialize_plugin",
+    "process_message",
+    "financial_plugin_hook",
 ]

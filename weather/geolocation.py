@@ -1,11 +1,14 @@
 # geolocation.py
 
 import httpx
-import config 
+import config
+
 
 class GeolocationError(Exception):
     """自定义异常，用于表示地理定位过程中发生的错误。"""
+
     pass
+
 
 def get_public_ip() -> str:
     """
@@ -21,13 +24,13 @@ def get_public_ip() -> str:
     try:
         response = httpx.get(config.IP_SERVICE_URL, timeout=config.TIMEOUT)
         # 检查请求是否成功 (状态码 200-299)
-        response.raise_for_status() 
-        
+        response.raise_for_status()
+
         data = response.json()
         ip = data.get("ip")
         if not ip:
             raise GeolocationError("无法从API响应中解析IP地址。")
-            
+
         print(f"成功获取IP地址: {ip}")
         return ip
     except httpx.HTTPError as e:
@@ -49,17 +52,17 @@ def get_location_from_ip(ip: str) -> str:
     """
     print(f"正在根据IP {ip} 查询地理位置...")
     url = config.GEO_SERVICE_URL.format(ip=ip)
-    
+
     try:
         response = httpx.get(url, timeout=config.TIMEOUT)
         response.raise_for_status()
-        
+
         data = response.json()
         # 检查API返回的状态
         if data.get("status") != "success":
             error_message = data.get("message", "未知API错误")
             raise GeolocationError(f"地理位置API返回错误: {error_message}")
-        
+
         city = data.get("city")
         if not city:
             raise GeolocationError("无法从API响应中解析城市信息。")
@@ -77,7 +80,7 @@ def get_location() -> str:
 
     Returns:
         str: 当前位置的城市名称。
-    
+
     Raises:
         SystemExit: 如果在定位过程中发生无法恢复的错误。
     """
@@ -90,8 +93,9 @@ def get_location() -> str:
         # 定位失败程序直接退出。
         raise SystemExit(f"定位失败: {e}")
 
+
 # --- 用于独立测试的入口 ---
-if __name__ == '__main__':
+if __name__ == "__main__":
     print("--- 正在独立测试 geolocation 模块 ---")
     location = get_location()
     print(f"--- 测试成功！最终获取到的位置是: {location} ---")

@@ -5,14 +5,21 @@ import httpx
 from utils import config as CConfig
 
 
-# 获取配置信息
-key = CConfig.config["LLM"]["key"]
-headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
-data = {"model": CConfig.config["LLM"]["model"], "stream": True}
-
+# 大模型配置
+llm_key = CConfig.config["LLM"]["key"]
+llm_headers = {"Content-Type": "application/json", "Authorization": f"Bearer {llm_key}"}
+llm_data = {"model": CConfig.config["LLM"]["model"], "stream": True}
 # 添加额外配置（如果存在）
 if CConfig.config["LLM"]["extra_config"]:
-    data.update(CConfig.config["LLM"]["extra_config"])
+    llm_data.update(CConfig.config["LLM"]["extra_config"])
+
+# 小模型配置
+slm_key = CConfig.config["SLM"]["key"]
+slm_headers = {"Content-Type": "application/json", "Authorization": f"Bearer {slm_key}"}
+slm_data = {"model": CConfig.config["SLM"]["model"], "stream": False}
+# 添加额外配置（如果存在）
+if CConfig.config["SLM"]["extra_config"]:
+    slm_data.update(CConfig.config["SLM"]["extra_config"])
 
 
 async def llm_request(msg: list):
@@ -30,13 +37,16 @@ async def llm_request(msg: list):
             print(content, end='', flush=True)
     """
     # 构造请求数据
-    data["messages"] = msg
+    llm_data["messages"] = msg
 
     # 发起流式请求
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             async with client.stream(
-                "POST", url=CConfig.config["LLM"]["api"], json=data, headers=headers
+                "POST",
+                url=CConfig.config["LLM"]["api"],
+                json=llm_data,
+                headers=llm_headers,
             ) as response:
                 # 检查响应状态
                 if response.status_code != 200:
@@ -80,46 +90,33 @@ async def llm_request(msg: list):
 
 async def slm_request(messages: list) -> str | None:
     """
-    SLM(小参数模型)快速请求
+    SLM(小参数模型)快速请求，非流式
     :param data: 消息链
     :return: 请求结果
     """
 
-    headers = {
-        "Content-Type": "application/json",
-    }
-
-    data = {
-        "model": "qwen3:0.6b",
-        "messages": messages,
-        "stream": False,
-        "max_tokens": 4096,
-        "temperature": 0.6,
-    }
+    slm_data["messages"] = messages
 
     # 异步发送post请求
     # 创建一个aiohttp的session
     async with aiohttp.ClientSession() as session:
-
         # 发送post请求
         async with session.post(
-            f" http://localhost:11434/v1/chat/completions",
-            headers=headers,
-            data=json.dumps(data),
+            f"",
+            headers=slm_headers,
+            data=json.dumps(slm_data),
         ) as response:
             if response.status != 200:
                 raise Exception(f"请求失败，状态码: {response.status}")
             response_json = await response.json()
 
             content = response_json["choices"][0]["message"]["content"]
-            reasoning_content = response_json["choices"][0]["message"]["reasoning"]
-            print("reasoning_content:", reasoning_content)
-            print("content:", content)
+            # reasoning_content = response_json["choices"][0]["message"]["reasoning"]
+
             return content
+            # 非思考输出兼容
             # content = response_json["choices"][0]["message"]["content"]
-
             # content = re.split(r"</think>", content)
-
             # return content[1]
 
     return None

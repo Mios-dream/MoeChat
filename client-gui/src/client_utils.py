@@ -25,7 +25,7 @@ status = True
 
 ai_name = "爱丽丝"
 user_name = "测试用户"
-system = ''''''
+system = """"""
 
 # 用于存储上下文内容
 data = {
@@ -42,6 +42,7 @@ data = {
 #     auto_scroll=True,
 # )
 
+
 def add_msg(str_msg: str):
     # global ui.chat_list
     global ai_name
@@ -57,6 +58,7 @@ def add_msg(str_msg: str):
     ui.chat_list.update()
     ui.chat_list.scroll_to(offset=-1, duration=1000)
 
+
 def add_msg_me(str_msg: str):
     # global ui.chat_list
     if len(ui.chat_list.controls) == 0:
@@ -70,11 +72,16 @@ def add_msg_me(str_msg: str):
             ui.chat_list.controls.append(msg.cont)
         else:
             if ui.chat_list.controls[-1].alignment == ft.MainAxisAlignment.START:
-                ui.chat_list.controls[-1].controls[-1].controls.append(ui.get_msg_box(str_msg))
+                ui.chat_list.controls[-1].controls[-1].controls.append(
+                    ui.get_msg_box(str_msg)
+                )
             else:
-                ui.chat_list.controls[-1].controls[0].controls.append(ui.get_msg_box(str_msg))
+                ui.chat_list.controls[-1].controls[0].controls.append(
+                    ui.get_msg_box(str_msg)
+                )
     ui.chat_list.update()
     ui.chat_list.scroll_to(offset=-1, duration=1000)
+
 
 def play_autio(audio_data, msg, t):
     if t != None:
@@ -94,22 +101,18 @@ def play_autio(audio_data, msg, t):
     while channel.get_busy():
         time.sleep(0.1)
 
+
 def to_llm_and_tts(msg: str, asr_c: str):
     global chat_api
     global data
 
-    msg = msg.replace("\"", "")
+    msg = msg.replace('"', "")
 
     print(f"[ars耗时:{asr_c}]{msg}")
-    data["msg"].append(
-        {
-            "role": "user",
-            "content": msg
-        }
-    )
+    data["msg"].append({"role": "user", "content": msg})
 
     tt_t = time.time()
-    #print(data)
+    # print(data)
     try:
         res = requests.post(chat_api, json=data, stream=True)
     except:
@@ -127,10 +130,7 @@ def to_llm_and_tts(msg: str, asr_c: str):
             rec_data = json.loads(line.decode("utf-8")[6:])
             if rec_data["done"]:
                 data["msg"].append(
-                    {
-                        "role": "assistant",
-                        "content": rec_data["message"]
-                    }
+                    {"role": "assistant", "content": rec_data["message"]}
                 )
                 break
             audio_b64 = rec_data["file"]
@@ -144,12 +144,26 @@ def to_llm_and_tts(msg: str, asr_c: str):
                 tt = 0
             tmp_msg += rec_data["message"].replace("\n", "")
             if len(tt_list) == 0:
-                t = Thread(target=play_autio, args=(tmp, rec_data["message"], None, ))
+                t = Thread(
+                    target=play_autio,
+                    args=(
+                        tmp,
+                        rec_data["message"],
+                        None,
+                    ),
+                )
                 t.daemon = True
                 tt_list.append(t)
                 t.start()
             else:
-                t = Thread(target=play_autio, args=(tmp, rec_data["message"], tt_list[-1], ))
+                t = Thread(
+                    target=play_autio,
+                    args=(
+                        tmp,
+                        rec_data["message"],
+                        tt_list[-1],
+                    ),
+                )
                 t.daemon = True
                 tt_list.append(t)
                 t.start()
@@ -159,13 +173,19 @@ def to_llm_and_tts(msg: str, asr_c: str):
     print("\n")
     print("Me:")
 
+
 def to_asr(audio: bytes, t):
     global asr_api
     global status
 
     audio64 = base64.urlsafe_b64encode(audio).decode("utf-8")
     ddd = {"data": audio64}
-    res = requests.post(asr_api, json=ddd).text.replace("\"", "").replace(" ", "").replace("\n", "")
+    res = (
+        requests.post(asr_api, json=ddd)
+        .text.replace('"', "")
+        .replace(" ", "")
+        .replace("\n", "")
+    )
     # asr耗时
     t = f"{(time.time() - t):.3f}"
     if res == "null" or len(res) == 0:
@@ -178,6 +198,7 @@ def to_asr(audio: bytes, t):
     to_llm_and_tts(res, t)
     time.sleep(0.5)
     status = True
+
 
 def gen_audio(current_speech):
     t = time.time()
@@ -195,6 +216,7 @@ def gen_audio(current_speech):
         audio_bytes = buffer.read()  # 完整的 WAV bytes
     to_asr(audio_bytes, t)
 
+
 def check_speaker(indata):
     # 转换数据格式
     # audio_data = indata[:, 0]  # 只取单声道
@@ -206,12 +228,13 @@ def check_speaker(indata):
     ort_inputs = {"input": audio_data, "state": state, "sr": sr}
     # 进行 VAD 预测
     vad_prob = session.run(None, ort_inputs)[0]
-    
+
     # 判断是否为语音
     if vad_prob > 0.7:
         return True
     else:
         return False
+
 
 def main():
     # 查询音频设备
@@ -235,13 +258,15 @@ def main():
     state2 = True
     # 储存识别到的音频片段
     current_speech = []
-    with sd.InputStream(channels=1, dtype="float32", samplerate=sr, device=device_id) as s:
+    with sd.InputStream(
+        channels=1, dtype="float32", samplerate=sr, device=device_id
+    ) as s:
         while True:
             # 读取音频数据
             samples, _ = s.read(samples_per_read)
-            samples = nr.reduce_noise(y=samples[:,0], sr=sr)
-            resampled = resample(samples, num_points)         # 4800 → 1600 样本
-            resampled = resampled.astype(np.float32)         # 保持数据类型一致
+            samples = nr.reduce_noise(y=samples[:, 0], sr=sr)
+            resampled = resample(samples, num_points)  # 4800 → 1600 样本
+            resampled = resampled.astype(np.float32)  # 保持数据类型一致
             res = check_speaker(resampled)
             if res:
                 ii = 0
@@ -253,7 +278,7 @@ def main():
                 ii += 1
                 if ii > 14:
                     print("说话结束")
-                    tt = Thread(target=gen_audio, args=(current_speech.copy(), ))
+                    tt = Thread(target=gen_audio, args=(current_speech.copy(),))
                     tt.start()
                     current_speech = []
                     state = False

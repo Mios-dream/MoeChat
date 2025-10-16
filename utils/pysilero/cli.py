@@ -30,7 +30,9 @@ from pysilero import SileroVAD, VADIterator
 def main(wav_path, version, denoise, streaming, save_path, plot):
     if not streaming:
         model = SileroVAD(version, info(wav_path).rate, denoise=denoise)
-        speech_timestamps = model.get_speech_timestamps(wav_path, return_seconds=True, save_path=save_path)
+        speech_timestamps = model.get_speech_timestamps(
+            wav_path, return_seconds=True, save_path=save_path
+        )
         print("None streaming result:", list(speech_timestamps))
 
         if plot:
@@ -49,7 +51,9 @@ def main(wav_path, version, denoise, streaming, save_path, plot):
         vad_iterator = VADIterator(version, reader.rate)
         for idx, (frame, _) in enumerate(reader):
             partial = idx == reader.num_frames - 1
-            for speech_dict, speech_samples in vad_iterator(frame.squeeze(), partial, return_seconds=True):
+            for speech_dict, speech_samples in vad_iterator(
+                frame.squeeze(), partial, return_seconds=True
+            ):
                 if "start" in speech_dict or "end" in speech_dict:
                     print(speech_dict, end=" ")
                 if save_path is not None and speech_samples is not None:

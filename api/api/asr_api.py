@@ -22,6 +22,10 @@ asr_api = APIRouter()
 
 @asr_api.post("/asr")
 async def asr_audio(params: asr_data):
+    """
+    asr 非流式接口
+    仅语音识别
+    """
     audio_data = base64.b64decode(params.data.encode("utf-8"))
     text = chat_core.asr(audio_data)
     return text
@@ -215,4 +219,4 @@ async def asr_websocket_plus(c_websocket: WebSocket):
                     ),
                 )
                 message_chucks.clear()
-            current_speech.clear()  # 清空当前段落
+                current_speech.clear()  # 清空当前段落
