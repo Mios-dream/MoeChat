@@ -38,7 +38,9 @@ class PickableSession:
 
             repo_dir = f"{get_default_modelscope_cache_dir()}/models/{model_id}"
         self.model_path = f"{repo_dir}/{version}/silero_vad.onnx"
-        self.init_session = partial(ort.InferenceSession, sess_options=opts, providers=["CPUExecutionProvider"])
+        self.init_session = partial(
+            ort.InferenceSession, sess_options=opts, providers=["CPUExecutionProvider"]
+        )
         self.sess = self.init_session(self.model_path)
 
     def run(self, *args):

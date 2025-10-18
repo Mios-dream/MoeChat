@@ -73,7 +73,6 @@ async def tts(data: dict):
 
 
 def _clear_text(msg: str):
-
     msg = re.sub(r"[$(（[].*?[]）)]", "", msg)
     msg = msg.replace(" ", "").replace("\n", "")
     tmp_msg = ""
@@ -225,7 +224,6 @@ async def to_llm(
         message_index = 0
 
         async for line in llm_request(msg):
-
             try:
                 if first_print_time_flag:
                     logger.info(f"\n[大模型延迟]{time.time() - start_time}")
@@ -450,7 +448,7 @@ async def text_llm_tts(params: tts_data):
 
                 # 发送结束信号
                 data = {"file": None, "message": full_msg[0], "done": True}
-                yield f"data: {json.dumps(data,ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                 break  # 结束循环
 
             elif audio_item is not None:
@@ -460,7 +458,7 @@ async def text_llm_tts(params: tts_data):
                 if stat:
                     logger.info(f"\n[服务端首句处理耗时]{time.time() - start_time}\n")
                     stat = False
-                yield f"data: {json.dumps(data,ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
         except asyncio.TimeoutError:
             # 检查任务是否已完成

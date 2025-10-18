@@ -15,6 +15,7 @@ client_utils_thread = Thread(target=client_utils.main, args=())
 client_utils_thread.daemon = True
 client_utils_thread.start()
 
+
 def get_msg_box(msg: str):
     return ft.Container(
         content=ft.Text(msg, size=20, text_align=ft.TextAlign.CENTER),
@@ -23,14 +24,15 @@ def get_msg_box(msg: str):
         bgcolor=ft.colors.BLUE_900,
     )
 
+
 def main(page: ft.Page):
     page.horizontal_alignment = ft.CrossAxisAlignment.STRETCH
     page.title = "Moe Chat GUI"
 
     def send_message_click(e):
         if new_message.value != "" and client_utils.status:
-            mmsg = f"\"{new_message.value}\""
-            client_utils.add_msg_me(mmsg.replace("\"", ""))
+            mmsg = f'"{new_message.value}"'
+            client_utils.add_msg_me(mmsg.replace('"', ""))
             client_utils.to_llm_and_tts(mmsg, "0.000")
         new_message.value = ""
         new_message.focus()
@@ -68,5 +70,6 @@ def main(page: ft.Page):
             ]
         ),
     )
+
 
 ft.app(target=main)

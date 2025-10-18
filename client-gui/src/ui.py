@@ -8,6 +8,7 @@ chat_list = ft.ListView(
     auto_scroll=True,
 )
 
+
 class ChatMessage:
     def __init__(self, user_name: str, text: str, positon: str):
         if positon == "left":
@@ -48,11 +49,13 @@ class ChatMessage:
         else:
             self.cont.controls = [self.msg_list, self.tou]
             print("right")
+
     def get_initials(self, user_name: str):
         if user_name:
             return user_name[:1].capitalize()
         else:
             return "Unknown"  # or any default value you prefer
+
     def get_avatar_color(self, user_name: str):
         colors_lookup = [
             ft.Colors.AMBER,
@@ -71,7 +74,7 @@ class ChatMessage:
         ]
         return colors_lookup[hash(user_name) % len(colors_lookup)]
 
-        
+
 def get_msg_box(msg: str):
     res = ft.Container(
         content=ft.Text(msg, size=20, text_align=ft.TextAlign.CENTER),

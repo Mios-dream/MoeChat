@@ -1,4 +1,3 @@
-import time
 from fastapi.responses import StreamingResponse
 from fastapi import (
     APIRouter,

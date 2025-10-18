@@ -79,7 +79,7 @@ class DataBase:
                     )
                     base_list[books[index]] = sum_md5(books_path[index])
                 except:
-                    Log.logger.error(f"[错误]世界书[{ books[index]}]加载错误")
+                    Log.logger.error(f"[错误]世界书[{books[index]}]加载错误")
                     base_list[books[index]] = sum_md5(books_path[index])
 
         # 加载向量，建立数据库、索引，并保存，更新总表内容

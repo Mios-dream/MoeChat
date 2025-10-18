@@ -348,7 +348,6 @@ async def process_llm_stream(
 @router.get("/stream_chat")
 async def stream_chat(text: str = Query(...)):
     async def audio_stream():
-
         mood_instruction = await emotion_engine.process_emotion(text)
 
         ai_full_response = ""  # 用于累积AI的完整回复
@@ -435,7 +434,6 @@ async def stream_chat(text: str = Query(...)):
             # --- 统一的API调用和流式处理 ---
             # 只有在前面的某个分支成功创建了chat_data后，才执行API调用
             if chat_data:
-
                 async with httpx.AsyncClient(timeout=65.0) as client:
                     async with client.stream(
                         "POST", "http://127.0.0.1:8001/api/chat", json=chat_data
