@@ -15,6 +15,9 @@ from utils.speak_finish import isSpeakFinish, SpeakWithAssistant
 
 # from scipy.signal import resample
 from utils.log import logger
+import struct
+import socket
+import threading
 
 
 asr_api = APIRouter()
