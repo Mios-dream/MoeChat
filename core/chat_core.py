@@ -239,11 +239,11 @@ async def to_llm(
                 await text_queue.put(("text", line))
 
                 # split_texts = remove_parentheses_content_and_split(res_msg)
-                message_chuck, tmp_msg = remove_parentheses_content_and_split_v2(res_msg, is_first_msg)
+                message_chuck, tmp_msg = remove_parentheses_content_and_split_v2(tmp_msg, is_first_msg)
 
                 if len(message_chuck) == 0:
                     continue
-
+                is_first_msg = False
                 # if len(split_texts) <= message_index:
                 #     continue
                 # # 获取最新拆分文本
