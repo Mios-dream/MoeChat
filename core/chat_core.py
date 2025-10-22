@@ -93,6 +93,7 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
             包含参考音频、参考文本和合成文本的列表
     """
     msg = tts_data.text.replace(" ", "").replace("\n", "")
+    msg = re.sub(r'\(.*?\)|（.*?）|【.*?】|\[.*?\]|\{.*?\}', "", msg)
     # msg = clear_text(tts_data.text)
     if len(msg) == 0:
         return None
