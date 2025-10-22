@@ -18,19 +18,33 @@ from ruamel.yaml import YAML
 
 
 class Agent:
-    def update_config(self):
+    def update_config(self, agent_id: str):
+        # 读取配置文件
+        yaml = YAML()
+        yaml.preserve_quotes = True
+        yaml.indent(mapping=2, sequence=4, offset=2)
+        with open(f"./data/agents/{agent_id}/agent_config.yaml", "r", encoding="utf-8") as f:
+            self.agent_config = yaml.load(f)
+        self.agent_id = agent_id
+
         # 载入配置
-        self.char = CConfig.config["Agent"]["char"]
-        self.user = CConfig.config["Agent"]["user"]
-        self.char_settings = CConfig.config["Agent"]["char_settings"]
-        self.char_personalities = CConfig.config["Agent"]["char_personalities"]
-        self.message_example = CConfig.config["Agent"]["message_example"]
-        self.mask = CConfig.config["Agent"]["mask"]
+        '''
+        agent独立配置文件
+        '''
+        self.char = self.agent_config["Agent"]["char"]
+        self.user = self.agent_config["Agent"]["user"]
+        self.char_settings = self.agent_config["Agent"]["char_settings"]
+        self.char_personalities = self.agent_config["Agent"]["char_personalities"]
+        self.message_example = self.agent_config["Agent"]["message_example"]
+        self.mask = self.agent_config["Agent"]["mask"]
 
         self.is_data_base = CConfig.config["Agent"]["lore_books"]
         self.data_base_thresholds = CConfig.config["Agent"]["books_thresholds"]
         self.data_base_depth = CConfig.config["Agent"]["scan_depth"]
 
+        '''
+        全局设置
+        '''
         self.is_long_mem = CConfig.config["Agent"]["long_memory"]
         self.is_check_memorys = CConfig.config["Agent"]["is_check_memorys"]
         self.mem_thresholds = CConfig.config["Agent"]["mem_thresholds"]
@@ -90,13 +104,13 @@ class Agent:
             )
             # self.prompt.append({"role": "system", "content": self.message_example_prompt})
             self.prompt += self.message_example_prompt + "\n\n"
-        if CConfig.config["Agent"]["prompt"]:
-            # self.prompt.append({"role":  "system", "content": CConfig.config["Agent"]["prompt"]})
-            self.prompt += CConfig.config["Agent"]["prompt"] + "\n\n"
+        if self.agent_config["Agent"]["prompt"]:
+            # self.prompt.append({"role":  "system", "content": self.agent_config["Agent"]["prompt"]})
+            self.prompt += self.agent_config["Agent"]["prompt"] + "\n\n"
 
-    def __init__(self):
+    def __init__(self, agent_id: str):
         self.lock = Lock()
-        self.update_config()
+        self.update_config(agent_id)
         # self.char = config["char"]
         # self.user = config["user"]
         # self.char_settings = config["char_settings"]
@@ -122,20 +136,20 @@ class Agent:
         self.msg_data_tmp = []
         try:
             with open(
-                f"./data/agents/{self.char}/history.yaml", "r", encoding="utf-8"
+                f"./data/agents/{self.agent_id}/history.yaml", "r", encoding="utf-8"
             ) as f:
                 msg_list = yaml.safe_load(f)
                 self.msg_data = msg_list[-CConfig.config["Agent"]["context_length"] :]
                 Log.logger.info(f"当前上下文长度：{len(msg_list)}")
         except:
             pass
-        if CConfig.config["Agent"]["start_with"] and len(self.msg_data) == 0:
-            for i in range(len(CConfig.config["Agent"]["start_with"])):
+        if self.agent_config["Agent"]["start_with"] and len(self.msg_data) == 0:
+            for i in range(len(self.agent_config["Agent"]["start_with"])):
                 role = "assistant"
                 if i % 2 == 0:
                     role = "user"
                 self.msg_data_tmp.append(
-                    {"role": role, "content": CConfig.config["Agent"]["start_with"][i]}
+                    {"role": role, "content": self.agent_config["Agent"]["start_with"][i]}
                 )
 
         # 载入提示词
@@ -170,11 +184,11 @@ class Agent:
         self.tt = int(time.time())
 
         # 创建数据存储文件夹
-        os.path.exists(f"./data/agents/{self.char}/memorys") or os.makedirs(
-            f"./data/agents/{self.char}/memorys"
+        os.path.exists(f"./data/agents/{self.agent_id}/memorys") or os.makedirs(
+            f"./data/agents/{self.agent_id}/memorys"
         )
-        os.path.exists(f"./data/agents/{self.char}/data_base") or os.makedirs(
-            f"./data/agents/{self.char}/data_base"
+        os.path.exists(f"./data/agents/{self.agent_id}/data_base") or os.makedirs(
+            f"./data/agents/{self.agent_id}/data_base"
         )
 
         # 加载角色记忆
@@ -352,7 +366,6 @@ class Agent:
         ttt2.start()
 
         self.msg_data += self.msg_data_tmp
-        # if CConfig.config["Agent"]["context_length"]:
         self.msg_data = self.msg_data[-CConfig.config["Agent"]["context_length"] :]
         # write_data = {
         #     "messages": self.msg_data[-60:]
@@ -363,7 +376,7 @@ class Agent:
         yaml.default_flow_style = False  # 禁用流式风格（更易读）
         yaml.allow_unicode = True  # 允许 unicode 字符（如中文）
         with open(
-            f"./data/agents/{self.char}/history.yaml", "a", encoding="utf-8"
+            f"./data/agents/{self.agent_id}/history.yaml", "a", encoding="utf-8"
         ) as f:
             yaml.dump(self.msg_data_tmp, f)
             # for mm in self.msg_data_tmp:

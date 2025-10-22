@@ -15,8 +15,8 @@ import httpx
 from utils.llm_request import llm_request
 from utils.split_text import remove_parentheses_content_and_split_v2
 
-if CConfig.config["Agent"]["is_up"]:
-    agent = Agent()
+# if CConfig.config["Agent"]["is_up"]:
+agent = Agent(agent_id=CConfig.config["Agent"])
 
 
 # 载入声纹识别模型
@@ -92,6 +92,7 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
         tts_data : list
             包含参考音频、参考文本和合成文本的列表
     """
+    global agent
     msg = tts_data.text.replace(" ", "").replace("\n", "")
     msg = re.sub(r'\(.*?\)|（.*?）|【.*?】|\[.*?\]|\{.*?\}', "", msg)
     # msg = clear_text(tts_data.text)
@@ -102,17 +103,17 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
     print(f"[tts文本]{msg}")
     data = {
         "text": msg,
-        "text_lang": CConfig.config["GSV"]["text_lang"],
-        "ref_audio_path": CConfig.config["GSV"]["ref_audio_path"],
-        "prompt_text": CConfig.config["GSV"]["prompt_text"],
-        "prompt_lang": CConfig.config["GSV"]["prompt_lang"],
-        "seed": CConfig.config["GSV"]["seed"],
-        "top_k": CConfig.config["GSV"]["top_k"],
-        "batch_size": CConfig.config["GSV"]["batch_size"],
+        "text_lang": agent.agent_config["GSV"]["text_lang"],
+        "ref_audio_path": agent.agent_config["GSV"]["ref_audio_path"],
+        "prompt_text": agent.agent_config["GSV"]["prompt_text"],
+        "prompt_lang": agent.agent_config["GSV"]["prompt_lang"],
+        "seed": agent.agent_config["GSV"]["seed"],
+        "top_k": agent.agent_config["GSV"]["top_k"],
+        "batch_size": agent.agent_config["GSV"]["batch_size"],
     }
-    if CConfig.config["GSV"]["ex_config"]:
-        for key in CConfig.config["GSV"]["ex_config"]:
-            data[key] = CConfig.config["GSV"]["ex_config"][key]
+    if agent.agent_config["GSV"]["ex_config"]:
+        for key in agent.agent_config["GSV"]["ex_config"]:
+            data[key] = agent.agent_config["GSV"]["ex_config"][key]
     if ref_audio:
         data["ref_audio_path"] = ref_audio
         data["prompt_text"] = ref_text
@@ -203,8 +204,8 @@ async def to_llm(
         res = re.findall(r"\[(.*?)\]", msg)
         if len(res) > 0:
             match = res[-1]
-            if match and CConfig.config["extra_ref_audio"]:
-                if match in CConfig.config["extra_ref_audio"]:
+            if match and agent.agent_config["extra_ref_audio"]:
+                if match in agent.agent_config["extra_ref_audio"]:
                     return match
 
     start_time = time.time()
@@ -258,9 +259,9 @@ async def to_llm(
                 # 检查情绪标签
                 emotion = get_emotion(message_chuck)
 
-                if emotion and emotion in CConfig.config.get("extra_ref_audio", {}):
-                    ref_audio = CConfig.config["extra_ref_audio"][emotion][0]
-                    ref_text = CConfig.config["extra_ref_audio"][emotion][1]
+                if emotion and emotion in agent.agent_config.get("extra_ref_audio", {}):
+                    ref_audio = agent.agent_config["extra_ref_audio"][emotion][0]
+                    ref_text = agent.agent_config["extra_ref_audio"][emotion][1]
                 # 发送到tts队列，进行语音合成
                 await res_msg_queue.put(
                     TTSData(
@@ -280,9 +281,9 @@ async def to_llm(
             # 检查情绪标签
             emotion = get_emotion(tmp_msg)
 
-            if emotion and emotion in CConfig.config.get("extra_ref_audio", {}):
-                ref_audio = CConfig.config["extra_ref_audio"][emotion][0]
-                ref_text = CConfig.config["extra_ref_audio"][emotion][1]
+            if emotion and emotion in agent.agent_config.get("extra_ref_audio", {}):
+                ref_audio = agent.agent_config["extra_ref_audio"][emotion][0]
+                ref_text = agent.agent_config["extra_ref_audio"][emotion][1]
             # 发送到tts队列，进行语音合成
             await res_msg_queue.put(
                 TTSData(
@@ -380,13 +381,14 @@ async def text_llm_tts(params: tts_data):
     # (这说明插件被禁用，或者插件判断当前消息与财务无关)
     # 则执行MoeChat原来的常规聊天逻辑来填充它。
 
-    if CConfig.config["Agent"]["is_up"]:
-        global agent
-        t = time.time()
-        msg_list_for_llm = agent.get_msg_data(params.msg[-1]["content"])
-        print(f"[提示]获取上下文耗时：{time.time() - t}")
-    else:
-        msg_list_for_llm = params.msg
+    '''
+    获取由agent管理的上下文
+    '''
+    global agent
+    t = time.time()
+    msg_list_for_llm = agent.get_msg_data(params.msg[-1]["content"])
+    print(f"[提示]获取上下文耗时：{time.time() - t}")
+
 
     # ================== 2. 统一的LLM和TTS处理阶段 ==================
     # 无论消息来自插件包装还是常规聊天，最终都汇入到这里，使用同一套处理流水线
@@ -486,12 +488,9 @@ async def text_llm_tts_v2(params: tts_data):
     msg_list_for_llm = []
 
     # 处理Agent上下文
-    if CConfig.config["Agent"]["is_up"]:
-        t = time.time()
-        msg_list_for_llm = agent.get_msg_data(params.msg[-1]["content"])
-        print(f"[提示]获取上下文耗时：{time.time() - t}")
-    else:
-        msg_list_for_llm = params.msg
+    t = time.time()
+    msg_list_for_llm = agent.get_msg_data(params.msg[-1]["content"])
+    print(f"[提示]获取上下文耗时：{time.time() - t}")
 
     # 全部消息，ai可能回复多条语句
     full_msg: list[str] = []
