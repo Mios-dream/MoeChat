@@ -14,7 +14,7 @@ async def init():
     """
     try:
         await create_data_folder()
-        await init_gptsovits()
+        # await init_gptsovits()
         await load_asr_model()
     except Exception as e:
         exc_type, exc_value, exc_traceback = sys.exc_info()
@@ -29,6 +29,8 @@ async def init():
 async def create_data_folder():
     # 创建数据文件夹
     os.path.exists("data") or os.mkdir("data")  # type: ignore
+    os.path.exists("data/agents") or os.mkdir("data/agents")
+    os.path.exists("data/agents/Chat酱") or os.mkdir("data/agents/Chat酱")
 
 
 async def load_asr_model():

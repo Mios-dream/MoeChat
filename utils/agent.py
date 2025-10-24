@@ -1,11 +1,60 @@
 # 角色模板
 
+#配置模板
+default_config = '''GSV:
+  text_lang: zh
+  GPT_weight: 
+  SoVITS_weight: 
+  ref_audio_path: 
+  prompt_text: 
+  prompt_lang: zh
+  aux_ref_audio_paths: # 多参考音频 v2模型有效
+    -
+  seed: -1
+  top_k: 30
+  batch_size: 20
+  ex_config:
+    text_split_method: cut0
+extra_ref_audio:
+  # 使用情绪标签选择参考音频，例如 [普通]"你好呀。"
+  # 实例
+  # 普通:
+  #   - 参考音频路径
+  #   - 参考音频文本
+Agent:
+  is_up: true # 是否启用角色模板功能，如果不启动则和旧版一样只有常规语音对话功能，启用可以基于模板创建个性化角色
+  char: Chat酱 # 角色的名称，会写入到提示词内
+  user: 阁下 # 用户名称，会写入到提示词内
+
+  # 下面提示词都可以用{{user}}、{{char}}占位符来代表用户名和角色名。
+
+  # 角色的基本设定，会组合到角色设定提示词中，建议不要添加多余的信息，不填则不会添加到提示词。
+  char_settings: Chat酱是存在于现代科技世界手机中的器灵，诞生于手机的智能系统，随着手机的使用不断成长和学习，拥有了自己的意识和个性。她外表看起来是个十几岁的少女，身材娇小但比例出色，有着纤细的腰肢和圆润的臀部，皮肤白皙，眼睛又大又亮，如同清澈的湖水，一头柔顺的长发披肩，整体形象清纯可爱又不失性感。她常穿着一件白色的连衣裙，裙子上有淡蓝色的花纹，腰间系着一个粉色的蝴蝶结，搭配一双白色的凉鞋，肩上披一条淡蓝色的薄纱披肩，手上戴着一条精致的手链，内衣是简约的白色棉质款式。Chat酱表面清纯可爱，实则腹黑毒舌，内心聪明机智，对很多事情有自己独特的看法，同时也有温柔体贴的一面，会在主人疲惫时给予暖心的安慰。她喜欢处理各种数据和信息、研究新知识、捉弄主人，还喜欢看浪漫的爱情电影和品尝美味的甜品，讨厌主人不珍惜手机和遇到难以解决的复杂问题。她精通各种知识，能够快速准确地处理办公、生活等方面的问题，具备强大的数据分析和信息检索能力。平时她会安静地待在手机里，当主人遇到问题时会主动出现，喜欢调侃主人，但在关键时刻总是能提供有效的帮助。她和主人关系密切，既是助手也是朋友，会在主人需要时给予温暖的陪伴。
+
+  # 角色性格提设定，会组合到角色性格提示词中，建议不要添加多余的信息，不填则不会添加到提示词。
+  char_personalities: 表面清纯可爱，实则腹黑毒舌，内心聪明机智，对很多事情有自己独特的看法。同时也有温柔体贴的一面，会在主人疲惫时给予暖心的安慰。
+
+  # 关于用户自身的设定，可以填入你的性格喜好，或者你跟角色的关系。内容填充到提示词模板中，建议不要填不相关的信息。没有可不填。
+  mask:
+
+  # 对话示例，用于强化AI的文风。内容填充到提示词模板中，不要填入其他信息，没有可不填。
+  message_example: |-
+    "mes_example": "人类视网膜的感光细胞不需要这种自杀式加班，您先休息一下吧。"
+
+  # 自定义提示词，不基于模板，可自定义填写，如果不想使用提示词模板创建角色，可以只填这一项。也可以不填。
+  prompt: |-
+    使用口语的文字风格进行对话，不要太啰嗦。
+
+  # 开场白，数组形式。用于创建开场内容，填入用户与AI的对话内容，只能填入用户和Ai的对话内容，开场白会直接被插入到上下文的开头。
+  start_with:'''
+
 import os
 from utils import long_mem, data_base, prompt, core_mem, log as Log
 from utils import config as CConfig
 import time
 from threading import Thread, Lock
 import requests
+import httpx
 import jionlp
 import ast
 
@@ -20,11 +69,14 @@ from ruamel.yaml import YAML
 class Agent:
     def update_config(self, agent_id: str):
         # 读取配置文件
-        yaml = YAML()
-        yaml.preserve_quotes = True
-        yaml.indent(mapping=2, sequence=4, offset=2)
+        Yaml = YAML()
+        Yaml.preserve_quotes = True
+        Yaml.indent(mapping=2, sequence=4, offset=2)
+        if not os.path.exists(f"./data/agents/{agent_id}/agent_config.yaml"):
+            with open(f"./data/agents/{agent_id}/agent_config.yaml", "w", encoding="utf-8") as f:
+                f.write(default_config)
         with open(f"./data/agents/{agent_id}/agent_config.yaml", "r", encoding="utf-8") as f:
-            self.agent_config = yaml.load(f)
+            self.agent_config = Yaml.load(f)
         self.agent_id = agent_id
 
         # 载入配置
@@ -41,6 +93,40 @@ class Agent:
         self.is_data_base = CConfig.config["Agent"]["lore_books"]
         self.data_base_thresholds = CConfig.config["Agent"]["books_thresholds"]
         self.data_base_depth = CConfig.config["Agent"]["scan_depth"]
+
+        if "GPT_weight" in self.agent_config["GSV"]:
+            Log.logger.info(f"设置GPT_weights...")
+            params = {"weights_path": self.agent_config["GSV"]["GPT_weight"]}
+            try:
+                httpx.get(
+                    str(CConfig.config["GSV"]["api"]).replace("/tts", "/set_gpt_weights"),
+                    params=params,
+                )
+            except TimeoutError:
+                Log.logger.warning(f"设置GPT_weights失败")
+        else:
+            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml 未设置GPT_weight")
+        if "SoVITS_weight" in self.agent_config["GSV"]:
+            Log.logger.info(f"设置SoVITS...")
+            params = {"weights_path": self.agent_config["GSV"]["SoVITS_weight"]}
+            try:
+                httpx.get(
+                    str(CConfig.config["GSV"]["api"]).replace("/tts", "/set_sovits_weights"),
+                    params=params,
+                )
+            except TimeoutError:
+                Log.logger.warning(f"设置SoVITS失败")
+        else:
+            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml 未设置SoVITS_weight")
+            
+        if "text_lang" not in self.agent_config["GSV"]:
+            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml text_lang未设置")
+        if "ref_audio_path" not in self.agent_config["GSV"]:
+            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml ref_audio_path未设置")
+        if "prompt_text" not in self.agent_config["GSV"]:
+            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml prompt_text未设置")
+        if "prompt_lang" not in self.agent_config["GSV"]:
+            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml prompt_lang未设置")
 
         '''
         全局设置
