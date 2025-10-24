@@ -72,6 +72,8 @@ class Agent:
         Yaml = YAML()
         Yaml.preserve_quotes = True
         Yaml.indent(mapping=2, sequence=4, offset=2)
+        os.path.exists(f"data/agents") or os.path.exists(f"data/agents")
+        os.path.exists(f"data/agents/{agent_id}") or os.path.exists(f"data/agents/{agent_id}")
         if not os.path.exists(f"./data/agents/{agent_id}/agent_config.yaml"):
             with open(f"./data/agents/{agent_id}/agent_config.yaml", "w", encoding="utf-8") as f:
                 f.write(default_config)
@@ -118,7 +120,7 @@ class Agent:
                 Log.logger.warning(f"设置SoVITS失败")
         else:
             Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml 未设置SoVITS_weight")
-            
+
         if "text_lang" not in self.agent_config["GSV"]:
             Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml text_lang未设置")
         if "ref_audio_path" not in self.agent_config["GSV"]:

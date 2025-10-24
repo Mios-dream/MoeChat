@@ -16,7 +16,7 @@ from utils.llm_request import llm_request
 from utils.split_text import remove_parentheses_content_and_split_v2
 
 # if CConfig.config["Agent"]["is_up"]:
-agent = Agent(agent_id=CConfig.config["Agent"])
+agent = Agent(agent_id=CConfig.config["Agent"]["char"])
 
 
 # 载入声纹识别模型
