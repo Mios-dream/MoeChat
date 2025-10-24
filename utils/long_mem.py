@@ -14,18 +14,18 @@ from utils import config as CConfig, log as Log
 
 
 class Memorys:
-    def update_config(self):
-        self.char = CConfig.config["Agent"]["char"]
-        self.user = CConfig.config["Agent"]["user"]
+    # def update_config(self):
+    #     self.char = CConfig.config["Agent"]["char"]
+    #     self.user = CConfig.config["Agent"]["user"]
+    #     self.thresholds = CConfig.config["Agent"]["mem_thresholds"]
+    #     self.is_check_memorys = CConfig.config["Agent"]["is_check_memorys"]
+
+    def __init__(self, agent_id, char, user):
+        self.agent_id = agent_id
+        self.char = char
+        self.user = user
         self.thresholds = CConfig.config["Agent"]["mem_thresholds"]
         self.is_check_memorys = CConfig.config["Agent"]["is_check_memorys"]
-
-    def __init__(self):
-        # self.char = config["char"]
-        # self.user = config["user"]
-        # self.thresholds = config["thresholds"]
-        # self.is_check_memorys = config["is_check_memorys"]
-        self.update_config()
 
         self.memorys_key = []  # 记录所有记忆的key，秒级整形时间戳。
         self.memorys_data = {}  # 记录所有记忆的文本数据。
@@ -38,7 +38,7 @@ class Memorys:
 
         # 加载记忆
         msg_vectors = []
-        path = f"./data/agents/{self.char}/memorys"
+        path = f"./data/agents/{self.agent_id}/memorys"
         for root, dirs, files in os.walk(path):
             # print(files)
             for file in files:
@@ -182,13 +182,13 @@ class Memorys:
         Yaml.width = 4096
 
         with open(
-            f"./data/agents/{self.char}/memorys/{file_name}", "a", encoding="utf-8"
+            f"./data/agents/{self.agent_id}/memorys/{file_name}", "a", encoding="utf-8"
         ) as f:
             Yaml.dump(data, f)
         day_time = t_n - (t_n - time.timezone) % 86400
         index = bisect_left(self.memorys_key, day_time)
         v_list = self.vectors[index:]
-        with open(f"./data/agents/{self.char}/memorys/{file_pkl}", "wb") as f:
+        with open(f"./data/agents/{self.agent_id}/memorys/{file_pkl}", "wb") as f:
             pickle.dump(v_list, f)
 
     # 提取记忆摘要，记录长期记忆

@@ -17,12 +17,13 @@ class Core_Mem:
         self.thresholds = 0.5
         self.file_path = f"./data/agents/{self.char}/core_mem.yml"
 
-    def __init__(self):
-        # self.char = config["char"]
-        # self.user = config["user"]
-        # self.thresholds = 0.5
-        # self.file_path = f"./data/agents/{self.char}/core_mem.yml"
-        self.update_config()
+    def __init__(self, agent_id, char, user):
+        self.agent_id = agent_id
+        self.char = char
+        self.user = user
+        self.thresholds = 0.5
+        self.file_path = f"./data/agents/{self.agent_id}/core_mem.yml"
+        # self.update_config()
         self.msgs = []
         self.mems = []
         self.uuid = []

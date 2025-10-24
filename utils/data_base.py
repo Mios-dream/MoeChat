@@ -30,8 +30,13 @@ class DataBase:
         char = CConfig.config["Agent"]["char"]
         self.path = f"./data/agents/{char}/data_base"
 
-    def __init__(self):
-        self.update_config()
+    def __init__(self, agent_id):
+        self.agent_id = agent_id
+        self.thresholds = float(CConfig.config["Agent"]["books_thresholds"])
+        self.top_k = int(CConfig.config["Agent"]["scan_depth"])
+        # self.char = CConfig.config["Agent"]["char"]
+        self.path = f"./data/agents/{self.agent_id}/data_base"
+        # self.update_config()
         # self.vects = np.array([])
         self.databases = []
         # self.thresholds = thresholds

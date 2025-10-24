@@ -72,8 +72,8 @@ class Agent:
         Yaml = YAML()
         Yaml.preserve_quotes = True
         Yaml.indent(mapping=2, sequence=4, offset=2)
-        os.path.exists(f"data/agents") or os.path.exists(f"data/agents")
-        os.path.exists(f"data/agents/{agent_id}") or os.path.exists(f"data/agents/{agent_id}")
+        os.path.exists(f"data/agents") or os.mkdir(f"data/agents")
+        os.path.exists(f"data/agents/{agent_id}") or os.mkdir(f"data/agents/{agent_id}")
         if not os.path.exists(f"./data/agents/{agent_id}/agent_config.yaml"):
             with open(f"./data/agents/{agent_id}/agent_config.yaml", "w", encoding="utf-8") as f:
                 f.write(default_config)
@@ -96,7 +96,7 @@ class Agent:
         self.data_base_thresholds = CConfig.config["Agent"]["books_thresholds"]
         self.data_base_depth = CConfig.config["Agent"]["scan_depth"]
 
-        if "GPT_weight" in self.agent_config["GSV"]:
+        if "GPT_weight" in self.agent_config["GSV"] and self.agent_config["GSV"]["GPT_weight"]:
             Log.logger.info(f"设置GPT_weights...")
             params = {"weights_path": self.agent_config["GSV"]["GPT_weight"]}
             try:
@@ -108,7 +108,7 @@ class Agent:
                 Log.logger.warning(f"设置GPT_weights失败")
         else:
             Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml 未设置GPT_weight")
-        if "SoVITS_weight" in self.agent_config["GSV"]:
+        if "SoVITS_weight" in self.agent_config["GSV"] and self.agent_config["GSV"]["SoVITS_weight"]:
             Log.logger.info(f"设置SoVITS...")
             params = {"weights_path": self.agent_config["GSV"]["SoVITS_weight"]}
             try:
@@ -198,6 +198,9 @@ class Agent:
 
     def __init__(self, agent_id: str):
         self.lock = Lock()
+        
+        # agent的id，用于表示agent的配置和数据储存目录，不要和char搞混
+        self.agent_id = agent_id
         self.update_config(agent_id)
         # self.char = config["char"]
         # self.user = config["user"]
@@ -281,15 +284,15 @@ class Agent:
 
         # 加载角色记忆
         # if self.is_long_mem:
-        self.Memorys = long_mem.Memorys()
+        self.Memorys = long_mem.Memorys(self.agent_id, self.char, self.user)
 
         # 加载核心记忆
         # if self.is_core_mem:
-        self.Core_mem = core_mem.Core_Mem()
+        self.Core_mem = core_mem.Core_Mem(self.agent_id, self.char, self.user)
 
         # 载入知识库
         # if self.is_data_base:
-        self.DataBase = data_base.DataBase()
+        self.DataBase = data_base.DataBase(self.agent_id)
 
     # 知识库内容检索
     def get_data(self, msg: str, res_msg: list) -> str:
