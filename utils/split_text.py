@@ -55,7 +55,7 @@ def remove_parentheses_content_and_split_v2(text: str, is_first: bool) -> tuple[
                 continue
             if is_first:
                 return text[:ii+1], text[ii+1:]
-            if (text[ii] == "," or text[ii] == "，") and len(re.sub(r'[$(（[].*?[]）)]', '', text[:ii+1])) <= 10:
+            if (text[ii] in [",", "，", "…"]) and len(re.sub(r'[$(（[].*?[]）)]', '', text[:ii+1])) <= 10:
                 continue
             return text[:ii+1], text[ii+1:]
         # if (text[ii] in ["…", "~", "～",  ",", "，"])  and len(re.sub(r'[$(（[].*?[]）)]', '', text[:ii+1])) <= 10:
