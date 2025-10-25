@@ -3,7 +3,7 @@ from init_server import init
 from web.src.router.router import app
 import uvicorn
 from threading import Thread
-from api.api.asr_api import start_socket_server
+from api.api.socket_api import start_socket_server
 
 
 def start_server():
