@@ -22,12 +22,12 @@ def handle_client(client_socket: socket.socket):
             # data = rec(client_socket)
             data = client_socket.recv(1024)
         except:
-            client_socket.close()
+            # client_socket.close()
             logger.info(f"客户端断开：{client_socket}")
             return
             
         if data is None:
-            client_socket.close()
+            # client_socket.close()
             logger.info(f"客户端断开：{client_socket}")
             return
         
@@ -79,7 +79,7 @@ def handle_client(client_socket: socket.socket):
                             # send(client_socket, res_text)
                             client_socket.send(res_text.encode("utf-8"))
                         except:
-                            client_socket.close()
+                            # client_socket.close()
                             return
                 current_speech = []  # 清空当前段落
             # if not message:
@@ -103,7 +103,11 @@ def handle_client(client_socket: socket.socket):
     #     print("客户端连接已关闭")
 
 def handle_client_2(client_socket: socket.socket):
-     while True:
+    try:
+        client_socket.send("ok".encode("utf-8"))
+    except:
+        return
+    while True:
         try:
             data = client_socket.recv(1024).decode("utf-8")
             if data == "ok":
@@ -157,13 +161,19 @@ def start_socket_server(host: str, port: int):
             client_socket.settimeout(60)
             logger.info(f"新连接：{addr}")
             try:
-                data = client_socket.recv(1024).decode("utf-8")
-                if data == "cheak":
-                    threading.Thread(target=handle_client, args=(client_socket, ), daemon=True).start()
-                else:
-                    # 启动线程处理客户端
-                    threading.Thread(target=handle_client, args=(client_socket, ), daemon=True).start()
+                data = client_socket.recv(1024)
+                
             except:
+                client_socket.close()
+                continue
+            try:
+                data = data.decode("utf-8")
+                if data == "ok":
+                    threading.Thread(target=handle_client_2, args=(client_socket, ), daemon=True).start()
+            except:
+                # 启动线程处理客户端
+                threading.Thread(target=handle_client, args=(client_socket, ), daemon=True).start()
+            finally:
                 client_socket.close()
     except KeyboardInterrupt:
         logger.info("服务器正在关闭...")
