@@ -1,4 +1,3 @@
-import struct
 import socket
 import threading
 from utils.pysilero import VADIterator
@@ -103,6 +102,15 @@ def handle_client(client_socket: socket.socket):
     #     client_socket.close()
     #     print("客户端连接已关闭")
 
+def handle_client_2(client_socket: socket.socket):
+     while True:
+        try:
+            data = client_socket.recv(1024).decode("utf-8")
+            if data == "ok":
+                client_socket.send("ok".encode("utf-8"))
+        except:
+            return
+
 # def send(sock, data):
 #     """发送消息：先发送长度（4字节前缀），再发送数据"""
 #     # 计算数据长度（字节数）
@@ -148,9 +156,15 @@ def start_socket_server(host: str, port: int):
             client_socket, addr = server_socket.accept()
             client_socket.settimeout(60)
             logger.info(f"新连接：{addr}")
-            # 启动线程处理客户端
-            client_thread = threading.Thread(target=handle_client, args=(client_socket, ))
-            client_thread.start()
+            try:
+                data = client_socket.recv(1024).decode("utf-8")
+                if data == "cheak":
+                    threading.Thread(target=handle_client, args=(client_socket, ), daemon=True).start()
+                else:
+                    # 启动线程处理客户端
+                    threading.Thread(target=handle_client, args=(client_socket, ), daemon=True).start()
+            except:
+                client_socket.close()
     except KeyboardInterrupt:
         logger.info("服务器正在关闭...")
     finally:
