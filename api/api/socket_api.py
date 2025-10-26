@@ -22,12 +22,12 @@ def handle_client(client_socket: socket.socket):
             # data = rec(client_socket)
             data = client_socket.recv(1024)
         except:
-            # client_socket.close()
+            client_socket.close()
             logger.info(f"客户端断开：{client_socket}")
             return
             
         if data is None:
-            # client_socket.close()
+            client_socket.close()
             logger.info(f"客户端断开：{client_socket}")
             return
         
@@ -79,7 +79,7 @@ def handle_client(client_socket: socket.socket):
                             # send(client_socket, res_text)
                             client_socket.send(res_text.encode("utf-8"))
                         except:
-                            # client_socket.close()
+                            client_socket.close()
                             return
                 current_speech = []  # 清空当前段落
             # if not message:
@@ -173,8 +173,6 @@ def start_socket_server(host: str, port: int):
             except:
                 # 启动线程处理客户端
                 threading.Thread(target=handle_client, args=(client_socket, ), daemon=True).start()
-            finally:
-                client_socket.close()
     except KeyboardInterrupt:
         logger.info("服务器正在关闭...")
     finally:
