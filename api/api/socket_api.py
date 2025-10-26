@@ -113,6 +113,7 @@ def handle_client_2(client_socket: socket.socket):
             if data == "ok":
                 client_socket.send("ok".encode("utf-8"))
         except:
+            client_socket.close()
             return
 
 # def send(sock, data):
