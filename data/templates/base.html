@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}记忆编辑器{% endblock %}</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; }
+        
+        /* 【修改】将最大宽度从 1200px 改为 95%，使其更宽 */
+        .container { 
+            max-width: 95%; /* <--- 修改点 1: 拉宽页面 */
+            margin: auto; 
+            background: #fff; 
+            padding: 20px; 
+            border-radius: 8px; 
+            box-shadow: 0 0 10px rgba(0,0,0,0.1); 
+        }
+
+        h1, h2 { color: #333; }
+        
+        /* 闪烁消息样式 (不变) */
+        .flashes { list-style: none; padding: 0; margin-bottom: 20px; }
+        .flashes li { padding: 10px 15px; margin-bottom: 10px; border-radius: 4px; }
+        .flashes .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .flashes .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .flashes .info { background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        
+        /* 表单样式 (不变) */
+        form label, form input, form select, form textarea, form button { display: block; margin-bottom: 10px; width: 95%; }
+        form input[type="text"], form select, form textarea { padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        form textarea { min-height: 150px; }
+        
+        /* 【修改】移除了通用的 margin-bottom，以防止破坏行内按钮布局 */
+        form button, .button-link { 
+            padding: 10px 15px; 
+            border: none; 
+            border-radius: 4px; 
+            cursor: pointer; 
+            text-decoration: none; 
+            display: inline-block; 
+            text-align: center;
+            /* margin-bottom: 10px; <--- 移除了这一行 */
+        }
+        
+        /* 【新增】为需要底部边距的按钮/链接单独添加 */
+        form.search-form button, form.search-form .button-link {
+            margin-bottom: 0; /* 搜索栏按钮不需要底部边距 */
+        }
+        form:not(.search-form) button[type="submit"],
+        a.button-link:not(.actions a) {
+             margin-bottom: 10px; /* 编辑页的 "保存" "取消" 按钮保留底部边距 */
+        }
+
+        form button[type="submit"], .button-primary { background-color: #007bff; color: white; }
+        .button-secondary { background-color: #6c757d; color: white; }
+        .button-danger { background-color: #dc3545; color: white; }
+        
+        /* 表格样式 */
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        
+        /* 【修改】th, td 样式，增加了换行和对齐 */
+        th, td { 
+            border: 1px solid #ddd; 
+            padding: 8px; 
+            text-align: left; 
+            /* 【新增】允许长文本换行 */
+            word-break: break-word; 
+            white-space: normal;
+            /* 【新增】垂直顶部对齐 */
+            vertical-align: top;
+        }
+        
+        th { background-color: #e9ecef; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+
+        /* 【新增】控制特定列不换行 (类型、标签、文件名、操作) */
+        th:nth-child(2), td:nth-child(2), /* 类型 (long) */
+        th:nth-child(4), td:nth-child(4), /* 标签 */
+        th:nth-child(5), td:nth-child(5) { /* 文件名 */
+            white-space: nowrap;
+        }
+
+        /* 【修改】操作列样式，确保按钮在同一行 */
+        .actions {
+            white-space: nowrap; /* 确保操作列本身不换行 */
+        }
+        .actions form { 
+            display: inline-block; /* 核心：让表单在行内显示 */
+            margin: 0 0 0 5px; /* 移除默认边距，只在左侧加一点 */
+            vertical-align: middle;
+        }
+        .actions .button-link {
+            display: inline-block; /* 核心：让链接在行内显示 */
+            vertical-align: middle;
+            margin: 0; /* 移除默认边距 */
+        }
+        .actions button { 
+            padding: 3px 6px; 
+            font-size: 0.9em;
+            margin: 0; /* 移除按钮的默认边距 */
+        }
+
+         /* 搜索栏样式 (不变) */
+        .search-form { display: flex; gap: 10px; align-items: center; margin-bottom: 20px; flex-wrap: wrap;}
+        .search-form label { display: none; }
+        .search-form input[type="text"], .search-form select { flex-grow: 1; margin-bottom: 0; width: auto; min-width: 150px;}
+        .search-form button { width: auto; margin-bottom: 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>记忆编辑器</h1>
+
+        {# 显示闪烁消息 (不变) #}
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <ul class="flashes">
+            {% for category, message in messages %}
+              <li class="{{ category }}">{{ message }}</li>
+            {% endfor %}
+            </ul>
+          {% endif %}
+        {% endwith %}
+
+        {# 主要内容区域 (不变) #}
+        {% block content %}{% endblock %}
+
+    </div>
+</body>
+</html>
