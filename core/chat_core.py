@@ -1,31 +1,28 @@
-from api.models.tts_request import tts_data
-from utils import config as CConfig
 import json
 import time
 import asyncio
 import base64
+import re
+import httpx
 from fastapi.responses import JSONResponse
+from api.models.tts_request import tts_data
+from utils import config as CConfig
 from utils.sv import SV
 from utils.agent import Agent
-from plugins.financial.plugin import financial_plugin_hook
-import re
 from utils.socket_asr import ASRServer
 from utils.log import logger
-import httpx
 from utils.llm_request import llm_request
 from utils.split_text import remove_parentheses_content_and_split_v2
+from core.meme_system import get_emotion_service
 
-# if CConfig.config["Agent"]["is_up"]:
+
 agent = Agent(agent_id=CConfig.config["Agent"]["char"])
 
 
 # 载入声纹识别模型
-sv_pipeline: SV
+sv_pipeline: SV | None = None
 if CConfig.config["Core"]["sv"]["is_up"]:
     sv_pipeline = SV(CConfig.config["Core"]["sv"])
-    is_sv = True
-else:
-    is_sv = False
 
 
 class TTSData:
@@ -48,9 +45,191 @@ class TTSData:
         self.ref_text = ref_text
 
 
-async def tts(data: dict):
+class StreamProcessor:
     """
-    语音合成
+    流式处理LLM文本和TTS音频的处理器
+    """
+
+    def __init__(self, emotion_processed: bool = False):
+        # 全部消息，ai可能回复多条语句
+        self.full_msg: list[str] = []
+
+        # 创建三个队列
+        self.res_queue: asyncio.Queue[TTSData | str] = asyncio.Queue()  # TTS文本队列
+        self.audio_queue = asyncio.Queue()  # TTS音频队列
+        self.text_queue = asyncio.Queue()  # 流式文本输出队列
+
+        # 缓存不完整的句子
+        self.sentence_buffer = ""
+
+        # 创建标志，用于记录任务是否已完成
+        self.llm_done = False
+        self.tts_done = False
+
+        # 存储待合成的句子
+        self.pending_sentences = []
+
+        # 标记是否首句
+        self.is_first_msg = True
+        # 标记是否需要处理表情包
+        self.emotion_processed = emotion_processed
+
+    async def handle_text_stream(self, text_task):
+        """
+        处理来自LLM的文本流
+        """
+        msg_type, content = await text_task
+
+        if msg_type == "text" and content:
+            await self._process_text_chunk(content)
+
+        elif msg_type == "done":
+            self.llm_done = True
+            await self._process_remaining_text()
+            await self.res_queue.put("DONE_DONE")
+
+        elif msg_type == "error":
+            raise Exception(content)
+
+    def _get_emotion(self, msg: str) -> str | None:
+        """查询文字中的情感字段"""
+        res = re.findall(r"\[(.*?)\]", msg)
+        if len(res) > 0:
+            match = res[-1]
+            if match and agent.agent_config["extra_ref_audio"]:
+                if match in agent.agent_config["extra_ref_audio"]:
+                    return match
+
+    async def _process_text_chunk(self, content):
+        """
+        处理文本块
+        """
+        # 将新文本添加到缓冲区
+        self.sentence_buffer += content
+
+        # 对文本进行切句
+        message_chunk, self.sentence_buffer = remove_parentheses_content_and_split_v2(
+            self.sentence_buffer, self.is_first_msg
+        )
+
+        # 只处理完整文本块，否则跳过
+        if len(message_chunk) == 0:
+            return
+
+        self.is_first_msg = False
+        self.full_msg.append(message_chunk)
+
+        # 检查情绪标签并获取参考音频
+        ref_audio, ref_text = self._get_emotion_reference(message_chunk)
+
+        # 添加到待合成列表
+        self.pending_sentences.append(message_chunk)
+
+        # 发送到tts队列，进行语音合成
+        await self.res_queue.put(
+            TTSData(
+                text=message_chunk,
+                ref_audio=ref_audio,
+                ref_text=ref_text,
+            )
+        )
+
+    async def _process_remaining_text(self):
+        """
+        处理缓存的剩余文本（即没有结尾符号的情况）
+        """
+        if len(self.sentence_buffer) > 0:
+            self.full_msg.append(self.sentence_buffer)
+            self.pending_sentences.append(self.sentence_buffer)
+
+            # 检查情绪标签并获取参考音频
+            ref_audio, ref_text = self._get_emotion_reference(self.sentence_buffer)
+
+            # 发送到tts队列，进行语音合成
+            await self.res_queue.put(
+                TTSData(
+                    text=self.sentence_buffer,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                )
+            )
+
+    def _get_emotion_reference(self, text: str) -> tuple[str, str]:
+        """
+        根据文本中的情绪标签获取参考音频和文本
+        """
+        emotion = self._get_emotion(text)
+
+        ref_audio = ""
+        ref_text = ""
+
+        if emotion and emotion in agent.agent_config.get("extra_ref_audio", {}):
+            ref_audio = agent.agent_config["extra_ref_audio"][emotion][0]
+            ref_text = agent.agent_config["extra_ref_audio"][emotion][1]
+
+        return ref_audio, ref_text
+
+    async def handle_audio_stream(self, audio_task):
+        """
+        处理来自TTS的音频流
+        """
+        audio_item = await audio_task
+
+        if audio_item == "DONE_DONE":
+            self.tts_done = True
+
+        elif audio_item is not None:
+            # 当有音频数据时，将其与最早的待处理文本配对
+            sentence_to_send = (
+                self.pending_sentences.pop(0) if self.pending_sentences else ""
+            )
+
+            # 发送配对的文本和音频数据
+            response_data = {
+                "text": sentence_to_send,
+                "audio": audio_item,
+                "done": False,
+            }
+            yield f"data: {json.dumps(response_data, ensure_ascii=False)}\n\n"
+
+    def create_final_response(self):
+        """
+        创建最终响应数据
+        """
+        # 处理表情包系统,在创建最终响应前处理
+        if self.emotion_processed and len(self.full_msg) > 0 and self.full_msg[0]:
+            try:
+
+                emotion_service = get_emotion_service()
+
+                if not emotion_service.is_healthy():
+                    logger.info("[表情包系统] 初始化表情包服务...")
+                    emotion_service.initialize()
+
+                meme_sse_response = emotion_service.process_llm_response(
+                    self.full_msg[0]
+                )
+                if meme_sse_response:
+                    logger.info("[表情包系统] 发送表情包到前端")
+                    yield meme_sse_response
+
+            except ImportError:
+                logger.info("[表情包系统] 表情包模块未安装")
+            except Exception as e:
+                logger.info(f"[表情包系统] 处理表情包时发生错误：{e}")
+
+        yield f"""data: {
+            json.dumps({
+            'text': ''.join(self.full_msg) if self.full_msg else '',
+            'audio': '',
+            'done': True,
+        }, ensure_ascii=False)
+        }\n\n"""
+
+
+async def gptsovits_tts(data: dict):
+    """
+    调用gptsovits进行语音合成
 
     Parameters:
         data (dict): 符合gptsovits的语音合成参数
@@ -72,18 +251,6 @@ async def tts(data: dict):
             return None
 
 
-def _clear_text(msg: str):
-    msg = re.sub(r"[$(（[].*?[]）)]", "", msg)
-    msg = msg.replace(" ", "").replace("\n", "")
-    tmp_msg = ""
-    table = ["…", "~", "～", "。", "？", "！", "?", "!", ",", "，"]
-    for i in range(len(msg)):
-        if msg[i] not in table:
-            tmp_msg = msg[i:]
-            break
-    return tmp_msg
-
-
 async def tts_task(tts_data: TTSData) -> bytes | None:
     """
     构建tts任务
@@ -94,14 +261,14 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
     """
     global agent
     msg = tts_data.text
-    msg = re.sub(r'\(.*?\)|（.*?）|【.*?】|\[.*?\]|\{.*?\}', "", msg)
+    msg = re.sub(r"\(.*?\)|（.*?）|【.*?】|\[.*?\]|\{.*?\}", "", msg)
     msg = msg.replace(" ", "").replace("\n", "")
     # msg = clear_text(tts_data.text)
     if len(msg) == 0:
         return None
     ref_audio = tts_data.ref_audio
     ref_text = tts_data.ref_text
-    print(f"[tts文本]{msg}")
+    logger.info(f"[tts文本]{msg}")
     data = {
         "text": msg,
         "text_lang": agent.agent_config["GSV"]["text_lang"],
@@ -119,7 +286,7 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
         data["ref_audio_path"] = ref_audio
         data["prompt_text"] = ref_text
     try:
-        byte_data = await tts(data)
+        byte_data = await gptsovits_tts(data)
         return byte_data
     except:
         return None
@@ -144,16 +311,20 @@ async def start_tts(res_queue: asyncio.Queue, audio_queue: asyncio.Queue):
 
             if item == "DONE_DONE":
                 await audio_queue.put("DONE_DONE")
-                print("完成...")
+                logger.info("完成...")
+                break
+
+            elif not item.text:
                 break
 
             # 合成音频
             logger.info("添加语音到合成队列")
             audio_data = await tts_task(item)
             if audio_data is None:
+                logger.error(item)
                 logger.error("TTS处理出错")
                 continue
-            encode_data = base64.urlsafe_b64encode(audio_data).decode("utf-8")
+            encode_data = base64.b64encode(audio_data).decode("utf-8")
             await audio_queue.put(encode_data)
 
         except Exception as e:
@@ -173,10 +344,9 @@ def asr(audio_data: bytes):
     Returns
         str: 识别结果文本
     """
-    global is_sv
     global sv_pipeline
 
-    if is_sv:
+    if sv_pipeline:
         if not sv_pipeline.check_speaker(audio_data):
             return None
 
@@ -184,10 +354,8 @@ def asr(audio_data: bytes):
     return asrServer.asr(audio_data)
 
 
-async def to_llm(
+async def start_llm_task(
     msg: list,
-    res_msg_queue: asyncio.Queue[TTSData | str],
-    full_msg: list[str],
     text_queue: asyncio.Queue,
 ):
     """
@@ -195,36 +363,15 @@ async def to_llm(
 
     Args:
         msg: 消息列表
-        res_msg_queue: TTS处理队列
-        full_msg: 完整消息存储
-        text_queue: 文本流式输出队列（新增）
+        text_queue: 文本流式输出队列
     """
-
-    def get_emotion(msg: str) -> str | None:
-        """查询文字中的情感字段"""
-        res = re.findall(r"\[(.*?)\]", msg)
-        if len(res) > 0:
-            match = res[-1]
-            if match and agent.agent_config["extra_ref_audio"]:
-                if match in agent.agent_config["extra_ref_audio"]:
-                    return match
 
     start_time = time.time()
     logger.info("[LLM]：开始处理")
 
     try:
-        res_msg = ""  # 完整的原始回复
-        tmp_msg = ""  # 切句后剩余文本
-        # 标记是否首句
-        is_first_msg = True
         # 标记第一次打印时间
         first_print_time_flag = True
-        # 参考音频
-        ref_audio = ""
-        # 参考文本
-        ref_text = ""
-        # 消息索引,用于判断是否已经处理过
-        message_index = 0
 
         async for line in llm_request(msg):
             try:
@@ -232,74 +379,16 @@ async def to_llm(
                     logger.info(f"\n[大模型延迟]{time.time() - start_time}")
                     first_print_time_flag = False
 
-                # 累积文本
-                res_msg += line
-                tmp_msg += line
-
-                # res_msg = res_msg.replace("（", "(").replace("）", ")")
-
                 # 立即将新文本发送到文本队列（流式输出）
                 await text_queue.put(("text", line))
-
-                # split_texts = remove_parentheses_content_and_split(res_msg)
-                message_chuck, tmp_msg = remove_parentheses_content_and_split_v2(tmp_msg, is_first_msg)
-
-                if len(message_chuck) == 0:
-                    continue
-                is_first_msg = False
-                # if len(split_texts) <= message_index:
-                #     continue
-                # # 获取最新拆分文本
-                # message_chuck = split_texts[-1]
-                # # 更新消息索引
-                # message_index += 1
-                # print(split_texts)
-
-                full_msg.append(message_chuck)
-
-                # 检查情绪标签
-                emotion = get_emotion(message_chuck)
-
-                if emotion and emotion in agent.agent_config.get("extra_ref_audio", {}):
-                    ref_audio = agent.agent_config["extra_ref_audio"][emotion][0]
-                    ref_text = agent.agent_config["extra_ref_audio"][emotion][1]
-                # 发送到tts队列，进行语音合成
-                await res_msg_queue.put(
-                    TTSData(
-                        text=message_chuck,
-                        ref_audio=ref_audio,
-                        ref_text=ref_text,
-                    )
-                )
 
             except Exception as e:
                 logger.error(f"[错误]：{e}", exc_info=True)
                 continue
-        
-        if len(tmp_msg) > 0:
-            full_msg.append(tmp_msg)
-
-            # 检查情绪标签
-            emotion = get_emotion(tmp_msg)
-
-            if emotion and emotion in agent.agent_config.get("extra_ref_audio", {}):
-                ref_audio = agent.agent_config["extra_ref_audio"][emotion][0]
-                ref_text = agent.agent_config["extra_ref_audio"][emotion][1]
-            # 发送到tts队列，进行语音合成
-            await res_msg_queue.put(
-                TTSData(
-                    text=tmp_msg,
-                    ref_audio=ref_audio,
-                    ref_text=ref_text,
-                )
-            )
-
-        logger.info(f"完整回复: {full_msg}")
 
         # 发送完成信号
-        await res_msg_queue.put("DONE_DONE")
-        await text_queue.put(("done", None))
 
+        await text_queue.put(("done", None))
 
     except Exception as e:
         logger.error(f"无法链接到LLM服务器: {e}", exc_info=True)
@@ -307,335 +396,162 @@ async def to_llm(
         return JSONResponse(status_code=400, content={"message": "无法链接到LLM服务器"})
 
 
-# 新增函数处理prompt
-def _create_llm_prompt_for_financial_task(
-    plugin_result: dict, original_msg_history: list
-) -> list:
-    """
-    根据插件返回结果，创建用于LLM润色的新Prompt。
-    这是一个辅助函数，专门为财务任务生成给LLM的指令。
-    """
-
-    llm_context = plugin_result.get("llm_context", {})
-    suggestion = llm_context.get("suggestion_for_llm", "")
-
-    if plugin_result["status"] == "success":
-        system_prompt = (
-            "一个财务插件刚刚成功处理了一笔用户的交易。"
-            "你的任务是：基于插件提供的'任务总结'和'详细数据'，生成一句自然、友好、符合你人设的确认消息给用户。"
-            "请不要重复数据，而是用口语化的方式进行确认和反馈。"
-            f"任务总结: {suggestion}\n"
-            f"详细数据: {json.dumps(llm_context.get('transaction_info', {}), ensure_ascii=False)}"
-        )
-    elif plugin_result["status"] == "incomplete":
-        system_prompt = (
-            "一个财务插件发现用户的记账信息不完整，需要向用户提问以补全信息。"
-            "你的任务是：基于插件提供的'提问建议'，生成一句自然、友好、符合你人设的问句来引导用户。"
-            f"提问建议: {suggestion}\n"
-            f"已提取的信息: {json.dumps(llm_context.get('extracted_info', {}), ensure_ascii=False)}"
-        )
-    else:
-        #
-        system_prompt = "请基于以下信息和用户对话。"
-
-    # 将这个特殊的系统提示和用户的对话历史结合起来，构成完整的上下文
-    # 我们将系统提示放在历史消息的最前面，以指导LLM的后续行为
-    final_prompt_list = [
-        {"role": "system", "content": system_prompt}
-    ] + original_msg_history
-
-    return final_prompt_list
-
-
 async def text_llm_tts(params: tts_data):
-    start_time = time.time()
-    # 初始化将要传递给LLM的最终消息列表
-    msg_list_for_llm = []
-
-    # 应该放入插件加载器
-    # 检查MoeChat总配置文件中的插件开关
-    # is_balancer_enabled = (
-    #     CConfig.config.get("Plugins", {}).get("Balancer", {}).get("enabled", False)
-    # )
-
-    # if is_balancer_enabled:
-    #     # 插件已启用，进入插件处理流程
-    #     session_id = (
-    #         "user_main_session"  # 关键点：实际应用中这里应该是动态的、每个用户唯一的ID
-    #     )
-    #     user_message = params.msg[-1]["content"]
-
-    #     print(f"[插件钩子] 正在处理消息: '{user_message}'")
-    #     plugin_result = financial_plugin_hook(user_message, session_id)
-    #     print(
-    #         f"[插件钩子] 返回结果: \n{json.dumps(plugin_result, indent=2, ensure_ascii=False)}"
-    #     )
-
-    #     if plugin_result["financial_detected"]:
-    #         # 只要检测到财务意图（无论成功与否），就调用辅助函数为LLM创建新的、带有指导的Prompt
-    #         print("[决策] 检测到财务意图，正在为LLM创建润色任务...")
-    #         msg_list_for_llm = _create_llm_prompt_for_financial_task(
-    #             plugin_result, params.msg
-    #         )
-
-    # 如果经过插件处理后，msg_list_for_llm 列表仍然为空
-    # (这说明插件被禁用，或者插件判断当前消息与财务无关)
-    # 则执行MoeChat原来的常规聊天逻辑来填充它。
-
-    '''
-    获取由agent管理的上下文
-    '''
-    global agent
-    t = time.time()
-    msg_list_for_llm = agent.get_msg_data(params.msg[-1]["content"])
-    print(f"[提示]获取上下文耗时：{time.time() - t}")
-
-
-    # ================== 2. 统一的LLM和TTS处理阶段 ==================
-    # 无论消息来自插件包装还是常规聊天，最终都汇入到这里，使用同一套处理流水线
-
-    full_msg = []
-    # 使用队列协调LLM和TTS
-    res_queue = asyncio.Queue()
-    audio_queue = asyncio.Queue()
-
-    async def llm_wrapper():
-        await to_llm(msg_list_for_llm, res_queue, full_msg)
-
-    async def tts_wrapper():
-        await start_tts(res_queue, audio_queue)
-
-    # 启动LLM和TTS任务
-    print("[核心流程] 已将最终Prompt送入LLM和TTS处理流水线。")
-    llm_task = asyncio.create_task(llm_wrapper())
-    tts_task = asyncio.create_task(tts_wrapper())
-
-    stat = True
-    emotion_processed = False  # 标记是否已处理表情包
-
-    while True:
-        try:
-            # 从音频队列获取结果，设置超时避免无限等待
-            audio_item = await asyncio.wait_for(audio_queue.get(), timeout=1.0)
-
-            if audio_item == "DONE_DONE":
-                # === 新增：在对话结束前处理表情包 ===
-                if not emotion_processed and len(full_msg) > 0 and full_msg[0]:
-                    try:
-                        # 导入表情包系统（延迟导入避免循环依赖）
-                        from meme_system import get_emotion_service
-
-                        # 获取表情包服务实例
-                        emotion_service = get_emotion_service()
-                        if not emotion_service.is_healthy():
-                            print("[表情包系统] 初始化表情包服务...")
-                            emotion_service.initialize()
-
-                        # 处理LLM回复，获取表情包响应
-                        meme_sse_response = emotion_service.process_llm_response(
-                            full_msg[0]
-                        )
-
-                        if meme_sse_response:
-                            print("[表情包系统] 发送表情包到前端")
-                            yield meme_sse_response
-                        else:
-                            print("[表情包系统] 本次不发送表情包")
-
-                    except ImportError:
-                        print("[表情包系统] 表情包模块未安装，跳过表情包处理")
-                    except Exception as e:
-                        print(f"[表情包系统] 处理表情包时发生错误：{e}")
-
-                    emotion_processed = True
-                # =======================================
-
-                # 发送结束信号
-                data = {"file": None, "message": full_msg[0], "done": True}
-                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-                break  # 结束循环
-
-            elif audio_item is not None:
-                # 发送音频数据
-                # 注意：这里需要获取对应的文本信息，可能需要修改队列结构
-                data = {"file": audio_item, "message": "对应文本", "done": False}
-                if stat:
-                    logger.info(f"\n[服务端首句处理耗时]{time.time() - start_time}\n")
-                    stat = False
-                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-        except asyncio.TimeoutError:
-            # 检查任务是否已完成
-            if llm_task.done() and tts_task.done():
-                break
-            continue
-        except Exception as e:
-            logger.error(f"处理音频数据时出错: {e}")
-            break
-
-    # 等待所有任务完成
-    await asyncio.gather(llm_task, tts_task, return_exceptions=True)
-
-
-async def text_llm_tts_v2(params: tts_data):
     """
     主处理函数：同时处理LLM流式文本输出和TTS音频合成
+    文字和语音在同一个chunk输出
     """
-    global agent
-
-    start_time = time.time()
-
-    # 初始化消息列表
-    msg_list_for_llm = []
-
-    # 处理Agent上下文
-    t = time.time()
+    # 获取agent内容
     msg_list_for_llm = agent.get_msg_data(params.msg[-1]["content"])
-    print(f"[提示]获取上下文耗时：{time.time() - t}")
 
-    # 全部消息，ai可能回复多条语句
-    full_msg: list[str] = []
+    # 初始化处理器
+    processor = StreamProcessor()
 
-    # 创建三个队列
-    res_queue: asyncio.Queue[TTSData | str] = asyncio.Queue()  # TTS文本队列
-    audio_queue = asyncio.Queue()  # TTS音频队列
-    text_queue = asyncio.Queue()  # 流式文本输出队列
-
-    async def llm_wrapper():
-        await to_llm(msg_list_for_llm, res_queue, full_msg, text_queue)
-
-    async def tts_wrapper():
-        await start_tts(res_queue, audio_queue)
-
-    # 启动异步任务
-    llm_task = asyncio.create_task(llm_wrapper())
-    tts_task = asyncio.create_task(tts_wrapper())
-
-    stat = True
-    emotion_processed = False
-    llm_done = False
-    tts_done = False
+    # 创建LLM和TTS任务
+    llm_task = asyncio.create_task(
+        start_llm_task(msg_list_for_llm, processor.text_queue)
+    )
+    tts_task = asyncio.create_task(
+        start_tts(processor.res_queue, processor.audio_queue)
+    )
 
     while True:
         try:
             # 使用 asyncio.wait 同时监听多个队列
-            text_task = asyncio.create_task(text_queue.get())
-            audio_task = asyncio.create_task(audio_queue.get())
+            text_task = asyncio.create_task(processor.text_queue.get())
+            audio_task = asyncio.create_task(processor.audio_queue.get())
 
             done, pending = await asyncio.wait(
                 [text_task, audio_task],
                 return_when=asyncio.FIRST_COMPLETED,
                 timeout=0.1,
             )
-
-            # 取消未完成的任务
+            # 当获取到任一任务完成时，取消另一个任务
             for task in pending:
                 task.cancel()
 
             # 处理完成的任务
             for task in done:
-                try:
-                    if task == text_task:
-                        # 处理文本流式输出
-                        msg_type, content = await task
+                if task == text_task:
+                    await processor.handle_text_stream(task)
 
-                        if msg_type == "text" and content:
-                            # 发送文本片段
-                            data = {"type": "text", "data": content, "done": False}
-                            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-                        elif msg_type == "done":
-                            llm_done = True
-
-                        elif msg_type == "error":
-                            # 发送错误信息
-                            data = {"type": "error", "data": content, "done": True}
-                            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-                            break
-
-                    elif task == audio_task:
-                        # 处理音频输出
-                        audio_item = await task
-
-                        if audio_item == "DONE_DONE":
-                            tts_done = True
-
-                            # 处理表情包系统
-                            if (
-                                not emotion_processed
-                                and len(full_msg) > 0
-                                and full_msg[0]
-                            ):
-                                try:
-                                    from meme_system import get_emotion_service
-
-                                    emotion_service = get_emotion_service()
-
-                                    if not emotion_service.is_healthy():
-                                        print("[表情包系统] 初始化表情包服务...")
-                                        emotion_service.initialize()
-
-                                    meme_sse_response = (
-                                        emotion_service.process_llm_response(
-                                            full_msg[0]
-                                        )
-                                    )
-                                    if meme_sse_response:
-                                        print("[表情包系统] 发送表情包到前端")
-                                        yield meme_sse_response
-
-                                except ImportError:
-                                    print("[表情包系统] 表情包模块未安装")
-                                except Exception as e:
-                                    print(f"[表情包系统] 处理表情包时发生错误：{e}")
-
-                                emotion_processed = True
-
-                        elif audio_item is not None:
-                            # 发送音频数据
-                            data = {"type": "audio", "data": audio_item, "done": False}
-                            if stat:
-                                logger.info(
-                                    f"\n[服务端首句处理耗时]{time.time() - start_time}\n"
-                                )
-                                stat = False
-                            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-                except asyncio.CancelledError:
-                    pass
+                elif task == audio_task:
+                    async for response in processor.handle_audio_stream(task):
+                        yield response
 
             # 检查是否所有任务都完成
-            if llm_done and tts_done:
+            if processor.llm_done and processor.tts_done:
                 # 发送最终的完成消息
-                data = {
-                    "type": "complete",
-                    "data": "".join(full_msg) if full_msg else "",
-                    "done": True,
-                }
-                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                for final_response in processor.create_final_response():
+                    yield final_response
                 # agent写入上下文、日记
-                agent.add_msg("".join(full_msg))
+                agent.add_msg("".join(processor.full_msg))
                 break
 
         except asyncio.TimeoutError:
             # 检查任务是否完成
             if llm_task.done() and tts_task.done():
-                if not (llm_done and tts_done):
-                    # 确保发送完成信号
-                    data = {
-                        "type": "complete",
-                        "data": "".join(full_msg) if full_msg else "",
-                        "done": True,
-                    }
-                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                 break
             continue
 
         except Exception as e:
             logger.error(f"处理数据时出错: {e}", exc_info=True)
-            data = {"type": "error", "data": str(e), "done": True}
-            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+            error_response = {"type": "error", "data": str(e), "done": True}
+            yield f"data: {json.dumps(error_response, ensure_ascii=False)}\n\n"
             break
 
-    # 等待所有任务完成
-    await asyncio.gather(llm_task, tts_task, return_exceptions=True)
+
+async def text_llm_tts_v2(params: tts_data):
+    """
+    主处理函数：同时处理LLM流式文本输出和TTS音频合成
+    文字和语音分别输出自己的chunk
+    """
+    # 获取agent内容
+    msg_list_for_llm = agent.get_msg_data(params.msg[-1]["content"])
+
+    # 初始化处理器
+    processor = StreamProcessor()
+
+    # 创建LLM和TTS任务
+    llm_task = asyncio.create_task(
+        start_llm_task(msg_list_for_llm, processor.text_queue)
+    )
+    tts_task_instance = asyncio.create_task(
+        start_tts(processor.res_queue, processor.audio_queue)
+    )
+
+    while True:
+        try:
+            # 使用 asyncio.wait 同时监听多个队列
+            text_task = asyncio.create_task(processor.text_queue.get())
+            audio_task = asyncio.create_task(processor.audio_queue.get())
+
+            done, pending = await asyncio.wait(
+                [text_task, audio_task],
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=0.1,
+            )
+            # 当获取到任一任务完成时，取消另一个任务
+            for task in pending:
+                task.cancel()
+
+            # 处理完成的任务
+            for task in done:
+                if task == text_task:
+                    # 使用原来的处理方法来确保文本能正确进入TTS队列
+                    await processor.handle_text_stream(text_task)
+
+                    # 同时发送文本数据给客户端
+                    msg_type, content = await text_task
+                    if msg_type == "text" and content:
+                        text_response = {"type": "text", "data": content, "done": False}
+                        yield f"data: {json.dumps(text_response, ensure_ascii=False)}\n\n"
+                    elif msg_type == "error":
+                        error_response = {
+                            "type": "error",
+                            "data": content,
+                            "done": True,
+                        }
+                        yield f"data: {json.dumps(error_response, ensure_ascii=False)}\n\n"
+
+                elif task == audio_task:
+                    audio_item = await audio_task
+
+                    if audio_item == "DONE_DONE":
+                        processor.tts_done = True
+                        # audio_response = {"type": "audio", "data": "", "done": True}
+                        # yield f"data: {json.dumps(audio_response, ensure_ascii=False)}\n\n"
+                    elif audio_item is not None:
+                        # 单独发送音频数据
+                        audio_response = {
+                            "type": "audio",
+                            "data": audio_item,
+                            "done": False,
+                        }
+                        yield f"data: {json.dumps(audio_response, ensure_ascii=False)}\n\n"
+
+            # 检查是否所有任务都完成
+            if processor.llm_done and processor.tts_done:
+                # 发送最终的完成消息
+                final_response = {
+                    "type": "complete",
+                    "data": "".join(processor.full_msg) if processor.full_msg else "",
+                    "done": True,
+                }
+                yield f"data: {json.dumps(final_response, ensure_ascii=False)}\n\n"
+
+                # agent写入上下文、日记
+                agent.add_msg("".join(processor.full_msg))
+                break
+
+        except asyncio.TimeoutError:
+            # 检查任务是否完成
+            if llm_task.done() and tts_task_instance.done():
+                break
+            continue
+
+        except Exception as e:
+            logger.error(f"处理数据时出错: {e}", exc_info=True)
+            error_response = {"type": "error", "data": str(e), "done": True}
+            yield f"data: {json.dumps(error_response, ensure_ascii=False)}\n\n"
+            break
