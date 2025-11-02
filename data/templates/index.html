@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}记忆编辑器 - 主页{% endblock %}
+
+{% block content %}
+    <h2>搜索记忆</h2>
+    <form action="{{ url_for('search') }}" method="get" class="search-form">
+        <label for="keyword">关键词:</label>
+        <input type="text" id="keyword" name="keyword" placeholder="关键词..." value="{{ keyword or '' }}">
+
+        <label for="start_date">开始日期:</label>
+        <select id="start_date" name="start_date">
+            {% for date in unique_dates %}
+                <option value="{{ date }}" {% if date == start_date %}selected{% endif %}>{{ date }}</option>
+            {% endfor %}
+        </select>
+
+        <label for="end_date">结束日期:</label>
+        <select id="end_date" name="end_date">
+            {% for date in unique_dates %}
+                <option value="{{ date }}" {% if date == end_date %}selected{% endif %}>{{ date }}</option>
+            {% endfor %}
+        </select>
+
+        <button type="submit" class="button-primary">搜索</button>
+        <a href="{{ url_for('index') }}" class="button-link button-secondary">重置</a>
+    </form>
+
+    <hr>
+
+    <h2>搜索结果 ({{ results|length }} 条)</h2>
+
+    {% if not results and not (keyword or (start_date and start_date != '-- 所有日期 --') or (end_date and end_date != '-- 所有日期 --')) %}
+        <p>请输入关键词或选择日期范围后点击 [搜索]。</p>
+    {% elif not results %}
+         <p>未找到符合条件的记忆。</p>
+    {% else %}
+        <table>
+            <thead>
+                <tr>
+                    <th>时间</th>
+                    <th>类型</th>
+                    <th>内容预览</th>
+                    <th>标签</th>
+                    <th>文件名</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for entry in results %}
+                <tr>
+                    {# 使用 Jinja2 的 default 过滤器防止出错 #}
+                    <td>{{ editor.get_datetime_from_entry(entry)|default('N/A', true)|strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td>{{ entry.type | default('N/A') }}</td>
+                    <td>
+                        {# 内容预览逻辑 (safe 版) #}
+                        {% if entry.type == 'core' %}
+                            {# 核心记忆仍然截断并转义 #}
+                            {% set text = entry.data.text | default('') %}
+                            {{ text[:80] + ('...' if text|length > 80 else '') }}
+                        {% elif entry.type == 'long' %}
+                            {# 【重要】使用 |safe 过滤器来渲染 <br> 标签 #}
+                            {{ entry.generated_preview | default('(预览解析失败)') | safe }}
+                        {% endif %}
+                    </td>
+                    <td>{{ entry.data.text_tag if entry.type == 'long' else '' }}</td>
+                    <td>{{ entry.file | default('N/A') }}</td>
+                    <td class="actions">
+                        <a href="{{ url_for('edit_form', type=entry.type, id=entry.id) }}" class="button-link button-secondary">编辑</a>
+                        <form action="{{ url_for('delete_item') }}" method="post" onsubmit="return confirm('确定要删除这条记忆吗？');">
+                            <input type="hidden" name="id" value="{{ entry.id }}">
+                            <input type="hidden" name="type" value="{{ entry.type }}">
+                            <input type="hidden" name="file" value="{{ entry.file }}">
+                            <button type="submit" class="button-danger">删除</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+
+    {# 添加新记忆的链接 (可选) #}
+    {# <p><a href="{{ url_for('add_form', entry_type='core') }}">添加核心记忆</a> | <a href="{{ url_for('add_form', entry_type='long') }}">添加长期记忆</a></p> #}
+
+{% endblock %}

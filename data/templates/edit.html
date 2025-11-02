@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}编辑记忆{% endblock %}
+
+{% block content %}
+    <h2>编辑记忆 (ID: {{ entry.id }})</h2>
+
+    <form action="{{ url_for('save_changes') }}" method="post">
+        {# 隐藏字段，用于将 ID, 类型, 文件名传回后端 #}
+        <input type="hidden" name="id" value="{{ entry.id }}">
+        <input type="hidden" name="type" value="{{ entry.type }}">
+        <input type="hidden" name="file" value="{{ entry.file }}">
+
+        <p><strong>类型:</strong> {{ entry.type }}</p>
+        <p><strong>文件名:</strong> {{ entry.file }}</p>
+
+        {% if entry.type == 'core' %}
+            <label for="time">时间 (只读):</label>
+            <input type="text" id="time" name="time_display" value="{{ entry.data.time }}" readonly disabled>
+
+            <label for="text">内容:</label>
+            <textarea id="text" name="text">{{ entry.data.text }}</textarea>
+
+        {% elif entry.type == 'long' %}
+            <label for="time">时间 (只读):</label>
+            <input type="text" id="time" name="time_display" value="{{ editor.get_datetime_from_entry(entry)|default('N/A', true)|strftime('%Y-%m-%d %H:%M:%S') }}" readonly disabled>
+
+            <label for="text_tag">标签 (Text_Tag):</label>
+            <input type="text" id="text_tag" name="text_tag" value="{{ entry.data.text_tag }}">
+
+            <label for="msg">内容 (Msg):</label>
+            <textarea id="msg" name="msg">{{ entry.data.msg }}</textarea>
+
+        {% else %}
+            <p class="error">错误：未知的记忆类型！</p>
+        {% endif %}
+
+        <button type="submit" class="button-primary">保存修改</button>
+        <a href="{{ url_for('index') }}" class="button-link button-secondary">取消</a>
+
+    </form>
+
+{% endblock %}
+
