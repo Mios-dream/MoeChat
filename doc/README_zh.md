@@ -41,7 +41,7 @@
 
 ### 测试结果
 
-![](/doc/screen/img.png)
+![](../doc/screen/img.png)
 
 ## 更新日志
 
@@ -49,18 +49,18 @@
 
 - Moechat 现在可以发送表情包了。
 
-  <p align="left"><img src="/doc/screen/sample2.png" alt="image-20250810165346882" style="zoom: 33%;" /></p>
+  <p align="left"><img src="../doc/screen/sample2.png" alt="image-20250810165346882" style="zoom: 33%;" /></p>
 
 - 添加了简单的财务系统，使用复式记账。
 
-  <p align="left"><img src="/doc/screen/sample_booking_zh.png" alt="sample_booking_zh" style="zoom: 50%;" /></p>
+  <p align="left"><img src="../doc/screen/sample_booking_zh.png" alt="sample_booking_zh" style="zoom: 50%;" /></p>
 
 ### 2025.06.29
 
 - 设计了全新的情绪系统。
 - 为 Moechat 添加了简易的 web 端，可以识别关键词进行表情飘屏，和其他例子特效。
 
-  <div style="text-align: left;"><img src="/doc/screen/sample1.png" alt="sample1" style="zoom: 55%;" /></div>
+  <div style="text-align: left;"><img src="../doc/screen/sample1.png" alt="sample1" style="zoom: 55%;" /></div>
 
 ### 2025.06.11
 
@@ -80,70 +80,46 @@
 
 ## 整合包使用说明
 
+> 整合包包含完整环境，gptsovits，客户端等
+
 网盘下载链接：[![BaiduPan](https://img.shields.io/badge/百度网盘-下载链接-blue?logo=baidu&logoColor=white&style=flat-square)](https://pan.baidu.com/share/init?surl=mf6hHJt8hVW3G2Yp2gC3Sw&pwd=2333)
+
+备用网盘链接：[![123Pan](https://img.shields.io/badge/123网盘-下载链接-blue?logo=123pan&logoColor=white&style=flat-square)](https://www.123865.com/s/kxlvjv-0Jayv)
 
 其他下载方式可进群获取：[![QQ](https://img.shields.io/badge/QQ群-967981851-blue?logo=tencentqq&style=flat-square)](https://qm.qq.com/q/6pfdCFxJcc)
 
-### Windows
+### 启动核心
 
 ```bash
 # 启动GPT-SoVITS服务端
-# 在GPT-SoVITS-v2pro-20250604文件夹打开终端，输入命令
+cd GPT-SoVITS-v2pro-20250604-nvidia50
 runtime\python.exe api_v2.py
 
 # 启动MoeChat服务端
 # 在整合包目录打开终端，输入命令
-GPT-SoVITS-v2pro-20250604\runtime\python.exe chat_server.py
+uv sync
+uv run main_web.py
 ```
 
-### Linux
+## 客户端使用方法
 
-```bash
-# 创建虚拟环境
-python -m venv pp
+感谢三三 sama 为 MoeChat 提供客户端支持。
 
-# Ubuntu还需安装portaudio等包，具体自行搜索Linux环境python如何使用sounddevice库
-# 安装依赖需要编译安装，还需安装python3-dev包，其他发行版自行搜索
+> 当前客户端仅支持 Windows。
 
-# 进入虚拟环境
-source pp/bin/activate
+客户端提供 live2d，桌面助手，配置管理等服务，愿景是打破次元壁，实现一个全能的桌面陪伴助手
 
-# 安装依赖
-pip install -r requirements.txt
+[客户端项目地址](https://github.com/Mios-dream/Meochat-APP)
 
-# 运行
-python chat_server.py
-```
+应用截图
 
-## 简易客户端使用方法
+![](../doc/screen/app_screen_1.png)
 
-### Windows
+![](../doc/screen/app_screen_2.png)
 
-测试使用 python 3.10
-如需要服务端单独部署，客户端远程访问，可修改 client-gui\src\client_utils.py 文件 17、18 行的 ip 地址
+![](../doc/screen/app_screen_3.png)
 
-##### 带简单 GUI 的客户端
-
-```bash
-# 运行
-GPT-SoVITS-v2pro-20250604\runtime\python.exe client-gui\src\client_gui.py
-```
-
-### Linux
-
-```bash
-# 创建虚拟环境，如果创建过虚拟环境了可以跳过
-python -m venv pp
-
-# 进入虚拟环境
-source pp/bin/activate
-
-# 安装依赖
-pip install -r client-requirements.txt
-
-# 启动
-python client-gui\src\client_gui.py
-```
+![](../doc/screen/app_screen_44.png)
 
 ## 配置说明
 
@@ -255,14 +231,14 @@ Agent:
 
 # 服务端响应例子
 {
-  "file": str     # urlsafe的base64字符串音频文件
-  "message": str  # 音频数据对应的文本
+  "audio": str     # urlsafe的base64字符串音频文件
+  "text": str  # 音频数据对应的文本
   "done": False   # bool类型，用于判断是否为最后一个数据包
 }
 # 最后一个数据包服务端会将大模型完整的回答文本放进message字段返回客户端
 {
-  "file": str
-  "message": str  # 字符串类型，大模型完整回答文本，用于拼接上下文
+  "audio": str
+  "text": str  # 字符串类型，大模型完整回答文本，用于拼接上下文
   "done": True    # bool类型，用于判断是否为最后一个数据包
 }
 ```
