@@ -2,13 +2,16 @@ import jionlp
 import re
 
 
-def remove_parentheses_content_and_split(text) -> list[str]:
+def remove_parentheses_content_and_split(
+    text, is_remove_incomplete: bool = True
+) -> list[str]:
     """
     根据标点符号进行消息的分句，且去除括号内的内容,且保证内容完整
     不考虑括号嵌套情况
 
     Args:
         text (str): 输入的字符串
+        is_remove_incomplete (bool): 是否去掉不完整句子
 
     Returns:
         str: 移除括号内容后的字符串
@@ -20,6 +23,8 @@ def remove_parentheses_content_and_split(text) -> list[str]:
     """
     if not isinstance(text, str):
         return text
+
+    text = text.replace("（", "(").replace("）", ")")
 
     # 先移除完整的括号对
     text = re.sub(r"\([^)]*\)", "", text)
@@ -34,11 +39,18 @@ def remove_parentheses_content_and_split(text) -> list[str]:
     temp = jionlp.split_sentence(text)
 
     # 去除空字串
-    result = [i for i in temp if i.strip() != "" and is_sentence_complete_simple(i)]
+    if is_remove_incomplete:
+        result = [i for i in temp if i.strip() != "" and is_sentence_complete_simple(i)]
+    else:
+        result = [i for i in temp if i.strip() != ""]
 
     return result
 
-def remove_parentheses_content_and_split_v2(text: str, is_first: bool) -> tuple[str, str]:
+
+def remove_parentheses_content_and_split_v2(
+    text: str, is_first: bool
+) -> tuple[str, str]:
+
     text = text.replace("...", "…")
     stat = 0
     for ii in range(len(text)):
@@ -50,17 +62,21 @@ def remove_parentheses_content_and_split_v2(text: str, is_first: bool) -> tuple[
             continue
         if stat != 0:
             continue
-        if text[ii] in ["…", "~", "～", "。", "？", "！", "?", "!", ",", "，"] and (len(text) > ii + 1):
+        if text[ii] in ["…", "~", "～", "。", "？", "！", "?", "!", ",", "，"] and (
+            len(text) > ii + 1
+        ):
             if text[ii + 1] in ["…", "~", "～", "。", "？", "！", "?", "!", ",", "，"]:
                 continue
             if is_first:
-                return text[:ii+1], text[ii+1:]
-            if (text[ii] in [",", "，", "…"]) and len(re.sub(r'[$(（[].*?[]）)]', '', text[:ii+1])) <= 10:
+                return text[: ii + 1], text[ii + 1 :]
+            if (text[ii] in [",", "，", "…"]) and len(
+                re.sub(r"[$(（[].*?[]）)]", "", text[: ii + 1])
+            ) <= 10:
                 continue
-            return text[:ii+1], text[ii+1:]
+            return text[: ii + 1], text[ii + 1 :]
         # if (text[ii] in ["…", "~", "～",  ",", "，"])  and len(re.sub(r'[$(（[].*?[]）)]', '', text[:ii+1])) <= 10:
         #     continue
-        
+    # 没有找到合适的切分点，返回整个字符串
     return "", text
 
 
@@ -87,4 +103,8 @@ def is_sentence_complete_simple(sentence):
 
 
 if __name__ == "__main__":
-    print(remove_parentheses_content_and_split("(这是个括号)你好~我喜欢你！阁下。"))
+    print(
+        remove_parentheses_content_and_split(
+            "(这是个括号)你好~我喜欢你！阁下", is_remove_incomplete=False
+        )
+    )

@@ -5,6 +5,7 @@ from utils.socket_asr import ASRServer
 from utils.log import logger
 import httpx
 import os
+from utils.logo import print_moechat_logo
 
 
 async def init():
@@ -13,6 +14,8 @@ async def init():
     所以的初始化操作就将在这里处理
     """
     try:
+        print_moechat_logo()
+
         await create_data_folder()
         # await init_gptsovits()
         await load_asr_model()
@@ -29,8 +32,8 @@ async def init():
 async def create_data_folder():
     # 创建数据文件夹
     os.path.exists("data") or os.mkdir("data")  # type: ignore
-    os.path.exists("data/agents") or os.mkdir("data/agents")
-    os.path.exists("data/agents/Chat酱") or os.mkdir("data/agents/Chat酱")
+    os.path.exists("data/agents") or os.mkdir("data/agents")  # type: ignore
+    os.path.exists("data/agents/Chat酱") or os.mkdir("data/agents/Chat酱")  # type: ignore
 
 
 async def load_asr_model():

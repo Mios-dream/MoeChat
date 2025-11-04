@@ -4,13 +4,13 @@
     "timeout": 30,
     "max_retries": 3
   },
-  
+
   "paths": {
-    "memes_base_dir": "meme_system/memes/",
-    "keywords_dir": "meme_system/",
+    "memes_base_dir": "/core/meme_system/memes/",
+    "keywords_dir": "/core/meme_system/",
     "expression_url_prefix": "/web/static/memes/"
   },
-  
+
   "scoring_weights": {
     "基础词汇": 10,
     "语气词": 8,
@@ -25,12 +25,12 @@
     "最低阈值": 3,
     "default兜底": 5
   },
-  
+
   "probability_config": {
     "main_meme_probability": 1.0,
     "default_meme_probability": 1.0
   },
-  
+
   "context_keywords": {
     "强化词_高": ["太", "超", "特别", "非常", "极其"],
     "强化词_中": ["真的", "确实", "的确", "实在"],
@@ -38,7 +38,7 @@
     "积极极性": ["好", "棒", "赞", "优秀", "完美", "成功"],
     "消极极性": ["坏", "糟", "差", "失败", "问题", "错误"]
   },
-  
+
   "system_settings": {
     "debug_mode": true,
     "enable_probability_control": true,

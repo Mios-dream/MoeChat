@@ -5,7 +5,7 @@ keyword_loader.py - 词库加载器
 
 import json
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 class KeywordLoader:
@@ -90,7 +90,7 @@ class KeywordLoader:
         print("[词库加载器] 重新加载词库...")
         return self.load_all_keywords()
 
-    def get_statistics(self) -> Dict[str, any]:
+    def get_statistics(self) -> Dict[str, Any]:
         """获取词库统计信息"""
         if not self.is_loaded:
             return {"error": "词库未加载"}
