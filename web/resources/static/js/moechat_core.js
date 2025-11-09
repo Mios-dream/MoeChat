@@ -91,7 +91,7 @@ function appendMessage(role, text, append = false) {
   const div = document.createElement("div");
   const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
   div.className = `message ${role}`;
-  const avatar = role === "user" ? "static/user__avatar.png" : "static/bot__avatar.png";
+  const avatar = role === "user" ? "image/user__avatar.png" : "image/bot__avatar.png";
   const avatarHTML = `<img src="${avatar}" class="avatar ${role}-avatar">`;
 
   const imgTagRegex = /\{img\}((https?:\/\/[^\s]+)|\/[^\s]+)/;
