@@ -1,7 +1,7 @@
 # 角色模板
 
-#配置模板
-default_config = '''GSV:
+# 配置模板
+default_config = """GSV:
   text_lang: zh
   GPT_weight: 
   SoVITS_weight: 
@@ -46,7 +46,7 @@ Agent:
     使用口语的文字风格进行对话，不要太啰嗦。
 
   # 开场白，数组形式。用于创建开场内容，填入用户与AI的对话内容，只能填入用户和Ai的对话内容，开场白会直接被插入到上下文的开头。
-  start_with:'''
+  start_with:"""
 
 import os
 from utils import long_mem, data_base, prompt, core_mem, log as Log
@@ -57,10 +57,6 @@ import requests
 import httpx
 import jionlp
 import ast
-
-# from ruamel.yaml import YAML
-# from ruamel.yaml.scalarstring import PreservedScalarString
-import re
 import json
 import yaml
 from ruamel.yaml import YAML
@@ -68,23 +64,33 @@ from ruamel.yaml import YAML
 
 class Agent:
     def update_config(self, agent_id: str):
+        """
+        更新角色配置
+        :param agent_id: 角色ID(角色名)
+        """
         # 读取配置文件
         Yaml = YAML()
         Yaml.preserve_quotes = True
         Yaml.indent(mapping=2, sequence=4, offset=2)
-        os.path.exists(f"data/agents") or os.mkdir(f"data/agents")
-        os.path.exists(f"data/agents/{agent_id}") or os.mkdir(f"data/agents/{agent_id}")
+        # 创建目录
+        os.path.exists(f"data/agents") or os.mkdir(f"data/agents")  # type: ignore
+        os.path.exists(f"data/agents/{agent_id}") or os.mkdir(f"data/agents/{agent_id}")  # type: ignore
+
         if not os.path.exists(f"./data/agents/{agent_id}/agent_config.yaml"):
-            with open(f"./data/agents/{agent_id}/agent_config.yaml", "w", encoding="utf-8") as f:
+            with open(
+                f"./data/agents/{agent_id}/agent_config.yaml", "w", encoding="utf-8"
+            ) as f:
                 f.write(default_config)
-        with open(f"./data/agents/{agent_id}/agent_config.yaml", "r", encoding="utf-8") as f:
+        with open(
+            f"./data/agents/{agent_id}/agent_config.yaml", "r", encoding="utf-8"
+        ) as f:
             self.agent_config = Yaml.load(f)
         self.agent_id = agent_id
 
         # 载入配置
-        '''
+        """
         agent独立配置文件
-        '''
+        """
         self.char = self.agent_config["Agent"]["char"]
         self.user = self.agent_config["Agent"]["user"]
         self.char_settings = self.agent_config["Agent"]["char_settings"]
@@ -96,43 +102,65 @@ class Agent:
         self.data_base_thresholds = CConfig.config["Agent"]["books_thresholds"]
         self.data_base_depth = CConfig.config["Agent"]["scan_depth"]
 
-        if "GPT_weight" in self.agent_config["GSV"] and self.agent_config["GSV"]["GPT_weight"]:
+        if (
+            "GPT_weight" in self.agent_config["GSV"]
+            and self.agent_config["GSV"]["GPT_weight"]
+        ):
             Log.logger.info(f"设置GPT_weights...")
             params = {"weights_path": self.agent_config["GSV"]["GPT_weight"]}
             try:
                 httpx.get(
-                    str(CConfig.config["GSV"]["api"]).replace("/tts", "/set_gpt_weights"),
+                    str(CConfig.config["GSV"]["api"]).replace(
+                        "/tts", "/set_gpt_weights"
+                    ),
                     params=params,
                 )
             except TimeoutError:
                 Log.logger.warning(f"设置GPT_weights失败")
         else:
-            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml 未设置GPT_weight")
-        if "SoVITS_weight" in self.agent_config["GSV"] and self.agent_config["GSV"]["SoVITS_weight"]:
+            Log.logger.warning(
+                f"配置文件/data/agents/{agent_id}/agent_config.yaml 未设置GPT_weight"
+            )
+        if (
+            "SoVITS_weight" in self.agent_config["GSV"]
+            and self.agent_config["GSV"]["SoVITS_weight"]
+        ):
             Log.logger.info(f"设置SoVITS...")
             params = {"weights_path": self.agent_config["GSV"]["SoVITS_weight"]}
             try:
                 httpx.get(
-                    str(CConfig.config["GSV"]["api"]).replace("/tts", "/set_sovits_weights"),
+                    str(CConfig.config["GSV"]["api"]).replace(
+                        "/tts", "/set_sovits_weights"
+                    ),
                     params=params,
                 )
             except TimeoutError:
                 Log.logger.warning(f"设置SoVITS失败")
         else:
-            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml 未设置SoVITS_weight")
+            Log.logger.warning(
+                f"配置文件/data/agents/{agent_id}/agent_config.yaml 未设置SoVITS_weight"
+            )
 
         if "text_lang" not in self.agent_config["GSV"]:
-            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml text_lang未设置")
+            Log.logger.warning(
+                f"配置文件/data/agents/{agent_id}/agent_config.yaml text_lang未设置"
+            )
         if "ref_audio_path" not in self.agent_config["GSV"]:
-            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml ref_audio_path未设置")
+            Log.logger.warning(
+                f"配置文件/data/agents/{agent_id}/agent_config.yaml ref_audio_path未设置"
+            )
         if "prompt_text" not in self.agent_config["GSV"]:
-            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml prompt_text未设置")
+            Log.logger.warning(
+                f"配置文件/data/agents/{agent_id}/agent_config.yaml prompt_text未设置"
+            )
         if "prompt_lang" not in self.agent_config["GSV"]:
-            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml prompt_lang未设置")
+            Log.logger.warning(
+                f"配置文件/data/agents/{agent_id}/agent_config.yaml prompt_lang未设置"
+            )
 
-        '''
+        """
         全局设置
-        '''
+        """
         self.is_long_mem = CConfig.config["Agent"]["long_memory"]
         self.is_check_memorys = CConfig.config["Agent"]["is_check_memorys"]
         self.mem_thresholds = CConfig.config["Agent"]["mem_thresholds"]
@@ -198,28 +226,10 @@ class Agent:
 
     def __init__(self, agent_id: str):
         self.lock = Lock()
-        
+
         # agent的id，用于表示agent的配置和数据储存目录，不要和char搞混
         self.agent_id = agent_id
         self.update_config(agent_id)
-        # self.char = config["char"]
-        # self.user = config["user"]
-        # self.char_settings = config["char_settings"]
-        # self.char_personalities = config["char_personalities"]
-        # self.message_example = config["message_example"]
-        # self.mask = config["mask"]
-
-        # self.is_data_base = config["is_data_base"]
-        # self.data_base_thresholds = config["data_base_thresholds"]
-        # self.data_base_depth = config["data_base_depth"]
-
-        # self.is_long_mem = config["is_long_mem"]
-        # self.is_check_memorys = config["is_check_memorys"]
-        # self.mem_thresholds = config["mem_thresholds"]
-
-        # self.is_core_mem = config["is_core_mem"]
-        # self.llm_config = config["llm"]
-
         # 创建上下文
         self.msg_data = []
 
@@ -240,36 +250,11 @@ class Agent:
                 if i % 2 == 0:
                     role = "user"
                 self.msg_data_tmp.append(
-                    {"role": role, "content": self.agent_config["Agent"]["start_with"][i]}
+                    {
+                        "role": role,
+                        "content": self.agent_config["Agent"]["start_with"][i],
+                    }
                 )
-
-        # 载入提示词
-        # self.prompt = []
-        # # self.prompt.append({"role": "system", "content": f"当前系统时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}"})
-        # # tt = '''6. 注意输出文字的时候，将口语内容使用""符号包裹起来，并且优先输出口语内容，其他文字使用()符号包裹。'''
-        # self.long_mem_prompt = prompt.long_mem_prompt
-        # self.data_base_prompt = prompt.data_base_prompt
-        # self.core_mem_prompt = prompt.core_mem_prompt
-        # if self.char_settings:
-        #     self.system_prompt = prompt.system_prompt.replace("{{char}}", self.char).replace("{{user}}", self.user)
-        #     self.char_setting_prompt = prompt.char_setting_prompt.replace("{{char_setting_prompt}}", self.char_settings).replace("{{char}}", self.char).replace("{{user}}", self.user)
-        #     self.prompt.append({"role": "system", "content": self.system_prompt})
-        #     self.prompt.append({"role": "system", "content": self.char_setting_prompt})
-        # if self.char_personalities:
-        #     self.char_Personalities_prompt = prompt.char_Personalities_prompt.replace("{{char_Personalities_prompt}}", self.char_personalities).replace("{{char}}", self.char).replace("{{user}}", self.user)
-        #     self.prompt.append({"role": "system", "content": self.char_Personalities_prompt})
-        #     # self.prompt += self.char_Personalities_prompt + "\n\n"
-        # if self.mask:
-        #     self.mask_prompt = prompt.mask_prompt.replace("{{mask_prompt}}", self.mask).replace("{{char}}", self.char).replace("{{user}}", self.user)
-        #     self.prompt.append({"role": "system", "content": self.mask_prompt})
-        #     # self.prompt += self.mask_prompt + "\n\n"
-        # if self.message_example:
-        #     self.message_example_prompt = prompt.message_example_prompt.replace("{{message_example}}", self.message_example).replace("{{user}}", self.user).replace("{{char}}", self.char)
-        #     self.prompt.append({"role": "system", "content": self.message_example_prompt})
-        #     # self.prompt += self.message_example_prompt + "\n\n"
-        # if config["prompt"]:
-        #     self.prompt.append({"role":  "system", "content": config["prompt"]})
-        #     # self.prompt += config["prompt"]
 
         # 创建系统时间戳
         self.tt = int(time.time())
@@ -277,10 +262,10 @@ class Agent:
         # 创建数据存储文件夹
         os.path.exists(f"./data/agents/{self.agent_id}/memorys") or os.makedirs(
             f"./data/agents/{self.agent_id}/memorys"
-        )
+        )  # type: ignore
         os.path.exists(f"./data/agents/{self.agent_id}/data_base") or os.makedirs(
             f"./data/agents/{self.agent_id}/data_base"
-        )
+        )  # type: ignore
 
         # 加载角色记忆
         # if self.is_long_mem:
@@ -295,7 +280,7 @@ class Agent:
         self.DataBase = data_base.DataBase(self.agent_id)
 
     # 知识库内容检索
-    def get_data(self, msg: str, res_msg: list) -> str:
+    def get_data(self, msg: str, res_msg: list) -> None:
         msg_list = jionlp.split_sentence(msg, criterion="fine")
         res_ = self.DataBase.search(msg_list)
         if res_ != "":
@@ -335,11 +320,6 @@ class Agent:
 
     # 获取发送到大模型的上下文
     def get_msg_data(self, msg: str) -> list:
-        # index = len(self.msg_data) - 1
-        # g_t = Thread(target=self.insert_core_mem, args=(msg, index,))
-        # g_t.daemon = True
-        # g_t.start()
-
         ttt = int(time.time())
         self.tt = ttt
         t_n = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ttt))
@@ -470,9 +450,4 @@ class Agent:
             f"./data/agents/{self.agent_id}/history.yaml", "a", encoding="utf-8"
         ) as f:
             yaml.dump(self.msg_data_tmp, f)
-            # for mm in self.msg_data_tmp:
-            #     role = mm["role"]
-            #     content = mm["content"]
-            #     f.write(f"【{role}】：{content}\n")
-            # f.write("\n")
         self.msg_data_tmp = []
