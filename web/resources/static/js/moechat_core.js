@@ -262,7 +262,7 @@ if (
       appendMessage("user", result.text);
       if (currentEventSource) currentEventSource.close();
       lastBotMessageDiv = null;
-      currentEventSource = new EventSource('/web/stream_chat?text=' + encodeURIComponent(result.text));
+      currentEventSource = new EventSource('/api/stream_chat?text=' + encodeURIComponent(result.text));
       currentEventSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.done) {
@@ -386,7 +386,7 @@ if (
     // 隐藏事件不在用户侧生成聊天气泡
     if (currentEventSource) currentEventSource.close();
     lastBotMessageDiv = null;
-    currentEventSource = new EventSource('/web/stream_chat?text=' + encodeURIComponent(text));
+    currentEventSource = new EventSource('/api/stream_chat?text=' + encodeURIComponent(text));
     currentEventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.done) {
@@ -466,7 +466,7 @@ if (
     appendMessage("user", text);
     if (currentEventSource) currentEventSource.close();
     lastBotMessageDiv = null;
-    currentEventSource = new EventSource('/web/stream_chat?text=' + encodeURIComponent(text));
+    currentEventSource = new EventSource('/api/stream_chat?text=' + encodeURIComponent(text));
     currentEventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.done) {
