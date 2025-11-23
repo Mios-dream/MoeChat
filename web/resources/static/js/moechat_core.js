@@ -248,7 +248,7 @@ if (
     reader.onloadend = async () => {
       const base64AudioWithHeader = reader.result;
       recordBtn.disabled = true;
-      const res = await fetch('/web/audio', {
+      const res = await fetch('/api/asr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ audio: base64AudioWithHeader })
@@ -634,7 +634,7 @@ function launchRainEffect() {
   window.rainEffectLoaded = true;
 
   const rainScript = document.createElement("script");
-  rainScript.src = "static/rain_effect.js";
+  rainScript.src = "rain_effect.js";
   rainScript.id = "rainEffectScript";
   document.body.appendChild(rainScript);
 
