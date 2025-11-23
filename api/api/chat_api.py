@@ -1,21 +1,23 @@
 from fastapi.responses import StreamingResponse
-from fastapi import (
-    APIRouter,
-)
+from fastapi import APIRouter
 from utils.agent import Agent
 from api.models.tts_request import tts_data
 import core.chat_core as chat_core
-
+from fastapi import Query
 
 chat_api = APIRouter()
 
 
-@chat_api.post("/chat")
-async def tts(params: tts_data):
+@chat_api.get("/stream_chat")
+async def tts(text: str = Query(..., description="用户输入的文本")):
+
+    message_list = [{"role": "user", "content": text}]
+    
+    params = tts_data(msg=message_list)
+    
     return StreamingResponse(
         chat_core.text_llm_tts(params), media_type="text/event-stream"
     )
-
 
 @chat_api.post("/chat_v2")
 async def tts_api(params: tts_data):
