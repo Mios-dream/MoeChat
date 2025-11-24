@@ -3,4 +3,4 @@ from pydantic import BaseModel
 
 
 class asr_data(BaseModel):
-    data: str
+    audio: str
