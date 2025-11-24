@@ -27,7 +27,7 @@ async def asr_audio(params: asr_data):
     修复了 base64 解析和返回格式
     """
     try:
-        raw_data = params.data
+        raw_data = params.audio
         if "," in raw_data:
             raw_data = raw_data.split(",")[1]
         audio_data = base64.b64decode(raw_data)
