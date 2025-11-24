@@ -248,7 +248,7 @@ if (
     reader.onloadend = async () => {
       const base64AudioWithHeader = reader.result;
       recordBtn.disabled = true;
-      const res = await fetch('/web/audio', {
+      const res = await fetch('/api/asr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ audio: base64AudioWithHeader })
@@ -262,7 +262,7 @@ if (
       appendMessage("user", result.text);
       if (currentEventSource) currentEventSource.close();
       lastBotMessageDiv = null;
-      currentEventSource = new EventSource('/web/stream_chat?text=' + encodeURIComponent(result.text));
+      currentEventSource = new EventSource('/api/stream_chat?text=' + encodeURIComponent(result.text));
       currentEventSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.done) {
@@ -386,7 +386,7 @@ if (
     // 隐藏事件不在用户侧生成聊天气泡
     if (currentEventSource) currentEventSource.close();
     lastBotMessageDiv = null;
-    currentEventSource = new EventSource('/web/stream_chat?text=' + encodeURIComponent(text));
+    currentEventSource = new EventSource('/api/stream_chat?text=' + encodeURIComponent(text));
     currentEventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.done) {
@@ -466,7 +466,7 @@ if (
     appendMessage("user", text);
     if (currentEventSource) currentEventSource.close();
     lastBotMessageDiv = null;
-    currentEventSource = new EventSource('/web/stream_chat?text=' + encodeURIComponent(text));
+    currentEventSource = new EventSource('/api/stream_chat?text=' + encodeURIComponent(text));
     currentEventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.done) {
@@ -634,7 +634,7 @@ function launchRainEffect() {
   window.rainEffectLoaded = true;
 
   const rainScript = document.createElement("script");
-  rainScript.src = "static/rain_effect.js";
+  rainScript.src = "rain_effect.js";
   rainScript.id = "rainEffectScript";
   document.body.appendChild(rainScript);
 

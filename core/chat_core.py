@@ -184,8 +184,8 @@ class StreamProcessor:
 
             # 发送配对的文本和音频数据
             response_data = {
-                "text": sentence_to_send,
-                "audio": audio_item,
+                "message": sentence_to_send,
+                "file": audio_item,
                 "done": False,
             }
             yield f"data: {json.dumps(response_data, ensure_ascii=False)}\n\n"
@@ -218,8 +218,8 @@ class StreamProcessor:
 
         yield f"""data: {
             json.dumps({
-            'text': ''.join(self.full_msg) if self.full_msg else '',
-            'audio': '',
+            'message': ''.join(self.full_msg) if self.full_msg else '',
+            'file': '',
             'done': True,
         }, ensure_ascii=False)
         }\n\n"""
@@ -301,30 +301,28 @@ async def start_tts(res_queue: asyncio.Queue, audio_queue: asyncio.Queue):
 
     while True:
         try:
-            # 从文本队列获取待合成的文本
             item: TTSData = await res_queue.get()
-
             if item == "DONE_DONE":
                 await audio_queue.put("DONE_DONE")
-                logger.info("完成...")
+                logger.info("TTS任务完成...")
                 break
 
             elif not item.text:
-                break
-
-            # 合成音频
-            logger.info("添加语音到合成队列")
-            audio_data = await tts_task(item)
-            if audio_data is None:
-                logger.error(item)
-                logger.error("TTS返回内容为空")
                 continue
+
+            logger.info(f"正在合成: {item.text[:10]}...")
+            audio_data = await tts_task(item)
+
+            if audio_data is None:
+                logger.error(f"TTS处理出错，发送空音频以跳过阻塞: {item.text[:10]}...")
+                continue
+
             encode_data = base64.b64encode(audio_data).decode("utf-8")
             await audio_queue.put(encode_data)
 
         except Exception as e:
-            logger.error(f"TTS处理出错: {e}")
-            break
+            logger.error(f"TTS循环发生未知错误: {e}", exc_info=True)
+            continue
 
 
 # asr功能

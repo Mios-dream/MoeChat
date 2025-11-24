@@ -15,7 +15,7 @@ from utils.speak_finish import isSpeakFinish, SpeakWithAssistant
 
 # from scipy.signal import resample
 from utils.log import logger
-
+from fastapi.responses import JSONResponse
 
 asr_api = APIRouter()
 
@@ -24,11 +24,25 @@ asr_api = APIRouter()
 async def asr_audio(params: asr_data):
     """
     asr 非流式接口
-    仅语音识别
+    修复了 base64 解析和返回格式
     """
-    audio_data = base64.b64decode(params.data.encode("utf-8"))
-    text = chat_core.asr(audio_data)
-    return text
+    try:
+        raw_data = params.data
+        if "," in raw_data:
+            raw_data = raw_data.split(",")[1]
+        audio_data = base64.b64decode(raw_data)
+        text = chat_core.asr(audio_data)
+
+        if not text:
+            logger.warning("[ASR] 识别结果为空")
+            return JSONResponse(content={"text": None})
+
+        logger.info(f"[ASR] 识别成功: {text}")
+        return JSONResponse(content={"text": text})
+
+    except Exception as e:
+        logger.error(f"[ASR] 接口处理出错: {e}", exc_info=True)
+        return JSONResponse(content={"text": None}, status_code=500)
 
 
 @asr_api.websocket("/asr_ws")
