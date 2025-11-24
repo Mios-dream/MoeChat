@@ -3,7 +3,7 @@ from fastapi import (
     APIRouter,
 )
 from utils.agent import Agent
-from api.models.tts_request import tts_data
+from models.dto.tts_request import tts_data
 import core.chat_core as chat_core
 
 
@@ -24,8 +24,8 @@ async def tts_api(params: tts_data):
     )
 
 
-# 客户端获取聊天记录
-@chat_api.post("/get_context")
-async def get_context():
-    agent = Agent()
-    return agent.msg_data
+# # 客户端获取聊天记录
+# @chat_api.post("/get_context")
+# async def get_context():
+#     agent = Agent()
+#     return agent.msg_data

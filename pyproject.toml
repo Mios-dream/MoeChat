@@ -3,36 +3,36 @@ name = "moechat"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "addict>=2.4.0",
-    "audiolab>=0.3.6",
-    "colorlog>=6.9.0",
-    "datasets<3",
-    "faiss-cpu>=1.12.0",
-    "fastapi>=0.116.1",
-    "filetype>=1.2.0",
-    "funasr>=1.2.7",
-    "httpx>=0.28.1",
-    "jionlp>=1.5.24",
-    "modelscope>=1.29.0",
-    "numpy<2.0",
-    "onnxruntime>=1.22.1",
-    "pillow>=11.3.0",
-    "praat-parselmouth>=0.4.6",
-    "pyrnnoise>=0.3.8",
-    "rich>=14.1.0",
-    "ruamel-yaml>=0.18.14",
-    "scipy>=1.15.3",
-    "shortuuid>=1.0.13",
-    "simplejson>=3.20.2",
-    "sortedcontainers>=2.4.0",
-    "soundfile>=0.13.1",
-    "torch>=2.8.0",
-    "torchaudio>=2.8.0",
-    "transformers>=4.55.2",
-    "uvicorn>=0.35.0",
-    "websockets>=15.0.1",
+    "addict>=2.4.0", #（无直接使用，依赖）
+    "audiolab>=0.3.6", #（无直接使用，依赖）
+    "colorlog>=6.9.0", #彩色日志打印
+    "datasets<3", #数据集处理（无直接使用，依赖）
+    "faiss-cpu>=1.12.0", #向量搜索
+    "fastapi>=0.116.1", #Web API框架
+    "funasr>=1.2.7", #语音识别
+    "httpx>=0.28.1", #异步HTTP请求库
+    "jionlp>=1.5.24", #中文自然语言处理工具包
+    "modelscope>=1.29.0", #模型库
+    "numpy<2.0", #数值计算库
+    "onnxruntime>=1.22.1", #ONNX运行时
+    "pillow>=11.3.0", #图像处理库
+    "praat-parselmouth>=0.4.6", #Praat语音分析库（无直接使用，依赖）
+    "pyrnnoise>=0.3.8", #降噪库（无直接使用，依赖）
+    "python-multipart>=0.0.20", #多部分表单数据处理(fastapi依赖)
+    "rich>=14.1.0", #富文本输出库
+    "ruamel-yaml>=0.18.14", #YAML处理库
+    "scipy>=1.15.3", #科学计算库
+    "shortuuid>=1.0.13", #短UUID库
+    "simplejson>=3.20.2", #JSON处理库（无直接使用，依赖）
+    "sortedcontainers>=2.4.0", #有序容器库（无直接使用，依赖）
+    "soundfile>=0.13.1", #音频文件处理库
+    "torch>=2.8.0", #深度学习框架
+    "torchaudio>=2.8.0", #音频处理库（无直接使用，依赖）
+    "transformers>=4.55.2", #预训练模型库
+    "uvicorn>=0.35.0", #ASGI服务器
+    "websockets>=15.0.1", #异步WebSockets库
 ]
 
 [project.optional-dependencies]

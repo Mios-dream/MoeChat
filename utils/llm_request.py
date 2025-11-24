@@ -1,8 +1,7 @@
 import json
-import re
-import aiohttp
 import httpx
 from utils import config as CConfig
+from typing import TypedDict
 
 
 # 大模型配置
@@ -22,7 +21,12 @@ if CConfig.config["SLM"]["extra_config"]:
     slm_data.update(CConfig.config["SLM"]["extra_config"])
 
 
-async def llm_request(msg: list):
+class Message(TypedDict):
+    role: str
+    content: str
+
+
+async def llm_request_stream(msg: list[Message]):
     """
     流式HTTP请求函数，用于与大语言模型进行通信并流式返回输出内容,流式协议为sse
 
@@ -33,7 +37,7 @@ async def llm_request(msg: list):
         str: 模型流式输出的内容片段
 
     Example:
-        async for content in llm_request(messages):
+        async for content in llm_request_stream(messages):
             print(content, end='', flush=True)
     """
     # 构造请求数据
@@ -88,6 +92,40 @@ async def llm_request(msg: list):
         raise Exception(f"LLM处理过程中发生错误: {str(e)}")
 
 
+async def llm_request(msg: list[Message]) -> str:
+    """
+    LLM(大参数模型)快速请求，非流式
+    :param data: 消息链
+    :return: 请求结果
+    """
+    # 构造请求数据
+    llm_data["messages"] = msg
+
+    # 发起流式请求
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                url=CConfig.config["LLM"]["api"],
+                json=llm_data,
+                headers=llm_headers,
+            )
+            # 检查响应状态
+            if response.status_code != 200:
+                raise Exception(f"LLM API请求失败，状态码: {response.status_code}")
+
+            # 解析响应
+            response_json = response.json()
+            content = response_json["choices"][0]["message"]["content"]
+            return content
+
+    except httpx.TimeoutException:
+        raise Exception("LLM API请求超时")
+    except httpx.RequestError as e:
+        raise Exception(f"LLM API请求错误: {str(e)}")
+    except Exception as e:
+        raise Exception(f"LLM处理过程中发生错误: {str(e)}")
+
+
 async def slm_request(messages: list) -> str | None:
     """
     SLM(小参数模型)快速请求，非流式
@@ -98,25 +136,25 @@ async def slm_request(messages: list) -> str | None:
     slm_data["messages"] = messages
 
     # 异步发送post请求
-    # 创建一个aiohttp的session
-    async with aiohttp.ClientSession() as session:
+    # 创建一个httpx的异步客户端
+    async with httpx.AsyncClient() as client:
         # 发送post请求
-        async with session.post(
-            f"",
+        response = await client.post(
+            "",  # 这里应该是实际的API URL
             headers=slm_headers,
-            data=json.dumps(slm_data),
-        ) as response:
-            if response.status != 200:
-                raise Exception(f"请求失败，状态码: {response.status}")
-            response_json = await response.json()
+            json=slm_data,  # httpx直接支持json参数，无需手动json.dumps
+        )
 
-            content = response_json["choices"][0]["message"]["content"]
-            # reasoning_content = response_json["choices"][0]["message"]["reasoning"]
+        if response.status_code != 200:
+            raise Exception(f"请求失败，状态码: {response.status_code}")
 
-            return content
-            # 非思考输出兼容
-            # content = response_json["choices"][0]["message"]["content"]
-            # content = re.split(r"</think>", content)
-            # return content[1]
+        response_json = response.json()
+        content = response_json["choices"][0]["message"]["content"]
+        # 非思考输出兼容
+        # content = response_json["choices"][0]["message"]["content"]
+        # content = re.split(r"</think>", content)
+        # return content[1]
+
+        return content
 
     return None

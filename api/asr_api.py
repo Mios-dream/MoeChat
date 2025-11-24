@@ -2,7 +2,7 @@ import json
 from fastapi import (
     APIRouter,
 )
-from api.models.asr_request import asr_data
+from models.dto.asr_request import asr_data
 import core.chat_core as chat_core
 
 import base64

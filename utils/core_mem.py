@@ -1,26 +1,23 @@
 # import
+from models.types.assistant_info import AssistantInfo
 from utils import embedding
-from utils import config as CConfig, log as Log
+from utils import log as Log
 import yaml
 import time
 import faiss
 import os
 import shortuuid
 
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 
-class Core_Mem:
-    def update_config(self):
-        self.char = CConfig.config["Agent"]["char"]
-        self.user = CConfig.config["Agent"]["user"]
-        self.thresholds = 0.5
-        self.file_path = f"./data/agents/{self.char}/core_mem.yml"
+class CoreMemory:
 
-    def __init__(self, agent_id, char, user):
-        self.agent_id = agent_id
-        self.char = char
-        self.user = user
+    def __init__(self, agent_config: AssistantInfo):
+        self.agent_id = agent_config.name
+        self.char = agent_config.name
+        self.user = agent_config.user
         self.thresholds = 0.5
         self.file_path = f"./data/agents/{self.agent_id}/core_mem.yml"
         # self.update_config()
@@ -59,7 +56,13 @@ class Core_Mem:
         self.index = faiss.IndexFlatIP(len(vects[0]))
         self.index.add(vects)
 
-    def find_mem(self, msg: str, res_msg: list):
+    def find_memories(self, msg: str, res_msg: list):
+        """
+        查找核心记忆
+        Args:
+            msg (str): 输入的消息
+            res_msg (list): 输出的消息列表
+        """
         D, I = self.index.search(embedding.t2vect([msg]), 5)
         msg = ""
         for index in range(len(D)):
