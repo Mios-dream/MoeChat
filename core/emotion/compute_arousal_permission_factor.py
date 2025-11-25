@@ -1,6 +1,5 @@
 # emotion/compute_arousal_permission_factor.py
 
-
 def compute_arousal_permission_factor(arousal: float, k: float = 1.5) -> float:
     """
     计算唤醒度（Arousal）的“许可因子”。
