@@ -33,23 +33,3 @@ SLM: # 用于语音检测，改写，意图判断的小模型
 
 GSV:
   api: http://127.0.0.1:9880/tts
-
-Agent: 
-  char: Chat酱
-  long_memory: true # 是否启用日记功能，日记功能可以长期储存对话信息，并根据用户输入的时间信息进行检索；比如：“昨天做了什么？”、“两天前吃的午饭是什么？”
-  is_check_memorys: true # 启用日记检索加强，使用嵌入模型对检索到的信息做提取，去除与用户提问不相关的内容。
-  is_core_mem: true # 是否启用核心记忆功能，核心记忆主要储存关于用户重要信息，如：用户的住址、爱好、喜欢的东西等等。区别于日记，使用嵌入模型进行语义匹配（模糊搜索），不能根据时间检索，但记忆带有记录时间。
-  mem_thresholds: 0.385 # 日记内容搜索阈值，启用日志检索加强是需要，用于判断匹配程度。过高可能会丢失数据，过低则过滤少量无用记忆。
-  lore_books: true # 是否启用世界书（知识库），用于给大模型添加知识，如：人物、物品、事件等等，强化ai的能力，也可用于强化角色扮演。
-  books_thresholds: 0.5 # 知识库检索阈值。
-  scan_depth: 4 # 知识库搜索深度，返回知识的数量，但相似度低于检索阈值的知识不会被返回，所以返回结果数量也可能小于设定的数值。
-
-  mood_system_enabled: false # 设置为 false 可以完全禁用情绪系统
-  mood_persists: false # 设置为 true，重启后会读取上次的情绪值；false则每次重置为0
-  mood_functions:
-    positive_impact: "1 + log(3 * pi * x) + 0.8 * sqrt(x)"
-    negative_impact: "(sqrt(pi) * x) / (1 + exp(sqrt(e) * 0.8 * (sqrt(pi) - x))) + sqrt(e)"
-
-  # 上下文长度，决定系统会保存多少条上下文，填入0则保存所有上下文。
-  context_length: 40
-  

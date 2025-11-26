@@ -1,14 +1,18 @@
 {
     "cSpell.words": [
         "dspeaker",
+        "faiss",
         "frombuffer",
         "funasr",
         "gptsovits",
         "heweather",
         "jionlp",
+        "mktime",
         "modelscope",
         "moechat",
+        "scalarstring",
         "sovits",
+        "vect",
         "VITS"
     ],
     "python-envs.defaultEnvManager": "ms-python.python:system",

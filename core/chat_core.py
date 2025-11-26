@@ -5,18 +5,18 @@ import base64
 import re
 import httpx
 from fastapi.responses import JSONResponse
-from api.models.tts_request import tts_data
+from models.dto.tts_request import tts_data
 from utils import config as CConfig
 from utils.sv import SV
 from utils.agent import Agent
 from utils.socket_asr import ASRServer
 from utils.log import logger
-from utils.llm_request import llm_request
+from utils.llm_request import llm_request_stream
 from utils.split_text import remove_parentheses_content_and_split_v2
 from core.meme_system import get_emotion_service
 
 
-agent = Agent(agent_id=CConfig.config["Agent"]["char"])
+agent = Agent("Chat酱")
 
 
 # 载入声纹识别模型
@@ -25,7 +25,10 @@ if CConfig.config["Core"]["sv"]["is_up"]:
     sv_pipeline = SV(CConfig.config["Core"]["sv"])
 
 
-class TTSData:
+from pydantic import BaseModel
+
+
+class TTSData(BaseModel):
     """
     TTS数据类
 
@@ -38,11 +41,6 @@ class TTSData:
     text: str
     ref_audio: str
     ref_text: str
-
-    def __init__(self, text: str, ref_audio: str, ref_text: str):
-        self.text = text
-        self.ref_audio = ref_audio
-        self.ref_text = ref_text
 
 
 class StreamProcessor:
@@ -96,8 +94,8 @@ class StreamProcessor:
         res = re.findall(r"\[(.*?)\]", msg)
         if len(res) > 0:
             match = res[-1]
-            if match and agent.agent_config["extra_ref_audio"]:
-                if match in agent.agent_config["extra_ref_audio"]:
+            if match and agent.agent_config.gsvSetting.extraRefAudio:
+                if match in agent.agent_config.gsvSetting.extraRefAudio:
                     return match
 
     async def _process_text_chunk(self, content):
@@ -163,9 +161,9 @@ class StreamProcessor:
         ref_audio = ""
         ref_text = ""
 
-        if emotion and emotion in agent.agent_config.get("extra_ref_audio", {}):
-            ref_audio = agent.agent_config["extra_ref_audio"][emotion][0]
-            ref_text = agent.agent_config["extra_ref_audio"][emotion][1]
+        if emotion and emotion in agent.agent_config.gsvSetting.extraRefAudio.keys():
+            ref_audio = agent.agent_config.gsvSetting.extraRefAudio[emotion][0]
+            ref_text = agent.agent_config.gsvSetting.extraRefAudio[emotion][1]
 
         return ref_audio, ref_text
 
@@ -271,17 +269,14 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
     logger.info(f"[tts文本]{msg}")
     data = {
         "text": msg,
-        "text_lang": agent.agent_config["GSV"]["text_lang"],
-        "ref_audio_path": agent.agent_config["GSV"]["ref_audio_path"],
-        "prompt_text": agent.agent_config["GSV"]["prompt_text"],
-        "prompt_lang": agent.agent_config["GSV"]["prompt_lang"],
-        "seed": agent.agent_config["GSV"]["seed"],
-        "top_k": agent.agent_config["GSV"]["top_k"],
-        "batch_size": agent.agent_config["GSV"]["batch_size"],
+        "text_lang": agent.agent_config.gsvSetting.textLang,
+        "ref_audio_path": agent.agent_config.gsvSetting.refAudioPath,
+        "prompt_text": agent.agent_config.gsvSetting.promptText,
+        "prompt_lang": agent.agent_config.gsvSetting.promptLang,
+        "seed": agent.agent_config.gsvSetting.seed,
+        "top_k": agent.agent_config.gsvSetting.topK,
+        "batch_size": agent.agent_config.gsvSetting.batchSize,
     }
-    if agent.agent_config["GSV"]["ex_config"]:
-        for key in agent.agent_config["GSV"]["ex_config"]:
-            data[key] = agent.agent_config["GSV"]["ex_config"][key]
     if ref_audio:
         data["ref_audio_path"] = ref_audio
         data["prompt_text"] = ref_text
@@ -311,26 +306,22 @@ async def start_tts(res_queue: asyncio.Queue, audio_queue: asyncio.Queue):
                 await audio_queue.put("DONE_DONE")
                 logger.info("TTS任务完成...")
                 break
-            
+
             elif not item.text:
                 continue
 
             logger.info(f"正在合成: {item.text[:10]}...")
             audio_data = await tts_task(item)
 
-
             if audio_data is None:
                 logger.error(f"TTS处理出错，发送空音频以跳过阻塞: {item.text[:10]}...")
-                await audio_queue.put("") 
                 continue
-
 
             encode_data = base64.b64encode(audio_data).decode("utf-8")
             await audio_queue.put(encode_data)
 
         except Exception as e:
             logger.error(f"TTS循环发生未知错误: {e}", exc_info=True)
-            await audio_queue.put("")
             continue
 
 
@@ -375,7 +366,7 @@ async def start_llm_task(
         # 标记第一次打印时间
         first_print_time_flag = True
 
-        async for line in llm_request(msg):
+        async for line in llm_request_stream(msg):
             try:
                 if first_print_time_flag:
                     logger.info(f"\n[大模型延迟]{time.time() - start_time}")

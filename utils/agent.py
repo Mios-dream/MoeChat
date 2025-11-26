@@ -1,7 +1,7 @@
 # 角色模板
 
-#配置模板
-default_config = '''GSV:
+# 配置模板
+default_config = """GSV:
   text_lang: zh
   GPT_weight: 
   SoVITS_weight: 
@@ -46,116 +46,55 @@ Agent:
     使用口语的文字风格进行对话，不要太啰嗦。
 
   # 开场白，数组形式。用于创建开场内容，填入用户与AI的对话内容，只能填入用户和Ai的对话内容，开场白会直接被插入到上下文的开头。
-  start_with:'''
+  start_with:"""
 
 import os
 from utils import long_mem, data_base, prompt, core_mem, log as Log
 from utils import config as CConfig
 import time
-from threading import Thread, Lock
+from threading import Thread
 import requests
-import httpx
 import jionlp
 import ast
-
-# from ruamel.yaml import YAML
-# from ruamel.yaml.scalarstring import PreservedScalarString
-import re
 import json
 import yaml
-from ruamel.yaml import YAML
+from models.types.assistant_info import AssistantInfo
 
 
 class Agent:
-    def update_config(self, agent_id: str):
-        # 读取配置文件
-        Yaml = YAML()
-        Yaml.preserve_quotes = True
-        Yaml.indent(mapping=2, sequence=4, offset=2)
-        os.path.exists(f"data/agents") or os.mkdir(f"data/agents")
-        os.path.exists(f"data/agents/{agent_id}") or os.mkdir(f"data/agents/{agent_id}")
-        if not os.path.exists(f"./data/agents/{agent_id}/agent_config.yaml"):
-            with open(f"./data/agents/{agent_id}/agent_config.yaml", "w", encoding="utf-8") as f:
-                f.write(default_config)
-        with open(f"./data/agents/{agent_id}/agent_config.yaml", "r", encoding="utf-8") as f:
-            self.agent_config = Yaml.load(f)
-        self.agent_id = agent_id
 
-        # 载入配置
-        '''
-        agent独立配置文件
-        '''
-        self.char = self.agent_config["Agent"]["char"]
-        self.user = self.agent_config["Agent"]["user"]
-        self.char_settings = self.agent_config["Agent"]["char_settings"]
-        self.char_personalities = self.agent_config["Agent"]["char_personalities"]
-        self.message_example = self.agent_config["Agent"]["message_example"]
-        self.mask = self.agent_config["Agent"]["mask"]
+    def _ensure_directory(self):
+        """确保配置目录存在，如果不存在则创建"""
+        os.makedirs(f"./data/agents/{self.agent_name}", exist_ok=True)
+        # 创建数据存储文件夹
+        os.makedirs(f"./data/agents/{self.agent_name}/memory", exist_ok=True)
+        os.makedirs(f"./data/agents/{self.agent_name}/data_base", exist_ok=True)
 
-        self.is_data_base = CConfig.config["Agent"]["lore_books"]
-        self.data_base_thresholds = CConfig.config["Agent"]["books_thresholds"]
-        self.data_base_depth = CConfig.config["Agent"]["scan_depth"]
+    def _load_config(self):
+        """加载配置文件"""
+        config_path = f"./data/agents/{self.agent_name}/info.yaml"
 
-        if "GPT_weight" in self.agent_config["GSV"] and self.agent_config["GSV"]["GPT_weight"]:
-            Log.logger.info(f"设置GPT_weights...")
-            params = {"weights_path": self.agent_config["GSV"]["GPT_weight"]}
-            try:
-                httpx.get(
-                    str(CConfig.config["GSV"]["api"]).replace("/tts", "/set_gpt_weights"),
-                    params=params,
-                )
-            except TimeoutError:
-                Log.logger.warning(f"设置GPT_weights失败")
-        else:
-            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml 未设置GPT_weight")
-        if "SoVITS_weight" in self.agent_config["GSV"] and self.agent_config["GSV"]["SoVITS_weight"]:
-            Log.logger.info(f"设置SoVITS...")
-            params = {"weights_path": self.agent_config["GSV"]["SoVITS_weight"]}
-            try:
-                httpx.get(
-                    str(CConfig.config["GSV"]["api"]).replace("/tts", "/set_sovits_weights"),
-                    params=params,
-                )
-            except TimeoutError:
-                Log.logger.warning(f"设置SoVITS失败")
-        else:
-            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml 未设置SoVITS_weight")
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"角色配置文件 {config_path} 不存在")
 
-        if "text_lang" not in self.agent_config["GSV"]:
-            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml text_lang未设置")
-        if "ref_audio_path" not in self.agent_config["GSV"]:
-            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml ref_audio_path未设置")
-        if "prompt_text" not in self.agent_config["GSV"]:
-            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml prompt_text未设置")
-        if "prompt_lang" not in self.agent_config["GSV"]:
-            Log.logger.warning(f"配置文件/data/agents/{agent_id}/agent_config.yaml prompt_lang未设置")
+        with open(config_path, "r", encoding="utf-8") as f:
+            self.agent_config = AssistantInfo(**yaml.safe_load(f))
 
-        '''
-        全局设置
-        '''
-        self.is_long_mem = CConfig.config["Agent"]["long_memory"]
-        self.is_check_memorys = CConfig.config["Agent"]["is_check_memorys"]
-        self.mem_thresholds = CConfig.config["Agent"]["mem_thresholds"]
-
-        self.is_core_mem = CConfig.config["Agent"]["is_core_mem"]
-
-        self.llm_config = CConfig.config["LLM2"]
-
+    def _load_prompt_template(self):
+        """加载提示词模板"""
         # 载入提示词
-        self.prompt = []
-        self.prompt = """"""
-        # self.prompt.append({"role": "system", "content": f"当前系统时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}"})
-        # tt = '''6. 注意输出文字的时候，将口语内容使用""符号包裹起来，并且优先输出口语内容，其他文字使用()符号包裹。'''
+        self.prompt = ""
         self.long_mem_prompt = prompt.long_mem_prompt
         self.data_base_prompt = prompt.data_base_prompt
         self.core_mem_prompt = prompt.core_mem_prompt
-        if self.char_settings:
+        # 加入角色设定到提示词
+        if self.description:
             self.system_prompt = prompt.system_prompt.replace(
                 "{{char}}", self.char
             ).replace("{{user}}", self.user)
             self.char_setting_prompt = (
                 prompt.char_setting_prompt.replace(
-                    "{{char_setting_prompt}}", self.char_settings
+                    "{{char_setting_prompt}}", self.description
                 )
                 .replace("{{char}}", self.char)
                 .replace("{{user}}", self.user)
@@ -164,157 +103,161 @@ class Agent:
             # self.prompt.append({"role": "system", "content": self.char_setting_prompt})
             self.prompt += self.system_prompt + "\n\n"
             self.prompt += self.char_setting_prompt + "\n\n"
-        if self.char_personalities:
-            self.char_Personalities_prompt = (
+        # 加入角色性格到提示词
+        if self.personality:
+            self.char_personalities_prompt = (
                 prompt.char_Personalities_prompt.replace(
-                    "{{char_Personalities_prompt}}", self.char_personalities
+                    "{{char_Personalities_prompt}}", self.personality
                 )
                 .replace("{{char}}", self.char)
                 .replace("{{user}}", self.user)
             )
-            # self.prompt.append({"role": "system", "content": self.char_Personalities_prompt})
-            self.prompt += self.char_Personalities_prompt + "\n\n"
+            self.prompt += self.char_personalities_prompt + "\n\n"
+        # 加入用户设定到提示词
         if self.mask:
             self.mask_prompt = (
                 prompt.mask_prompt.replace("{{mask_prompt}}", self.mask)
                 .replace("{{char}}", self.char)
                 .replace("{{user}}", self.user)
             )
-            # self.prompt.append({"role": "system", "content": self.mask_prompt})
             self.prompt += self.mask_prompt + "\n\n"
-        if self.message_example:
+        # 加入对话案例到提示词
+        if self.agent_config.messageExamples:
             self.message_example_prompt = (
                 prompt.message_example_prompt.replace(
-                    "{{message_example}}", self.message_example
+                    "{{message_example}}", "\n".join(self.agent_config.messageExamples)
                 )
                 .replace("{{user}}", self.user)
                 .replace("{{char}}", self.char)
             )
-            # self.prompt.append({"role": "system", "content": self.message_example_prompt})
+
             self.prompt += self.message_example_prompt + "\n\n"
-        if self.agent_config["Agent"]["prompt"]:
-            # self.prompt.append({"role":  "system", "content": self.agent_config["Agent"]["prompt"]})
-            self.prompt += self.agent_config["Agent"]["prompt"] + "\n\n"
 
-    def __init__(self, agent_id: str):
-        self.lock = Lock()
-        
-        # agent的id，用于表示agent的配置和数据储存目录，不要和char搞混
-        self.agent_id = agent_id
-        self.update_config(agent_id)
-        # self.char = config["char"]
-        # self.user = config["user"]
-        # self.char_settings = config["char_settings"]
-        # self.char_personalities = config["char_personalities"]
-        # self.message_example = config["message_example"]
-        # self.mask = config["mask"]
+        # 加入自定义提示词到提示词
+        if self.agent_config.customPrompt:
+            self.prompt += self.agent_config.customPrompt + "\n\n"
 
-        # self.is_data_base = config["is_data_base"]
-        # self.data_base_thresholds = config["data_base_thresholds"]
-        # self.data_base_depth = config["data_base_depth"]
+    def load_config(self):
+        """
+        更新角色配置
+        """
+        # 创建目录
+        self._ensure_directory()
+        # 加载配置
+        self._load_config()
 
-        # self.is_long_mem = config["is_long_mem"]
-        # self.is_check_memorys = config["is_check_memorys"]
-        # self.mem_thresholds = config["mem_thresholds"]
+        # 载入配置
+        """
+        agent独立配置文件
+        """
+        # 角色名称
+        self.char = self.agent_config.name
+        # 对用户的称呼
+        self.user = self.agent_config.user
+        # 角色描述（角色设定）
+        self.description: str = self.agent_config.description
+        # 角色性格
+        self.personality = self.agent_config.personality
+        # 对话示例，用于强化AI的文风。内容填充到提示词模板中，不要填入其他信息，没有可不填。
+        self.message_example = self.agent_config.messageExamples
+        # 用户的设定，用于在提示词中填充用户的信息，进行个性化对话。
+        self.mask = self.agent_config.mask
+        # 是否开启知识库
+        self.enable_data_base = self.agent_config.settings.enableLoreBooks
+        # 世界书(知识库)检索阈值，启用知识库功能是需要，用于判断匹配程度。过高可能会丢失数据，过低则过滤少量无用记忆。
+        self.data_base_thresholds = self.agent_config.settings.loreBooksThreshold
+        # 知识库检索深度
+        self.data_base_depth = self.agent_config.settings.loreBooksDepth
 
-        # self.is_core_mem = config["is_core_mem"]
-        # self.llm_config = config["llm"]
+        # 是否开启长期记忆（日记内容）
+        self.enable_long_memory = self.agent_config.settings.enableLongMemory
+        # 是否开启长期记忆搜索增强
+        self.enable_long_memory_search_enhance = (
+            self.agent_config.settings.enableLongMemorySearchEnhance
+        )
+        # 日记内容搜索阈值，启用日志检索加强是需要，用于判断匹配程度。过高可能会丢失数据，过低则过滤少量无用记忆。
+        self.long_memory_thresholds = self.agent_config.settings.longMemoryThreshold
+        # 是否开启核心记忆
+        self.enable_core_memory = self.agent_config.settings.enableCoreMemory
 
+        # 加载全局配置
+        # 用于提取记录长期记忆的大模型
+        self.llm_config = CConfig.config["LLM2"]
+        # 加载提示词模板
+        self._load_prompt_template()
+
+    def __init__(self, agent_name: str):
+
+        self.agent_name = agent_name
+
+        self.load_config()
         # 创建上下文
         self.msg_data = []
-
         # 上下文缓存
         self.msg_data_tmp = []
         try:
             with open(
-                f"./data/agents/{self.agent_id}/history.yaml", "r", encoding="utf-8"
+                f"./data/agents/{self.agent_name}/history.yaml", "r", encoding="utf-8"
             ) as f:
                 msg_list = yaml.safe_load(f)
-                self.msg_data = msg_list[-CConfig.config["Agent"]["context_length"] :]
+                self.msg_data = msg_list[-self.agent_config.settings.contextLength :]
                 Log.logger.info(f"当前上下文长度：{len(msg_list)}")
         except:
-            pass
-        if self.agent_config["Agent"]["start_with"] and len(self.msg_data) == 0:
-            for i in range(len(self.agent_config["Agent"]["start_with"])):
+            Log.logger.error(f"加载上下文失败：{self.agent_name}")
+        # 添加起始对话
+        if self.agent_config.startWith and len(self.msg_data) == 0:
+            for i in range(len(self.agent_config.startWith)):
                 role = "assistant"
                 if i % 2 == 0:
                     role = "user"
                 self.msg_data_tmp.append(
-                    {"role": role, "content": self.agent_config["Agent"]["start_with"][i]}
+                    {
+                        "role": role,
+                        "content": self.agent_config.startWith[i],
+                    }
                 )
 
-        # 载入提示词
-        # self.prompt = []
-        # # self.prompt.append({"role": "system", "content": f"当前系统时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}"})
-        # # tt = '''6. 注意输出文字的时候，将口语内容使用""符号包裹起来，并且优先输出口语内容，其他文字使用()符号包裹。'''
-        # self.long_mem_prompt = prompt.long_mem_prompt
-        # self.data_base_prompt = prompt.data_base_prompt
-        # self.core_mem_prompt = prompt.core_mem_prompt
-        # if self.char_settings:
-        #     self.system_prompt = prompt.system_prompt.replace("{{char}}", self.char).replace("{{user}}", self.user)
-        #     self.char_setting_prompt = prompt.char_setting_prompt.replace("{{char_setting_prompt}}", self.char_settings).replace("{{char}}", self.char).replace("{{user}}", self.user)
-        #     self.prompt.append({"role": "system", "content": self.system_prompt})
-        #     self.prompt.append({"role": "system", "content": self.char_setting_prompt})
-        # if self.char_personalities:
-        #     self.char_Personalities_prompt = prompt.char_Personalities_prompt.replace("{{char_Personalities_prompt}}", self.char_personalities).replace("{{char}}", self.char).replace("{{user}}", self.user)
-        #     self.prompt.append({"role": "system", "content": self.char_Personalities_prompt})
-        #     # self.prompt += self.char_Personalities_prompt + "\n\n"
-        # if self.mask:
-        #     self.mask_prompt = prompt.mask_prompt.replace("{{mask_prompt}}", self.mask).replace("{{char}}", self.char).replace("{{user}}", self.user)
-        #     self.prompt.append({"role": "system", "content": self.mask_prompt})
-        #     # self.prompt += self.mask_prompt + "\n\n"
-        # if self.message_example:
-        #     self.message_example_prompt = prompt.message_example_prompt.replace("{{message_example}}", self.message_example).replace("{{user}}", self.user).replace("{{char}}", self.char)
-        #     self.prompt.append({"role": "system", "content": self.message_example_prompt})
-        #     # self.prompt += self.message_example_prompt + "\n\n"
-        # if config["prompt"]:
-        #     self.prompt.append({"role":  "system", "content": config["prompt"]})
-        #     # self.prompt += config["prompt"]
-
-        # 创建系统时间戳
-        self.tt = int(time.time())
-
-        # 创建数据存储文件夹
-        os.path.exists(f"./data/agents/{self.agent_id}/memorys") or os.makedirs(
-            f"./data/agents/{self.agent_id}/memorys"
-        )
-        os.path.exists(f"./data/agents/{self.agent_id}/data_base") or os.makedirs(
-            f"./data/agents/{self.agent_id}/data_base"
-        )
-
         # 加载角色记忆
-        # if self.is_long_mem:
-        self.Memorys = long_mem.Memorys(self.agent_id, self.char, self.user)
-
+        self.Memory = long_mem.Memory(self.agent_config)
         # 加载核心记忆
-        # if self.is_core_mem:
-        self.Core_mem = core_mem.Core_Mem(self.agent_id, self.char, self.user)
-
+        self.CoreMemory = core_mem.CoreMemory(self.agent_config)
         # 载入知识库
-        # if self.is_data_base:
-        self.DataBase = data_base.DataBase(self.agent_id)
+        self.DataBase = data_base.DataBase(self.agent_config)
 
     # 知识库内容检索
-    def get_data(self, msg: str, res_msg: list) -> str:
+    def get_data(self, msg: str, res_msg: list) -> None:
         msg_list = jionlp.split_sentence(msg, criterion="fine")
         res_ = self.DataBase.search(msg_list)
         if res_ != "":
             res_msg.append(res_)
 
-    # 提取、插入核心记忆
-    def insert_core_mem(self, msg2: str, msg3: str, msg1: str):
-        mmsg = prompt.get_core_mem.replace(
-            "{{memories}}", json.dumps(self.Core_mem.mems[-100:], ensure_ascii=False)
+    def insert_core_mem(
+        self, user_message: str, assistant_reply: str, previous_assistant_msg: str
+    ) -> None:
+        """
+        使用核心记忆提取用户和助手的对话内容，插入核心记忆
+        """
+        # 调用提取核心记忆的提示词，并替换模板中的占位符
+        core_memory_extract_prompt = prompt.get_core_mem.replace(
+            "{{memories}}", json.dumps(self.CoreMemory.mems[-100:], ensure_ascii=False)
         )
+        # 检查上下文最后一条是否是助手回复，不是则不插入核心记忆
         if self.msg_data[-1]["role"] != "assistant":
             return
-        re_msg = "对话内容：助手：" + msg1 + "\n用户：" + msg2 + "\n助手：" + msg3
+        re_msg = (
+            "对话内容：助手："
+            + previous_assistant_msg
+            + "\n用户："
+            + user_message
+            + "\n助手："
+            + assistant_reply
+        )
         key = self.llm_config["key"]
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         data = {
             "model": self.llm_config["model"],
             "messages": [
-                {"role": "system", "content": mmsg},
+                {"role": "system", "content": core_memory_extract_prompt},
                 {"role": "user", "content": re_msg},
             ],
         }
@@ -329,87 +272,96 @@ class Agent:
                 .replace("\n", "")
             )
             if len(mem_list) > 0:
-                self.Core_mem.add_memory(mem_list)
+                self.CoreMemory.add_memory(mem_list)
         except:
             return
 
-    # 获取发送到大模型的上下文
-    def get_msg_data(self, msg: str) -> list:
-        # index = len(self.msg_data) - 1
-        # g_t = Thread(target=self.insert_core_mem, args=(msg, index,))
-        # g_t.daemon = True
-        # g_t.start()
+    def get_msg_data(self, msg: str) -> list[str]:
+        """
+        获取发送到大模型的上下文
 
-        ttt = int(time.time())
-        self.tt = ttt
-        t_n = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ttt))
+        Args:
+            msg: 客户端发送的消息
+
+        Returns:
+            发送到大模型的上下文
+        """
+
+        self.current_time = int(time.time())
+        # 格式化时间
+        format_time = time.strftime(
+            "%Y-%m-%d %H:%M:%S", time.localtime(self.current_time)
+        )
         # self.prompt[0] = {"role": "system", "content": f"当前现实世界时间：{t_n}"}
         # self.tmp_mem = f"时间：{t_n}\n{self.user}：{msg.strip()}\n"
-        t_list = []
+        # 搜索任务列表
+        task_list = []
+        # 检索世界书结果列表
         data_base = []
+        # 记忆搜索结果列表
         mem_msg = []
+        # 返回消息列表
         res_msg = []
+        # 核心记忆任务列表
         core_mem = []
+        # 添加系统提示词
         res_msg.append({"role": "system", "content": self.prompt})
 
         # 检索世界书
-        if self.is_data_base:
-            tt = Thread(
+        if self.enable_data_base:
+            task_thread = Thread(
                 target=self.get_data,
                 args=(
                     msg,
                     data_base,
                 ),
+                daemon=True,
             )
-            tt.daemon = True
-            t_list.append(tt)
-            tt.start()
+            task_list.append(task_thread)
+            task_thread.start()
 
         # 搜索记忆
-        if self.is_long_mem:
-            tt = Thread(target=self.Memorys.get_memorys, args=(msg, mem_msg, t_n))
-            tt.daemon = True
-            t_list.append(tt)
-            tt.start()
+        if self.enable_long_memory:
+            task_thread = Thread(
+                target=self.Memory.get_memories,
+                args=(msg, mem_msg, format_time),
+                daemon=True,
+            )
+            task_list.append(task_thread)
+            task_thread.start()
 
         # 搜索核心记忆
-        if self.is_core_mem:
-            tt = Thread(
-                target=self.Core_mem.find_mem,
+        if self.enable_core_memory:
+            task_thread = Thread(
+                target=self.CoreMemory.find_memories,
                 args=(
                     msg,
                     core_mem,
                 ),
+                daemon=True,
             )
-            tt.daemon = True
-            t_list.append(tt)
-            tt.start()
+            task_list.append(task_thread)
+            task_thread.start()
 
         # 等待查询结果
-        for tt in t_list:
-            tt.join()
+        for task_thread in task_list:
+            task_thread.join()
 
         # 合并上下文、世界书、记忆信息
-        tmp_msg = """"""
-        if self.is_data_base and data_base:
-            # self.msg_data.append({"role": "system", "content": self.data_base_prompt.replace("{{data_base}}", data_base[0]).replace("{{user}}", self.user).replace("{{char}}", self.char)})
-            # self.msg_data_tmp.append({"role": "system", "content": self.data_base_prompt.replace("{{data_base}}", data_base[0]).replace("{{user}}", self.user).replace("{{char}}", self.char)})
+        tmp_msg = ""
+        if self.enable_data_base and data_base:
             tmp_msg += (
                 self.data_base_prompt.replace("{{data_base}}", data_base[0])
                 .replace("{{user}}", self.user)
                 .replace("{{char}}", self.char)
             )
-        if self.is_core_mem and core_mem:
-            # self.msg_data.append({"role": "system", "content": self.core_mem_prompt.replace("{{core_mem}}", core_mem[0]).replace("{{user}}", self.user).replace("{{char}}", self.char)})
-            # self.msg_data_tmp.append({"role": "system", "content": self.core_mem_prompt.replace("{{core_mem}}", core_mem[0]).replace("{{user}}", self.user).replace("{{char}}", self.char)})
+        if self.enable_core_memory and core_mem:
             tmp_msg += (
                 self.core_mem_prompt.replace("{{core_mem}}", core_mem[0])
                 .replace("{{user}}", self.user)
                 .replace("{{char}}", self.char)
             )
-        if self.is_long_mem and mem_msg:
-            # self.msg_data.append({"role": "system", "content": self.long_mem_prompt.replace("{{memories}}", mem_msg[0]).replace("{{user}}", self.user).replace("{{char}}", self.char)})
-            # self.msg_data_tmp.append({"role": "system", "content": self.long_mem_prompt.replace("{{memories}}", mem_msg[0]).replace("{{user}}", self.user).replace("{{char}}", self.char)})
+        if self.enable_long_memory and mem_msg:
             tmp_msg += (
                 self.long_mem_prompt.replace("{{memories}}", mem_msg[0])
                 .replace("{{user}}", self.user)
@@ -419,60 +371,66 @@ class Agent:
 
         # 合并上下文、世界书、记忆信息
         tmp_msg += f"""
-<当前时间>{t_n}</当前时间>
+<当前时间>{format_time}</当前时间>
 <用户对话内容或动作>
 {msg}
 </用户对话内容或动作>
 """
-        # self.msg_data_tmp.append({"role": "user", "content": tmp_msg})
         self.msg_data_tmp = [{"role": "user", "content": tmp_msg}]
-        # self.msg_data_tmp = tmp_msg_data
         return res_msg + self.msg_data + self.msg_data_tmp
 
-    # 刷新上下文内容
-    def add_msg(self, msg: str):
+    def add_msg(self, msg: str) -> None:
+        """
+        添加助手回复到上下文,保存聊天历史
+
+        Args:
+            msg: 助手回复的消息
+        """
+        # 添加助手回复到上下文
         self.msg_data_tmp.append({"role": "assistant", "content": msg})
         msg_data_tmp = self.msg_data_tmp.copy()
         m1 = msg_data_tmp[-2]["content"]
 
         try:
-            ttt1 = Thread(
+            # 插入核心记忆
+            insert_core_mem_thread = Thread(
                 target=self.insert_core_mem,
                 args=(
                     m1,
                     self.msg_data_tmp[-1]["content"],
                     self.msg_data[-1]["content"],
                 ),
+                daemon=True,
             )
-            ttt1.daemon = True
-            ttt1.start()
+
+            insert_core_mem_thread.start()
         except Exception as e:
             Log.logger.error(f"核心记忆插入失败：{self.msg_data_tmp}，错误：{e}")
-
-        ttt2 = Thread(
-            target=self.Memorys.add_memory1,
-            args=(msg_data_tmp, self.tt, self.llm_config),
+        # 插入记忆
+        add_memory_thread = Thread(
+            target=self.Memory.add_memory1,
+            args=(msg_data_tmp, self.current_time, self.llm_config),
+            daemon=True,
         )
-        ttt2.daemon = True
-        ttt2.start()
+        add_memory_thread.start()
 
         self.msg_data += self.msg_data_tmp
-        self.msg_data = self.msg_data[-CConfig.config["Agent"]["context_length"] :]
-        # write_data = {
-        #     "messages": self.msg_data[-60:]
-        # }
+        self.msg_data = self.msg_data[-self.agent_config.settings.contextLength :]
 
-        yaml = YAML()
-        yaml.indent(mapping=2, sequence=4, offset=2)  # 设置缩进格式
-        yaml.default_flow_style = False  # 禁用流式风格（更易读）
-        yaml.allow_unicode = True  # 允许 unicode 字符（如中文）
+        # yaml = YAML()
+        # yaml.indent(mapping=2, sequence=4, offset=2)  # 设置缩进格式
+        # yaml.default_flow_style = False  # 禁用流式风格（更易读）
+        # yaml.allow_unicode = True  # 允许 unicode 字符（如中文）
         with open(
-            f"./data/agents/{self.agent_id}/history.yaml", "a", encoding="utf-8"
+            f"./data/agents/{self.agent_name}/history.yaml", "a", encoding="utf-8"
         ) as f:
-            yaml.dump(self.msg_data_tmp, f)
-            # for mm in self.msg_data_tmp:
-            #     role = mm["role"]
-            #     content = mm["content"]
-            #     f.write(f"【{role}】：{content}\n")
-            # f.write("\n")
+            yaml.dump(
+                self.msg_data_tmp,
+                stream=f,
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+                indent=4,
+            )
+        # 清空临时消息列表
         self.msg_data_tmp = []

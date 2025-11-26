@@ -10,25 +10,24 @@ import pickle
 import requests
 import jionlp
 from bisect import bisect_left, bisect_right
-from utils import config as CConfig, log as Log
+from utils import log as Log
+from models.types.assistant_info import AssistantInfo
 
 
-class Memorys:
-    # def update_config(self):
-    #     self.char = CConfig.config["Agent"]["char"]
-    #     self.user = CConfig.config["Agent"]["user"]
-    #     self.thresholds = CConfig.config["Agent"]["mem_thresholds"]
-    #     self.is_check_memorys = CConfig.config["Agent"]["is_check_memorys"]
+class Memory:
 
-    def __init__(self, agent_id, char, user):
-        self.agent_id = agent_id
-        self.char = char
-        self.user = user
-        self.thresholds = CConfig.config["Agent"]["mem_thresholds"]
-        self.is_check_memorys = CConfig.config["Agent"]["is_check_memorys"]
-
-        self.memorys_key = []  # 记录所有记忆的key，秒级整形时间戳。
-        self.memorys_data = {}  # 记录所有记忆的文本数据。
+    def __init__(self, agent_config: AssistantInfo):
+        # 初始化角色配置
+        self.agent_id = agent_config.name
+        self.char = agent_config.name
+        self.user = agent_config.user
+        self.thresholds = agent_config.settings.longMemoryThreshold
+        self.enableLongMemorySearchEnhance = (
+            agent_config.settings.enableLongMemorySearchEnhance
+        )
+        # 初始化记忆数据结构
+        self.memories_key = []  # 记录所有记忆的key，秒级整形时间戳。
+        self.memories_data = {}  # 记录所有记忆的文本数据。
         self.vectors = []  # 记录文本tag向量
         # self.tags = []
         # self.date_time = []
@@ -51,14 +50,14 @@ class Memorys:
                     with open(file_path, "r", encoding="utf-8") as f:
                         data = yaml.safe_load(f)
                         for key in data:
-                            self.memorys_data[key] = (
+                            self.memories_data[key] = (
                                 str(data[key]["msg"])
                                 .replace("{{user}}", self.user)
                                 .replace("{{char}}", self.char)
                             )
                             tag.append(data[key]["text_tag"])
                             m_list = data[key]["msg"].split("\n")
-                            self.memorys_key.append(key)
+                            self.memories_key.append(key)
                             # self.date_time.append(m_list[0])
                             msgs.append(f"{m_list[1]}{m_list[2]}")
                     if os.path.exists(file_path.replace(".yaml", ".pkl")):
@@ -82,23 +81,32 @@ class Memorys:
         # if msg_vectors:
         #     self.vectors = np.concatenate(msg_vectors)
         Log.logger.info(
-            f"共加载{len(self.memorys_key)}条记忆...{len(self.vectors)}条记忆向量"
+            f"共加载{len(self.memories_key)}条记忆...{len(self.vectors)}条记忆向量"
         )
 
         # 建立、加载索引数据库
         # if os.path.exists(self.char_file_path) and os.path.exists(self.user_file_path):
         #     with open()
 
-    def find_range_indices(self, low, high) -> list:
-        start_idx = bisect_left(self.memorys_key, low)  # 找到第一个 >= low 的索引
-        end_idx = bisect_right(self.memorys_key, high)  # 找到最后一个 <= high 的索引
-        if end_idx == 0 or start_idx >= len(self.memorys_key):  # 如果没有找到匹配的元素
+    def find_range_indices(self, low, high) -> list | None:
+        start_idx = bisect_left(self.memories_key, low)  # 找到第一个 >= low 的索引
+        end_idx = bisect_right(self.memories_key, high)  # 找到最后一个 <= high 的索引
+        if end_idx == 0 or start_idx >= len(
+            self.memories_key
+        ):  # 如果没有找到匹配的元素
             return None
         return [start_idx, end_idx - 1]
 
     # 获取与文本相关的记忆
-    def get_memorys(self, msg: str, res_msg: list, t_n: str):
-        if not len(self.memorys_key) > 0:
+    def get_memories(self, msg: str, res_msg: list, t_n: str = "时间"):
+        """
+        获取与文本相关的记忆
+        Args:
+            msg (str): 输入的消息
+            res_msg (list): 输出的消息列表
+            t_n (str, optional): 时间实体名称. Defaults to "时间".
+        """
+        if not len(self.memories_key) > 0:
             return
         # t = time.time()
         time_span_list = []
@@ -126,7 +134,7 @@ class Memorys:
                     time_span_list.append(time_st1)
                     time_span_list.append(time_st2)
                 except:
-                    Log.logger.error(f"获取时间区间失败{res_t}")
+                    Log.logger.error(f"获取时间区间失败")
         if not time_span_list:
             return
 
@@ -136,14 +144,14 @@ class Memorys:
         if not res_index:
             return
         # 将时间范围内的记忆添加到结果中
-        if self.is_check_memorys:
+        if self.enableLongMemorySearchEnhance:
             Log.logger.info(f"深度检索记忆，检索阈值{self.thresholds}")
             q_v = embedding.t2vect([msg])[0]
             tmp_msg = ""
             for index in range(res_index[0] + 1, res_index[1] + 1):
                 rr = np.dot(self.vectors[index], q_v)
                 if rr >= self.thresholds:
-                    tmp_msg += str(self.memorys_data[self.memorys_key[index]])
+                    tmp_msg += str(self.memories_data[self.memories_key[index]])
                     tmp_msg += "\n"
             if len(tmp_msg) > 0:
                 res_msg.append(tmp_msg)
@@ -156,7 +164,7 @@ class Memorys:
         else:
             tmp_mem = ""
             for index in range(res_index[0] + 1, res_index[1] + 1):
-                tmp_mem += str(self.memorys_data[self.memorys_key[index]])
+                tmp_mem += str(self.memories_data[self.memories_key[index]])
                 tmp_mem += "\n"
             if len(tmp_mem) > 0:
                 res_msg.append(tmp_mem)
@@ -164,8 +172,8 @@ class Memorys:
     # 写入记忆
     def add_memory(self, m_data: dict):
         t_n = int(m_data["t_n"])
-        self.memorys_key.append(t_n)
-        self.memorys_data[t_n] = m_data["msg"]
+        self.memories_key.append(t_n)
+        self.memories_data[t_n] = m_data["msg"]
         tag_vector = embedding.t2vect([m_data["text_tag"]])[0]
         self.vectors.append(tag_vector)
         time_st = time.localtime(t_n)
@@ -186,19 +194,19 @@ class Memorys:
         ) as f:
             Yaml.dump(data, f)
         day_time = t_n - (t_n - time.timezone) % 86400
-        index = bisect_left(self.memorys_key, day_time)
+        index = bisect_left(self.memories_key, day_time)
         v_list = self.vectors[index:]
         with open(f"./data/agents/{self.agent_id}/memorys/{file_pkl}", "wb") as f:
             pickle.dump(v_list, f)
 
     # 提取记忆摘要，记录长期记忆
     def add_memory1(self, data: list, t_n: int, llm_config: dict):
-        mmsg = prompt.get_mem_tag_prompt
+        summary_memory_prompt = prompt.get_mem_tag_prompt
         res_msg = "用户：" + data[-2]["content"]
         res_body = {
             "model": llm_config["model"],
             "messages": [
-                {"role": "system", "content": mmsg},
+                {"role": "system", "content": summary_memory_prompt},
                 {"role": "user", "content": res_msg},
             ],
         }

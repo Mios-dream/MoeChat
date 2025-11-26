@@ -1,6 +1,8 @@
 import json
-from fastapi import APIRouter
-from api.models.asr_request import asr_data
+from fastapi import (
+    APIRouter,
+)
+from models.dto.asr_request import asr_data
 import core.chat_core as chat_core
 
 import base64
@@ -30,7 +32,7 @@ async def asr_audio(params: asr_data):
             raw_data = raw_data.split(",")[1]
         audio_data = base64.b64decode(raw_data)
         text = chat_core.asr(audio_data)
-        
+
         if not text:
             logger.warning("[ASR] 识别结果为空")
             return JSONResponse(content={"text": None})
