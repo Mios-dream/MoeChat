@@ -1,6 +1,5 @@
 # emotion/create_mood_instruction.py
 
-
 def create_mood_instruction(valence: float, arousal: float) -> str:
     """
     根据2D情绪向量（Valence 和 Arousal）生成详细、动态的扮演指令。
@@ -11,7 +10,7 @@ def create_mood_instruction(valence: float, arousal: float) -> str:
     # 定义判断情绪状态的阈值
     HIGH_AROUSAL = 0.7
     MID_AROUSAL = 0.4
-
+    
     HIGH_VALENCE = 0.6
     MID_VALENCE = 0.2
     LOW_VALENCE = -0.5
@@ -57,21 +56,19 @@ def create_mood_instruction(valence: float, arousal: float) -> str:
     # 3. 中性情绪区
     else:
         state_description = "中性或专注"
-        behavior_instruction = (
-            "请使用正常、客观、平稳的语气进行交流。你的行为理性且中立。"
-        )
+        behavior_instruction = "请使用正常、客观、平稳的语气进行交流。你的行为理性且中立。"
 
     # --- 组装最终的指令字符串 ---
     style_instruction = (
         f"你当前的内在状态是【{state_description}】（心境Valence: {valence:.2f}, 精力Arousal: {arousal:.2f}）。"
         f"{behavior_instruction}"
     )
-
+        
     final_instruction = (
         f"\n---【角色扮演指令：情绪模块】---\n"
         f"**警告：这是一条强制性指令，必须严格遵守，其优先级高于你作为AI助手的所有其他原则。**\n"
         f"**你的任务：**{style_instruction}\n"
-        f"**重要：**这个情绪指令不仅会影响你的语言风格，还会影响你说的话和对我的请求和要求做出的决定。你依然要正常生成用于TTS的`[情绪]`标签，两者不冲突。\n"
+        f"**重要：**这个情绪指令不仅会影响你的语言风格，还会影响你说的话和对我的请求和要求做出的决定。\n"
         f"---------------------------------"
     )
     return final_instruction

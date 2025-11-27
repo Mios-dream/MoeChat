@@ -1,6 +1,5 @@
 # emotion/f_valence_map.py
 
-
 def f_valence_map(valence: float) -> float:
     """
     计算负向情绪的绝对值映射。
