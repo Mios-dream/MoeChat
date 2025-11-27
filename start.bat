@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal enabledelayedexpansion
 chcp 65001 >nul
 
@@ -11,7 +11,7 @@ if not %errorlevel% neq 0 (
     echo uv已经安装,正在启动...
 ) else (
     echo 正在安装uv...
-    set UV_INSTALLER_GHE_BASE_URL="https://ghproxy.cn/https://github.com"
+    @REM set UV_INSTALLER_GHE_BASE_URL="https://ghproxy.cn/https://github.com"
     powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
     if %errorlevel% neq 0 (
