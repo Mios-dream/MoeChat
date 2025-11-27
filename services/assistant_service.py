@@ -205,6 +205,13 @@ class AssistantService:
         Raises:
             FileNotFoundError: 当助手不存在时
         """
+        # 检查助手配置文件是否存在
+        assistant_info_path = os.path.join(
+            Config.BASE_AGENTS_PATH, assistant_name, "info.yaml"
+        )
+        if not os.path.exists(assistant_info_path):
+            raise FileNotFoundError(f"助手 '{assistant_name}' 不存在")
+
         # 检查助手是否已经加载
         if assistant_name in self.loaded_agents:
             self.current_assistant = self.loaded_agents[assistant_name]

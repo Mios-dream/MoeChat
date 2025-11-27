@@ -5,5 +5,9 @@ __pycache__
 
 /data/models/*
 !/data/models/silero_vad.onnx
+
 /data/agents/*
+!/data/agents/Chat酱/info.yaml
+
+
 test*
