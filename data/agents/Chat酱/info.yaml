@@ -41,3 +41,4 @@ gsvSetting:
   extra:
     text_split_method: cut0
   extraRefAudio: {}
+emotionSetting: {}

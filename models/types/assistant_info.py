@@ -70,11 +70,6 @@ class AssistantSettings(BaseModel):
     enableEmotionPersist: bool = Field(
         False, description="助手是否开启情绪系统的持续存储"
     )
-    # 情绪系统的影响函数,通常不需要修改
-    # emotionFunction = {
-    #     "positive_impact": "1 + log(3 * pi * x) + 0.8 * sqrt(x)",
-    #     "negative_impact": "(sqrt(pi) * x) / (1 + exp(sqrt(e) * 0.8 * (sqrt(pi) - x))) + sqrt(e)",
-    # }
     # 情绪系统的上下文长度
     contextLength: int = Field(40, description="助手的上下文长度")
 
@@ -89,7 +84,7 @@ class AssistantSettings(BaseModel):
                 "enableLongMemorySearchEnhance", True
             ),
             enableCoreMemory=data.get("enableCoreMemory", True),
-            longMemoryThreshold=data.get("longMemoryThreshold", 0.5),
+            longMemoryThreshold=data.get("longMemoryThreshold", 0.38),
             enableLoreBooks=data.get("enableLoreBooks", True),
             loreBooksThreshold=data.get("loreBooksThreshold", 0.5),
             loreBooksDepth=data.get("loreBooksDepth", 3),
@@ -143,6 +138,8 @@ class AssistantInfo(BaseModel):
     # 助手GSV设置
     gsvSetting: GSVSetting = Field(..., description="助手GSV设置")
 
+    emotionSetting: dict = Field({}, description="助手情绪系统设置")
+
     @staticmethod
     def from_dict(data: dict) -> "AssistantInfo":
         """
@@ -168,6 +165,7 @@ class AssistantInfo(BaseModel):
             customPrompt=data.get("customPrompt", ""),
             gsvSetting=GSVSetting.from_dict(data.get("gsvSetting", {})),
             startWith=data.get("startWith", []),
+            emotionSetting=data.get("emotionSetting", {}),
         )
 
 
