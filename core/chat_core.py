@@ -8,15 +8,15 @@ from fastapi.responses import JSONResponse
 from models.dto.tts_request import tts_data
 from utils import config as CConfig
 from utils.sv import SV
-from utils.agent import Agent
 from utils.socket_asr import ASRServer
 from utils.log import logger
 from utils.llm_request import llm_request_stream
 from utils.split_text import remove_parentheses_content_and_split_v2
 from core.meme_system import get_emotion_service
+from services.assistant_service import AssistantService
 
 
-agent = Agent("Chat酱")
+assistant_service = AssistantService()
 
 
 # 载入声纹识别模型
@@ -91,6 +91,10 @@ class StreamProcessor:
 
     def _get_emotion(self, msg: str) -> str | None:
         """查询文字中的情感字段"""
+        agent = assistant_service.get_current_assistant()
+        if not agent:
+            logger.error("[错误] 当前没有加载助手")
+            return None
         res = re.findall(r"\[(.*?)\]", msg)
         if len(res) > 0:
             match = res[-1]
@@ -156,6 +160,10 @@ class StreamProcessor:
         """
         根据文本中的情绪标签获取参考音频和文本
         """
+        agent = assistant_service.get_current_assistant()
+        if not agent:
+            logger.error("[错误] 当前没有加载助手")
+            return "", ""
         emotion = self._get_emotion(text)
 
         ref_audio = ""
@@ -257,7 +265,11 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
         tts_data : list
             包含参考音频、参考文本和合成文本的列表
     """
-    global agent
+    agent = assistant_service.get_current_assistant()
+    if not agent:
+        logger.error("[错误] 当前没有加载助手")
+        return None
+
     msg = tts_data.text
     msg = re.sub(r"\(.*?\)|（.*?）|【.*?】|\[.*?\]|\{.*?\}", "", msg)
     msg = msg.replace(" ", "").replace("\n", "")
@@ -394,6 +406,10 @@ async def text_llm_tts(params: tts_data):
     主处理函数：同时处理LLM流式文本输出和TTS音频合成
     文字和语音在同一个chunk输出
     """
+    agent = assistant_service.get_current_assistant()
+    if not agent:
+        logger.error("[错误] 当前没有加载助手")
+        return
     # 获取agent内容
     msg_list_for_llm = agent.get_msg_data(params.msg[-1]["content"])
 
@@ -459,6 +475,10 @@ async def text_llm_tts_v2(params: tts_data):
     主处理函数：同时处理LLM流式文本输出和TTS音频合成
     文字和语音分别输出自己的chunk
     """
+    agent = assistant_service.get_current_assistant()
+    if not agent:
+        logger.error("[错误] 当前没有加载助手")
+        return
     # 获取agent内容
     msg_list_for_llm = agent.get_msg_data(params.msg[-1]["content"])
 

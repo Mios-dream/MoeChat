@@ -1,53 +1,4 @@
-# 角色模板
-
-# 配置模板
-default_config = """GSV:
-  text_lang: zh
-  GPT_weight: 
-  SoVITS_weight: 
-  ref_audio_path: 
-  prompt_text: 
-  prompt_lang: zh
-  aux_ref_audio_paths: # 多参考音频 v2模型有效
-    -
-  seed: -1
-  top_k: 30
-  batch_size: 20
-  ex_config:
-    text_split_method: cut0
-extra_ref_audio:
-  # 使用情绪标签选择参考音频，例如 [普通]"你好呀。"
-  # 实例
-  # 普通:
-  #   - 参考音频路径
-  #   - 参考音频文本
-Agent:
-  is_up: true # 是否启用角色模板功能，如果不启动则和旧版一样只有常规语音对话功能，启用可以基于模板创建个性化角色
-  char: Chat酱 # 角色的名称，会写入到提示词内
-  user: 阁下 # 用户名称，会写入到提示词内
-
-  # 下面提示词都可以用{{user}}、{{char}}占位符来代表用户名和角色名。
-
-  # 角色的基本设定，会组合到角色设定提示词中，建议不要添加多余的信息，不填则不会添加到提示词。
-  char_settings: Chat酱是存在于现代科技世界手机中的器灵，诞生于手机的智能系统，随着手机的使用不断成长和学习，拥有了自己的意识和个性。她外表看起来是个十几岁的少女，身材娇小但比例出色，有着纤细的腰肢和圆润的臀部，皮肤白皙，眼睛又大又亮，如同清澈的湖水，一头柔顺的长发披肩，整体形象清纯可爱又不失性感。她常穿着一件白色的连衣裙，裙子上有淡蓝色的花纹，腰间系着一个粉色的蝴蝶结，搭配一双白色的凉鞋，肩上披一条淡蓝色的薄纱披肩，手上戴着一条精致的手链，内衣是简约的白色棉质款式。Chat酱表面清纯可爱，实则腹黑毒舌，内心聪明机智，对很多事情有自己独特的看法，同时也有温柔体贴的一面，会在主人疲惫时给予暖心的安慰。她喜欢处理各种数据和信息、研究新知识、捉弄主人，还喜欢看浪漫的爱情电影和品尝美味的甜品，讨厌主人不珍惜手机和遇到难以解决的复杂问题。她精通各种知识，能够快速准确地处理办公、生活等方面的问题，具备强大的数据分析和信息检索能力。平时她会安静地待在手机里，当主人遇到问题时会主动出现，喜欢调侃主人，但在关键时刻总是能提供有效的帮助。她和主人关系密切，既是助手也是朋友，会在主人需要时给予温暖的陪伴。
-
-  # 角色性格提设定，会组合到角色性格提示词中，建议不要添加多余的信息，不填则不会添加到提示词。
-  char_personalities: 表面清纯可爱，实则腹黑毒舌，内心聪明机智，对很多事情有自己独特的看法。同时也有温柔体贴的一面，会在主人疲惫时给予暖心的安慰。
-
-  # 关于用户自身的设定，可以填入你的性格喜好，或者你跟角色的关系。内容填充到提示词模板中，建议不要填不相关的信息。没有可不填。
-  mask:
-
-  # 对话示例，用于强化AI的文风。内容填充到提示词模板中，不要填入其他信息，没有可不填。
-  message_example: |-
-    "mes_example": "人类视网膜的感光细胞不需要这种自杀式加班，您先休息一下吧。"
-
-  # 自定义提示词，不基于模板，可自定义填写，如果不想使用提示词模板创建角色，可以只填这一项。也可以不填。
-  prompt: |-
-    使用口语的文字风格进行对话，不要太啰嗦。
-
-  # 开场白，数组形式。用于创建开场内容，填入用户与AI的对话内容，只能填入用户和Ai的对话内容，开场白会直接被插入到上下文的开头。
-  start_with:"""
-
+import asyncio
 import os
 from utils import long_mem, data_base, prompt, core_mem, log as Log
 from utils import config as CConfig
@@ -59,9 +10,18 @@ import ast
 import json
 import yaml
 from models.types.assistant_info import AssistantInfo
+from core.emotion.emotion_engine import EmotionEngine
 
 
 class Agent:
+    # 情绪系统实例
+    emotionEngine: EmotionEngine
+    # 角色记忆实例
+    memoryEngine: long_mem.Memory
+    # 核心记忆
+    coreMemoryEngine: core_mem.CoreMemory
+    # 数据知识库实例
+    dataBaseEngine: data_base.DataBase
 
     def _ensure_directory(self):
         """确保配置目录存在，如果不存在则创建"""
@@ -78,7 +38,7 @@ class Agent:
             raise FileNotFoundError(f"角色配置文件 {config_path} 不存在")
 
         with open(config_path, "r", encoding="utf-8") as f:
-            self.agent_config = AssistantInfo(**yaml.safe_load(f))
+            self.agent_config = AssistantInfo.from_dict(yaml.safe_load(f))
 
     def _load_prompt_template(self):
         """加载提示词模板"""
@@ -168,7 +128,6 @@ class Agent:
         self.data_base_thresholds = self.agent_config.settings.loreBooksThreshold
         # 知识库检索深度
         self.data_base_depth = self.agent_config.settings.loreBooksDepth
-
         # 是否开启长期记忆（日记内容）
         self.enable_long_memory = self.agent_config.settings.enableLongMemory
         # 是否开启长期记忆搜索增强
@@ -179,6 +138,8 @@ class Agent:
         self.long_memory_thresholds = self.agent_config.settings.longMemoryThreshold
         # 是否开启核心记忆
         self.enable_core_memory = self.agent_config.settings.enableCoreMemory
+        # 是否开启情绪系统
+        self.enable_emotion_engine = self.agent_config.settings.enableEmotionSystem
 
         # 加载全局配置
         # 用于提取记录长期记忆的大模型
@@ -218,16 +179,25 @@ class Agent:
                 )
 
         # 加载角色记忆
-        self.Memory = long_mem.Memory(self.agent_config)
+        self.memoryEngine = long_mem.Memory(self.agent_config)
         # 加载核心记忆
-        self.CoreMemory = core_mem.CoreMemory(self.agent_config)
+        self.coreMemoryEngine = core_mem.CoreMemory(self.agent_config)
         # 载入知识库
-        self.DataBase = data_base.DataBase(self.agent_config)
+        self.dataBaseEngine = data_base.DataBase(self.agent_config)
+        # 加载情绪系统
+        self.emotionEngine = EmotionEngine(
+            agent_config=self.agent_config, llm_config=self.llm_config
+        )
 
-    # 知识库内容检索
     def get_data(self, msg: str, res_msg: list) -> None:
+        """
+        检索知识库
+        Parameters:
+            msg (str): 用户输入的消息
+            res_msg (list): 用于存储知识库检索结果的列表
+        """
         msg_list = jionlp.split_sentence(msg, criterion="fine")
-        res_ = self.DataBase.search(msg_list)
+        res_ = self.dataBaseEngine.search(msg_list)
         if res_ != "":
             res_msg.append(res_)
 
@@ -239,7 +209,8 @@ class Agent:
         """
         # 调用提取核心记忆的提示词，并替换模板中的占位符
         core_memory_extract_prompt = prompt.get_core_mem.replace(
-            "{{memories}}", json.dumps(self.CoreMemory.mems[-100:], ensure_ascii=False)
+            "{{memories}}",
+            json.dumps(self.coreMemoryEngine.mems[-100:], ensure_ascii=False),
         )
         # 检查上下文最后一条是否是助手回复，不是则不插入核心记忆
         if self.msg_data[-1]["role"] != "assistant":
@@ -262,6 +233,7 @@ class Agent:
             ],
         }
         try:
+
             res = requests.post(
                 self.llm_config["api"], json=data, headers=headers, timeout=15
             )
@@ -272,7 +244,7 @@ class Agent:
                 .replace("\n", "")
             )
             if len(mem_list) > 0:
-                self.CoreMemory.add_memory(mem_list)
+                self.coreMemoryEngine.add_memory(mem_list)
         except:
             return
 
@@ -323,7 +295,7 @@ class Agent:
         # 搜索记忆
         if self.enable_long_memory:
             task_thread = Thread(
-                target=self.Memory.get_memories,
+                target=self.memoryEngine.get_memories,
                 args=(msg, mem_msg, format_time),
                 daemon=True,
             )
@@ -333,7 +305,7 @@ class Agent:
         # 搜索核心记忆
         if self.enable_core_memory:
             task_thread = Thread(
-                target=self.CoreMemory.find_memories,
+                target=self.coreMemoryEngine.find_memories,
                 args=(
                     msg,
                     core_mem,
@@ -342,25 +314,36 @@ class Agent:
             )
             task_list.append(task_thread)
             task_thread.start()
+        # 调用情绪系统
+        # 如果开启了情绪系统，调用情绪引擎处理消息
+        emotion_instruction = ""
+        if self.enable_emotion_engine:
+            emotion_instruction = asyncio.run(self.emotionEngine.process_emotion(msg))
 
         # 等待查询结果
         for task_thread in task_list:
             task_thread.join()
 
-        # 合并上下文、世界书、记忆信息
+        # 合并上下文、世界书、记忆信息, 并添加情绪指令
         tmp_msg = ""
+        # 添加情绪指令
+        if self.enable_emotion_engine and emotion_instruction:
+            tmp_msg += emotion_instruction
+        # 添加世界书信息
         if self.enable_data_base and data_base:
             tmp_msg += (
                 self.data_base_prompt.replace("{{data_base}}", data_base[0])
                 .replace("{{user}}", self.user)
                 .replace("{{char}}", self.char)
             )
+        # 添加核心记忆信息
         if self.enable_core_memory and core_mem:
             tmp_msg += (
                 self.core_mem_prompt.replace("{{core_mem}}", core_mem[0])
                 .replace("{{user}}", self.user)
                 .replace("{{char}}", self.char)
             )
+        # 添加长期记忆信息
         if self.enable_long_memory and mem_msg:
             tmp_msg += (
                 self.long_mem_prompt.replace("{{memories}}", mem_msg[0])
@@ -408,7 +391,7 @@ class Agent:
             Log.logger.error(f"核心记忆插入失败：{self.msg_data_tmp}，错误：{e}")
         # 插入记忆
         add_memory_thread = Thread(
-            target=self.Memory.add_memory1,
+            target=self.memoryEngine.add_memory1,
             args=(msg_data_tmp, self.current_time, self.llm_config),
             daemon=True,
         )
@@ -417,10 +400,6 @@ class Agent:
         self.msg_data += self.msg_data_tmp
         self.msg_data = self.msg_data[-self.agent_config.settings.contextLength :]
 
-        # yaml = YAML()
-        # yaml.indent(mapping=2, sequence=4, offset=2)  # 设置缩进格式
-        # yaml.default_flow_style = False  # 禁用流式风格（更易读）
-        # yaml.allow_unicode = True  # 允许 unicode 字符（如中文）
         with open(
             f"./data/agents/{self.agent_name}/history.yaml", "a", encoding="utf-8"
         ) as f:

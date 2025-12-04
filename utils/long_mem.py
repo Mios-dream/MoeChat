@@ -37,7 +37,7 @@ class Memory:
 
         # 加载记忆
         msg_vectors = []
-        path = f"./data/agents/{self.agent_id}/memorys"
+        path = f"./data/agents/{self.agent_id}/memory"
         for root, dirs, files in os.walk(path):
             # print(files)
             for file in files:
@@ -190,13 +190,13 @@ class Memory:
         Yaml.width = 4096
 
         with open(
-            f"./data/agents/{self.agent_id}/memorys/{file_name}", "a", encoding="utf-8"
+            f"./data/agents/{self.agent_id}/memory/{file_name}", "a", encoding="utf-8"
         ) as f:
             Yaml.dump(data, f)
         day_time = t_n - (t_n - time.timezone) % 86400
         index = bisect_left(self.memories_key, day_time)
         v_list = self.vectors[index:]
-        with open(f"./data/agents/{self.agent_id}/memorys/{file_pkl}", "wb") as f:
+        with open(f"./data/agents/{self.agent_id}/memory/{file_pkl}", "wb") as f:
             pickle.dump(v_list, f)
 
     # 提取记忆摘要，记录长期记忆

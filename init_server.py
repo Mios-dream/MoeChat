@@ -15,7 +15,7 @@ assistant_service = AssistantService()
 async def init():
     """
     系统初始化
-    所以的初始化操作就将在这里处理
+    所有的初始化操作都将在这里处理
     """
     try:
         print_moechat_logo()
@@ -37,6 +37,10 @@ async def init():
 
 
 async def create_data_folder():
+    """
+    创建数据文件夹
+    确保数据文件夹和子文件夹存在
+    """
     # 创建数据文件夹
     os.path.exists("data") or os.mkdir("data")  # type: ignore
     os.path.exists("data/agents") or os.mkdir("data/agents")  # type: ignore
