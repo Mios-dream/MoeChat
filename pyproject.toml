@@ -44,5 +44,25 @@ test = [
 
 
 [[tool.uv.index]]
-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+url = "https://mirrors.ustc.edu.cn/pypi/simple"
 default = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-windows", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-linux", marker = "sys_platform == 'linux'" },
+]
+torchaudio = [
+  { index = "pytorch-windows", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-linux", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-windows"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-linux"
+url = "https://mirrors.ustc.edu.cn/pypi/simple"
+explicit = true
