@@ -58,7 +58,7 @@ class ASRServer:
             )
 
     def asr(self, audio_data: bytes) -> str | None:
-        audio_buffer = BytesIO(audio_data)
+        audio_buffer = audio_data
         res = self.asr_model.generate(
             input=audio_buffer,
             cache={},

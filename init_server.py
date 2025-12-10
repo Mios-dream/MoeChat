@@ -1,9 +1,7 @@
 import sys
 import traceback
-from utils import config as CConfig
 from utils.socket_asr import ASRServer
 from utils.log import logger
-import httpx
 import os
 from utils.logo import print_moechat_logo
 from utils.version import get_project_version
@@ -65,7 +63,7 @@ async def initialize_assistant():
     logger.info(f"已加载 {len(assistants)} 个助手")
 
     # 初始化默认助手
-    agent = assistant_service.initialize_default_assistant()
+    agent = await assistant_service.initialize_default_assistant()
     if agent:
         logger.info(f"成功初始化默认助手: {agent.agent_name}")
     else:
@@ -83,37 +81,10 @@ async def init_gptsovits():
         return
 
     try:
-        # 获取权重路径
-        t2s_weights = current_agent.agent_config.gsvSetting.gptModelPath
-        vits_weights = current_agent.agent_config.gsvSetting.sovitsModelPath
-
-        if t2s_weights:
-            logger.info(f"设置GPT_weights...")
-            params = {"weights_path": t2s_weights}
-            try:
-                httpx.get(
-                    str(CConfig.config["GSV"]["api"]).replace(
-                        "/tts", "/set_gpt_weights"
-                    ),
-                    params=params,
-                )
-            except Exception as e:
-                logger.error(f"设置GPT_weights失败: {e}")
-                logger.error("请检查gptsovits服务是否启动")
-                exit()
-        if vits_weights:
-            logger.info(f"设置SoVITS...")
-            params = {"weights_path": vits_weights}
-            try:
-                httpx.get(
-                    str(CConfig.config["GSV"]["api"]).replace(
-                        "/tts", "/set_sovits_weights"
-                    ),
-                    params=params,
-                )
-            except Exception as e:
-                logger.error(f"设置SoVITS失败: {e}")
-                logger.error("请检查gptsovits服务是否启动")
-                exit()
+        await assistant_service.set_gptsovits_models(
+            current_agent.agent_config.gsvSetting.sovitsModelPath,
+            current_agent.agent_config.gsvSetting.gptModelPath,
+        )
     except Exception as e:
         logger.error(f"初始化GPT-SoVITS失败: {e}")
+        exit()

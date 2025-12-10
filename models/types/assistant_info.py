@@ -212,6 +212,6 @@ if __name__ == "__main__":
             stream=f,
             default_flow_style=False,
             allow_unicode=True,
-            indent=4,
+            indent=2,
             sort_keys=False,
         )

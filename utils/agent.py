@@ -1,16 +1,18 @@
 import asyncio
 import os
+import re
+from Config import Config
 from utils import long_mem, data_base, prompt, core_mem, log as Log
 from utils import config as CConfig
 import time
-from threading import Thread
-import requests
 import jionlp
 import ast
 import json
 import yaml
 from models.types.assistant_info import AssistantInfo
 from core.emotion.emotion_engine import EmotionEngine
+from concurrent.futures import ThreadPoolExecutor
+from utils.llm_request import Message, llm_request
 
 
 class Agent:
@@ -21,14 +23,74 @@ class Agent:
     # 核心记忆
     coreMemoryEngine: core_mem.CoreMemory
     # 数据知识库实例
-    dataBaseEngine: data_base.DataBase
+    databaseEngine: data_base.DataBase
 
-    def _ensure_directory(self):
-        """确保配置目录存在，如果不存在则创建"""
-        os.makedirs(f"./data/agents/{self.agent_name}", exist_ok=True)
-        # 创建数据存储文件夹
-        os.makedirs(f"./data/agents/{self.agent_name}/memory", exist_ok=True)
-        os.makedirs(f"./data/agents/{self.agent_name}/data_base", exist_ok=True)
+    # 好感度等级配置
+    LOVE_LEVELS = {
+        0: {
+            "name": "疏远",
+            "description": "与用户保持距离，关系比较陌生",
+            "suggestion": "回复应该保持礼貌但疏远，避免过于亲密的表达",
+            "value": -50,
+        },
+        1: {
+            "name": "中性",
+            "description": "对用户的态度保持中立，关系普通",
+            "suggestion": "回复应该礼貌友好，但不过分亲昵",
+            "value": -20,
+        },
+        2: {
+            "name": "友好",
+            "description": "与用户关系良好，有一定的亲近感",
+            "suggestion": "回复应该热情友好，可以使用一些亲昵的表达",
+            "value": 1000,
+        },
+        3: {
+            "name": "亲密",
+            "description": "与用户关系非常亲密，如同好友或家人",
+            "suggestion": "回复应该非常亲昵，使用温暖贴心的语气和词汇",
+            "value": 2000,
+        },
+        4: {
+            "name": "挚爱",
+            "description": "与用户关系非常亲密，如同好友或家人或恋人",
+            "suggestion": "回复应该非常亲昵，使用温暖贴心的语气和词汇",
+            "value": 5000,
+        },
+    }
+
+    def __init__(self, agent_name: str):
+        # 助手名称
+        self.agent_name = agent_name
+        # 聊天记录
+        self.msg_data = []
+        # 当前正在处理的消息记录
+        self.msg_data_tmp = []
+        # 线程池执行器，用于处理同步的 CPU 密集任务
+        self._executor = ThreadPoolExecutor(max_workers=4)
+
+        self.load_config()
+        self._init_history()
+
+    def _init_history(self):
+        """初始化历史记录"""
+        history_path = f"./data/agents/{self.agent_name}/history.yaml"
+        try:
+            if os.path.exists(history_path):
+                with open(history_path, "r", encoding="utf-8") as f:
+                    msg_list = yaml.safe_load(f) or []
+                    self.msg_data = msg_list[
+                        -self.agent_config.settings.contextLength :
+                    ]
+                    Log.logger.info(f"当前上下文长度：{len(msg_list)}")
+        except Exception as e:
+            Log.logger.error(f"加载上下文失败：{self.agent_name}, 错误: {e}")
+
+        # 添加起始对话
+        if self.agent_config.startWith and not self.msg_data:
+            for i, content in enumerate(self.agent_config.startWith):
+                role = "user" if i % 2 == 0 else "assistant"
+                self.msg_data_tmp.append({"role": role, "content": content})
 
     def _load_config(self):
         """加载配置文件"""
@@ -40,6 +102,21 @@ class Agent:
         with open(config_path, "r", encoding="utf-8") as f:
             self.agent_config = AssistantInfo.from_dict(yaml.safe_load(f))
 
+    def _get_love_prompt(self):
+        """
+        获取好感度相关的提示词
+        """
+        love_level = self._get_love_level(self.agent_config.love)
+        level_info = self.LOVE_LEVELS.get(love_level, self.LOVE_LEVELS[0])
+
+        return prompt.love_level_prompt.format(
+            char=self.char,
+            user=self.user,
+            love_level=level_info["name"],
+            love_description=level_info["description"],
+            interaction_suggestion=level_info["suggestion"],
+        )
+
     def _load_prompt_template(self):
         """加载提示词模板"""
         # 载入提示词
@@ -49,53 +126,262 @@ class Agent:
         self.core_mem_prompt = prompt.core_mem_prompt
         # 加入角色设定到提示词
         if self.description:
-            self.system_prompt = prompt.system_prompt.replace(
-                "{{char}}", self.char
-            ).replace("{{user}}", self.user)
-            self.char_setting_prompt = (
-                prompt.char_setting_prompt.replace(
-                    "{{char_setting_prompt}}", self.description
-                )
-                .replace("{{char}}", self.char)
-                .replace("{{user}}", self.user)
+            # 格式化系统提示词
+            self.system_prompt = prompt.system_prompt.format(
+                char=self.char, user=self.user
             )
-            # self.prompt.append({"role": "system", "content": self.system_prompt})
-            # self.prompt.append({"role": "system", "content": self.char_setting_prompt})
+            # 格式化角色设定提示词
+            self.char_setting_prompt = prompt.char_setting_prompt.format(
+                char_setting_prompt=self.description, char=self.char, user=self.user
+            )
             self.prompt += self.system_prompt + "\n\n"
             self.prompt += self.char_setting_prompt + "\n\n"
         # 加入角色性格到提示词
         if self.personality:
-            self.char_personalities_prompt = (
-                prompt.char_Personalities_prompt.replace(
-                    "{{char_Personalities_prompt}}", self.personality
-                )
-                .replace("{{char}}", self.char)
-                .replace("{{user}}", self.user)
+            self.char_personalities_prompt = prompt.char_Personalities_prompt.format(
+                char_Personalities_prompt=self.personality,
+                char=self.char,
+                user=self.user,
             )
             self.prompt += self.char_personalities_prompt + "\n\n"
         # 加入用户设定到提示词
         if self.mask:
-            self.mask_prompt = (
-                prompt.mask_prompt.replace("{{mask_prompt}}", self.mask)
-                .replace("{{char}}", self.char)
-                .replace("{{user}}", self.user)
+            self.mask_prompt = prompt.mask_prompt.format(
+                mask_prompt=self.mask, char=self.char, user=self.user
             )
             self.prompt += self.mask_prompt + "\n\n"
         # 加入对话案例到提示词
         if self.agent_config.messageExamples:
-            self.message_example_prompt = (
-                prompt.message_example_prompt.replace(
-                    "{{message_example}}", "\n".join(self.agent_config.messageExamples)
-                )
-                .replace("{{user}}", self.user)
-                .replace("{{char}}", self.char)
+            self.message_example_prompt = prompt.message_example_prompt.format(
+                message_example="\n".join(self.agent_config.messageExamples),
+                char=self.char,
+                user=self.user,
             )
-
             self.prompt += self.message_example_prompt + "\n\n"
 
         # 加入自定义提示词到提示词
         if self.agent_config.customPrompt:
             self.prompt += self.agent_config.customPrompt + "\n\n"
+
+    async def _calculate_love_change(self, user_message, assistant_reply) -> int:
+        """
+        使用 LLM 判定用户消息与助手回复的情感、亲密度、互动质量
+        Parameters:
+            user_message: 用户输入的消息
+            assistant_reply: 助手回复的消息
+        Returns:
+            好感度变化值
+        """
+
+        # 构建分析提示词
+        emotion_analysis_prompt = prompt.analysis_prompt.format(
+            user_message=user_message,
+            assistant_reply=assistant_reply,
+        )
+
+        try:
+            content = await llm_request(
+                [
+                    {"role": "system", "content": emotion_analysis_prompt},
+                ]
+            )
+        except Exception as e:
+            Log.logger.error("LLM 好感度判断失败:", e)
+            return 0
+
+        # 解析 JSON
+
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if not match:
+            return 0
+
+        result = json.loads(match.group(0))
+
+        # ====== 根据 LLM 输出计算得分 ======
+        change = 0
+
+        # 用户情绪
+        emotion_score = {
+            "positive": 2,
+            "neutral": 0,
+            "negative": -3,
+        }
+        change += emotion_score.get(result.get("user_emotion"), 0)
+
+        # 亲密度
+        intimacy_score = {
+            "high": 3,
+            "medium": 1,
+            "low": 0,
+        }
+        change += intimacy_score.get(result.get("intimacy"), 0)
+
+        # 用户是否关心助手
+        if result.get("care_for_assistant"):
+            change += 1
+
+        # 用户态度
+        attitude_score = {
+            "supportive": 2,
+            "neutral": 0,
+            "hostile": -4,
+        }
+        change += attitude_score.get(result.get("user_attitude_toward_assistant"), 0)
+
+        # 助手回复质量
+        reply_score = {
+            "high": 1.5,
+            "medium": 0,
+            "low": -1.5,
+        }
+        change += reply_score.get(result.get("reply_quality"), 0)
+
+        # 总倾向
+        overall_score = {
+            "strong_positive": 3,
+            "positive": 1,
+            "neutral": 0,
+            "negative": -1,
+            "strong_negative": -3,
+        }
+        change += overall_score.get(result.get("overall_love_tendency"), 0)
+        Log.logger.info(f"LLM 好感度判断结果: {change}")
+        # 单次变化限制
+        change = max(min(change, 5), -5)
+        return int(change)
+
+    async def _async_search_knowledge(self, msg: str) -> tuple[str, float]:
+        """
+        异步知识库检索任务
+        Parameters:
+            msg: 用户输入的消息
+        Returns:
+            知识库检索结果
+        """
+        start_time = time.time()
+        if not self.enable_data_base:
+            return "", 0.0
+        # jionlp 分词是 CPU 密集型，放入线程池
+        msg_list = await self._run_sync_task(jionlp.split_sentence, msg, "fine")
+        result = await self._run_sync_task(self.databaseEngine.search, msg_list)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        return result, elapsed_time
+
+    async def _async_search_memory(self, msg: str, time_str: str) -> tuple[str, float]:
+        """
+        异步包装记忆检索
+        Parameters:
+            msg: 用户输入的消息
+            time_str: 时间字符串
+        Returns:
+            记忆检索结果
+        """
+        start_time = time.time()
+        if not self.enable_long_memory:
+            return "", 0.0
+
+        # 假设 get_memories 内部是同步的，需要修改 utils 让其支持返回数据而不是 append 到 list
+        # 这里为了兼容旧代码逻辑，我们包装一下
+        def wrapper():
+            temp_list = []
+            self.memoryEngine.get_memories(msg, temp_list, time_str)
+            return temp_list[0] if temp_list else ""
+
+        result = await self._run_sync_task(wrapper)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        return result, elapsed_time
+
+    async def _async_search_core_mem(self, msg: str) -> tuple[str, float]:
+        """
+        异步包装核心记忆检索任务
+        Parameters:
+            msg: 用户输入的消息
+        Returns:
+            核心记忆检索结果
+        """
+        start_time = time.time()
+        if not self.enable_core_memory:
+            return "", 0.0
+
+        def wrapper():
+            temp_list = []
+            self.coreMemoryEngine.find_memories(msg, temp_list)
+            return temp_list[0] if temp_list else ""
+
+        result = await self._run_sync_task(wrapper)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        return result, elapsed_time
+
+    async def _async_process_emotion(self, msg: str) -> tuple[str, float]:
+        """
+        处理情绪任务
+        Parameters:
+            msg: 用户输入的消息
+        Returns:
+            情绪处理结果
+        """
+        start_time = time.time()
+        if not self.enable_emotion_engine:
+            return "", 0.0
+        result = await self.emotionEngine.process_emotion(msg)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        return result, elapsed_time
+
+    async def _task_add_long_memory(self, turn_data):
+        """
+        后台任务：添加长期记忆
+        Parameters:
+            turn_data: 对话数据
+        """
+
+        def wrapper():
+            self.memoryEngine.add_memory(turn_data, self.current_time, self.llm_config)
+
+        await self._run_sync_task(wrapper)
+
+    async def _task_save_history(self, turn_data):
+        """
+        后台任务：保存文件
+        Parameters:
+            turn_data: 对话数据
+        """
+
+        def save():
+            with open(
+                f"./data/agents/{self.agent_name}/history.yaml", "a", encoding="utf-8"
+            ) as f:
+                yaml.dump(
+                    turn_data, stream=f, allow_unicode=True, indent=2, sort_keys=False
+                )
+
+        await self._run_sync_task(save)
+
+    def save_agent_config(self):
+        """
+        保存角色配置到配置文件
+        """
+        config_path = os.path.join(
+            Config.BASE_AGENTS_PATH, self.agent_name, "info.yaml"
+        )
+
+        try:
+
+            # 保存配置
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.dump(
+                    self.agent_config.model_dump(),
+                    stream=f,
+                    default_flow_style=False,
+                    sort_keys=False,
+                    allow_unicode=True,
+                    indent=2,
+                )
+        except Exception as e:
+            Log.logger.error(f"保存好感度失败: {e}")
 
     def load_config(self):
         """
@@ -147,65 +433,26 @@ class Agent:
         # 加载提示词模板
         self._load_prompt_template()
 
-    def __init__(self, agent_name: str):
-
-        self.agent_name = agent_name
-
-        self.load_config()
-        # 创建上下文
-        self.msg_data = []
-        # 上下文缓存
-        self.msg_data_tmp = []
-        try:
-            with open(
-                f"./data/agents/{self.agent_name}/history.yaml", "r", encoding="utf-8"
-            ) as f:
-                msg_list = yaml.safe_load(f)
-                self.msg_data = msg_list[-self.agent_config.settings.contextLength :]
-                Log.logger.info(f"当前上下文长度：{len(msg_list)}")
-        except:
-            Log.logger.error(f"加载上下文失败：{self.agent_name}")
-        # 添加起始对话
-        if self.agent_config.startWith and len(self.msg_data) == 0:
-            for i in range(len(self.agent_config.startWith)):
-                role = "assistant"
-                if i % 2 == 0:
-                    role = "user"
-                self.msg_data_tmp.append(
-                    {
-                        "role": role,
-                        "content": self.agent_config.startWith[i],
-                    }
-                )
-
         # 加载角色记忆
         self.memoryEngine = long_mem.Memory(self.agent_config)
         # 加载核心记忆
         self.coreMemoryEngine = core_mem.CoreMemory(self.agent_config)
         # 载入知识库
-        self.dataBaseEngine = data_base.DataBase(self.agent_config)
+        self.databaseEngine = data_base.DataBase(self.agent_config)
         # 加载情绪系统
         self.emotionEngine = EmotionEngine(
             agent_config=self.agent_config, llm_config=self.llm_config
         )
 
-    def get_data(self, msg: str, res_msg: list) -> None:
-        """
-        检索知识库
-        Parameters:
-            msg (str): 用户输入的消息
-            res_msg (list): 用于存储知识库检索结果的列表
-        """
-        msg_list = jionlp.split_sentence(msg, criterion="fine")
-        res_ = self.dataBaseEngine.search(msg_list)
-        if res_ != "":
-            res_msg.append(res_)
-
-    def insert_core_mem(
+    async def insert_core_mem(
         self, user_message: str, assistant_reply: str, previous_assistant_msg: str
     ) -> None:
         """
-        使用核心记忆提取用户和助手的对话内容，插入核心记忆
+        使用核心记忆提取用户和助手的对话内容，插入核心记忆任务
+        Parameters:
+            user_message: 用户输入的消息
+            assistant_reply: 助手回复的消息
+            previous_assistant_msg: 上一条助手回复的消息
         """
         # 调用提取核心记忆的提示词，并替换模板中的占位符
         core_memory_extract_prompt = prompt.get_core_mem.replace(
@@ -223,21 +470,16 @@ class Agent:
             + "\n助手："
             + assistant_reply
         )
-        key = self.llm_config["key"]
-        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        data = {
-            "model": self.llm_config["model"],
-            "messages": [
-                {"role": "system", "content": core_memory_extract_prompt},
-                {"role": "user", "content": re_msg},
-            ],
-        }
+
         try:
 
-            res = requests.post(
-                self.llm_config["api"], json=data, headers=headers, timeout=15
+            res_msg = await llm_request(
+                [
+                    {"role": "system", "content": core_memory_extract_prompt},
+                    {"role": "user", "content": re_msg},
+                ]
             )
-            res_msg = res.json()["choices"][0]["message"]["content"]
+
             mem_list = ast.literal_eval(
                 jionlp.extract_parentheses(res_msg, "[]")[0]
                 .replace(" ", "")
@@ -245,14 +487,35 @@ class Agent:
             )
             if len(mem_list) > 0:
                 self.coreMemoryEngine.add_memory(mem_list)
-        except:
+        except Exception as e:
+            Log.logger.error(f"核心记忆提取出错: {e}")
             return
 
-    def get_msg_data(self, msg: str) -> list[str]:
+    async def update_love_level(self, user_message, assistant_reply):
+        """
+        异步更新好感度任务
+        Parameters:
+            user_message: 用户输入的消息
+            assistant_reply: 助手回复的消息
+        """
+        change = await self._calculate_love_change(user_message, assistant_reply)
+        self.agent_config.love = max(self.agent_config.love + change, -50)
+
+        # 异步保存配置
+        def save_config():
+            self.save_agent_config()
+
+        await self._run_sync_task(save_config)
+
+        Log.logger.info(
+            f"助手 {self.agent_name} 好感度更新: 变化 {change}, 当前 {self.agent_config.love}"
+        )
+
+    async def get_msg_data(self, msg: str) -> list[Message]:
         """
         获取发送到大模型的上下文
 
-        Args:
+        Parameters:
             msg: 客户端发送的消息
 
         Returns:
@@ -264,152 +527,130 @@ class Agent:
         format_time = time.strftime(
             "%Y-%m-%d %H:%M:%S", time.localtime(self.current_time)
         )
-        # self.prompt[0] = {"role": "system", "content": f"当前现实世界时间：{t_n}"}
-        # self.tmp_mem = f"时间：{t_n}\n{self.user}：{msg.strip()}\n"
-        # 搜索任务列表
-        task_list = []
-        # 检索世界书结果列表
-        data_base = []
-        # 记忆搜索结果列表
-        mem_msg = []
+        # 使用 asyncio.gather 同时启动所有任务
+        tasks = [
+            self._async_search_knowledge(msg),
+            self._async_search_memory(msg, format_time),
+            self._async_search_core_mem(msg),
+            self._async_process_emotion(msg),
+        ]
+        results = await asyncio.gather(*tasks)
+        # 解包结果和耗时
+        db_info, db_time = results[0]
+        mem_info, mem_time = results[1]
+        core_info, core_time = results[2]
+        emotion_info, emotion_time = results[3]
+
+        # 打印或记录耗时
+        print(f"Knowledge search time: {db_time:.4f}s")
+        print(f"Memory search time: {mem_time:.4f}s")
+        print(f"Core memory search time: {core_time:.4f}s")
+        print(f"Emotion processing time: {emotion_time:.4f}s")
+
         # 返回消息列表
         res_msg = []
-        # 核心记忆任务列表
-        core_mem = []
         # 添加系统提示词
         res_msg.append({"role": "system", "content": self.prompt})
 
-        # 检索世界书
-        if self.enable_data_base:
-            task_thread = Thread(
-                target=self.get_data,
-                args=(
-                    msg,
-                    data_base,
-                ),
-                daemon=True,
-            )
-            task_list.append(task_thread)
-            task_thread.start()
-
-        # 搜索记忆
-        if self.enable_long_memory:
-            task_thread = Thread(
-                target=self.memoryEngine.get_memories,
-                args=(msg, mem_msg, format_time),
-                daemon=True,
-            )
-            task_list.append(task_thread)
-            task_thread.start()
-
-        # 搜索核心记忆
-        if self.enable_core_memory:
-            task_thread = Thread(
-                target=self.coreMemoryEngine.find_memories,
-                args=(
-                    msg,
-                    core_mem,
-                ),
-                daemon=True,
-            )
-            task_list.append(task_thread)
-            task_thread.start()
-        # 调用情绪系统
-        # 如果开启了情绪系统，调用情绪引擎处理消息
-        emotion_instruction = ""
-        if self.enable_emotion_engine:
-            emotion_instruction = asyncio.run(self.emotionEngine.process_emotion(msg))
-
-        # 等待查询结果
-        for task_thread in task_list:
-            task_thread.join()
-
-        # 合并上下文、世界书、记忆信息, 并添加情绪指令
-        tmp_msg = ""
-        # 添加情绪指令
-        if self.enable_emotion_engine and emotion_instruction:
-            tmp_msg += emotion_instruction
-        # 添加世界书信息
-        if self.enable_data_base and data_base:
-            tmp_msg += (
-                self.data_base_prompt.replace("{{data_base}}", data_base[0])
-                .replace("{{user}}", self.user)
-                .replace("{{char}}", self.char)
+        context_extras = []
+        # 添加知识库信息
+        if db_info:
+            context_extras.append(
+                self.data_base_prompt.format(
+                    data_base=db_info, user=self.user, char=self.char
+                )
             )
         # 添加核心记忆信息
-        if self.enable_core_memory and core_mem:
-            tmp_msg += (
-                self.core_mem_prompt.replace("{{core_mem}}", core_mem[0])
-                .replace("{{user}}", self.user)
-                .replace("{{char}}", self.char)
+        if core_info:
+            context_extras.append(
+                self.core_mem_prompt.format(
+                    core_mem=core_info, user=self.user, char=self.char
+                )
             )
         # 添加长期记忆信息
-        if self.enable_long_memory and mem_msg:
-            tmp_msg += (
-                self.long_mem_prompt.replace("{{memories}}", mem_msg[0])
-                .replace("{{user}}", self.user)
-                .replace("{{char}}", self.char)
+        if mem_info:
+            context_extras.append(
+                self.long_mem_prompt.format(
+                    memories=mem_info, user=self.user, char=self.char
+                )
             )
-        # self.msg_data_tmp.append({"role": "system", "content": f"当前现实世界时间：{t_n}；一定要基于现实世界时间做出适宜的回复。"})
+        # 添加好感度提示词
+        context_extras.append(self._get_love_prompt())
+        # 添加情绪信息
+        if emotion_info:
+            context_extras.append(emotion_info)
 
-        # 合并上下文、世界书、记忆信息
-        tmp_msg += f"""
-<当前时间>{format_time}</当前时间>
-<用户对话内容或动作>
-{msg}
-</用户对话内容或动作>
-"""
-        self.msg_data_tmp = [{"role": "user", "content": tmp_msg}]
-        return res_msg + self.msg_data + self.msg_data_tmp
+        # 合并上下文、世界书、记忆信息, 并添加情绪指令
+        final_content = "\n".join(context_extras)
+        final_content += f"\n<当前时间>{format_time}</当前时间>\n<用户对话内容或动作>\n{msg}\n</用户对话内容或动作>"
 
-    def add_msg(self, msg: str) -> None:
+        self.msg_data_tmp = [{"role": "user", "content": final_content}]
+
+        # 系统 Prompt + 历史记录 + 当前构建的 Context
+        system_msg: list[Message] = [{"role": "system", "content": self.prompt}]
+
+        return system_msg + self.msg_data + self.msg_data_tmp  # type: ignore
+
+    async def add_msg(self, assistant_msg: str) -> None:
         """
-        添加助手回复到上下文,保存聊天历史
+        添加助手回复到上下文,保存聊天历史,更新长期记忆,更新好感度
 
-        Args:
-            msg: 助手回复的消息
+        Parameters:
+            assistant_msg: 助手回复的消息
         """
         # 添加助手回复到上下文
-        self.msg_data_tmp.append({"role": "assistant", "content": msg})
-        msg_data_tmp = self.msg_data_tmp.copy()
-        m1 = msg_data_tmp[-2]["content"]
+        self.msg_data_tmp.append({"role": "assistant", "content": assistant_msg})
 
-        try:
-            # 插入核心记忆
-            insert_core_mem_thread = Thread(
-                target=self.insert_core_mem,
-                args=(
-                    m1,
-                    self.msg_data_tmp[-1]["content"],
-                    self.msg_data[-1]["content"],
-                ),
-                daemon=True,
-            )
+        # 获取用于分析的内容
+        user_msg_content = self.msg_data_tmp[-2]["content"]  # 刚刚的用户输入
+        previous_assistant_msg = self.msg_data[-1]["content"] if self.msg_data else ""
 
-            insert_core_mem_thread.start()
-        except Exception as e:
-            Log.logger.error(f"核心记忆插入失败：{self.msg_data_tmp}，错误：{e}")
-        # 插入记忆
-        add_memory_thread = Thread(
-            target=self.memoryEngine.add_memory1,
-            args=(msg_data_tmp, self.current_time, self.llm_config),
-            daemon=True,
-        )
-        add_memory_thread.start()
-
-        self.msg_data += self.msg_data_tmp
+        current_turn = self.msg_data_tmp.copy()
+        self.msg_data += current_turn
         self.msg_data = self.msg_data[-self.agent_config.settings.contextLength :]
-
-        with open(
-            f"./data/agents/{self.agent_name}/history.yaml", "a", encoding="utf-8"
-        ) as f:
-            yaml.dump(
-                self.msg_data_tmp,
-                stream=f,
-                default_flow_style=False,
-                sort_keys=False,
-                allow_unicode=True,
-                indent=4,
-            )
         # 清空临时消息列表
         self.msg_data_tmp = []
+
+        await asyncio.gather(
+            self.insert_core_mem(
+                user_msg_content, assistant_msg, previous_assistant_msg
+            ),
+            self.update_love_level(user_msg_content, assistant_msg),
+            self._task_save_history(current_turn),
+            self._task_add_long_memory(current_turn),
+        )
+
+    async def _run_sync_task(self, func, *args):
+        """
+        工具方法
+        在线程池中运行同步阻塞函数（如 jionlp 处理或旧的数据库搜索）
+        Parameters:
+            func: 要运行的同步函数
+            *args: 函数的参数
+        Returns:
+            函数的返回值
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, func, *args)
+
+    def _get_love_level(self, love_value: int) -> int:
+        """
+        根据好感度数值获取好感度等级
+        好感度分为5个等级：0(疏远)、1(中性)、2(友好)、3(亲密)、4(挚爱)
+        Parameters:
+            love_value (int): 好感度数值
+
+        Returns:
+            int: 好感度等级
+        """
+        for level, config in self.LOVE_LEVELS.items().__reversed__():
+            if love_value >= config["value"]:
+                return level
+        return 0
+
+    def _ensure_directory(self):
+        """确保配置目录存在，如果不存在则创建"""
+        os.makedirs(f"./data/agents/{self.agent_name}", exist_ok=True)
+        # 创建数据存储文件夹
+        os.makedirs(f"./data/agents/{self.agent_name}/memory", exist_ok=True)
+        os.makedirs(f"./data/agents/{self.agent_name}/data_base", exist_ok=True)

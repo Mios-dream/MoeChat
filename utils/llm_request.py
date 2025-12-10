@@ -54,7 +54,9 @@ async def llm_request_stream(msg: list[Message]):
             ) as response:
                 # 检查响应状态
                 if response.status_code != 200:
-                    raise Exception(f"LLM API请求失败，状态码: {response.status_code}")
+                    raise Exception(
+                        f"LLM API请求失败，状态码: {response.status_code}，响应内容: {response.text}"
+                    )
 
                 # 流式处理响应
                 async for line in response.aiter_lines():
@@ -98,21 +100,24 @@ async def llm_request(msg: list[Message]) -> str:
     :param data: 消息链
     :return: 请求结果
     """
-    # 构造请求数据
-    llm_data["messages"] = msg
 
     # 发起流式请求
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
                 url=CConfig.config["LLM"]["api"],
-                json=llm_data,
+                json={
+                    "model": CConfig.config["LLM"]["model"],
+                    "stream": False,
+                    "messages": msg,
+                },
                 headers=llm_headers,
             )
             # 检查响应状态
             if response.status_code != 200:
-                raise Exception(f"LLM API请求失败，状态码: {response.status_code}")
-
+                raise Exception(
+                    f"LLM API请求失败，状态码: {response.status_code}，响应内容: {response.text}"
+                )
             # 解析响应
             response_json = response.json()
             content = response_json["choices"][0]["message"]["content"]

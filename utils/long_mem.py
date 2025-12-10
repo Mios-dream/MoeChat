@@ -170,7 +170,7 @@ class Memory:
                 res_msg.append(tmp_mem)
 
     # 写入记忆
-    def add_memory(self, m_data: dict):
+    def save_memory(self, m_data: dict):
         t_n = int(m_data["t_n"])
         self.memories_key.append(t_n)
         self.memories_data[t_n] = m_data["msg"]
@@ -200,7 +200,7 @@ class Memory:
             pickle.dump(v_list, f)
 
     # 提取记忆摘要，记录长期记忆
-    def add_memory1(self, data: list, t_n: int, llm_config: dict):
+    def add_memory(self, data: list, t_n: int, llm_config: dict):
         summary_memory_prompt = prompt.get_mem_tag_prompt
         res_msg = "用户：" + data[-2]["content"]
         res_body = {
@@ -237,4 +237,4 @@ class Memory:
             "text_tag": res_tag,
             "msg": f"时间：{t_str}\n{c1}：{m1}\n{c2}：{m2}",
         }
-        self.add_memory(m_data)
+        self.save_memory(m_data)

@@ -97,7 +97,7 @@ async def switch_assistant(switch_request: SwitchAssistantRequest):
     """
     try:
         # 调用服务层切换助手
-        assistant_service.set_assistant(switch_request.name)
+        await assistant_service.set_assistant(switch_request.name)
 
         # 保存最后使用的助手，以便下次启动时自动加载
         assistant_service.save_last_used_agent()

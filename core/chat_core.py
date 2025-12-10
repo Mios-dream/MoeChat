@@ -10,11 +10,11 @@ from utils import config as CConfig
 from utils.sv import SV
 from utils.socket_asr import ASRServer
 from utils.log import logger
-from utils.llm_request import llm_request_stream
+from utils.llm_request import Message, llm_request_stream
 from utils.split_text import remove_parentheses_content_and_split_v2
 from core.meme_system import get_emotion_service
 from services.assistant_service import AssistantService
-
+from pydantic import BaseModel
 
 assistant_service = AssistantService()
 
@@ -23,9 +23,6 @@ assistant_service = AssistantService()
 sv_pipeline: SV | None = None
 if CConfig.config["Core"]["sv"]["is_up"]:
     sv_pipeline = SV(CConfig.config["Core"]["sv"])
-
-
-from pydantic import BaseModel
 
 
 class TTSData(BaseModel):
@@ -293,7 +290,10 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
         data["ref_audio_path"] = ref_audio
         data["prompt_text"] = ref_text
     try:
+        start_time = time.time()
+        # print("开始合成的时间:", start_time)
         byte_data = await gptsovits_tts(data)
+        print("合成完成的耗时:", time.time() - start_time)
         return byte_data
     except:
         return None
@@ -360,7 +360,7 @@ def asr(audio_data: bytes):
 
 
 async def start_llm_task(
-    msg: list,
+    msg: list[Message],
     text_queue: asyncio.Queue,
 ):
     """
@@ -381,8 +381,9 @@ async def start_llm_task(
         async for line in llm_request_stream(msg):
             try:
                 if first_print_time_flag:
-                    logger.info(f"\n[大模型延迟]{time.time() - start_time}")
                     first_print_time_flag = False
+                    # print("第一次打印的时间戳:", time.time())
+                    logger.info(f"[大模型延迟]{time.time() - start_time}")
 
                 # 立即将新文本发送到文本队列（流式输出）
                 await text_queue.put(("text", line))
@@ -392,7 +393,6 @@ async def start_llm_task(
                 continue
 
         # 发送完成信号
-
         await text_queue.put(("done", None))
 
     except Exception as e:
@@ -411,7 +411,10 @@ async def text_llm_tts(params: tts_data):
         logger.error("[错误] 当前没有加载助手")
         return
     # 获取agent内容
-    msg_list_for_llm = agent.get_msg_data(params.msg[-1]["content"])
+    start_time = time.time()
+    msg_list_for_llm = await agent.get_msg_data(params.msg[-1]["content"])
+    print(json.dumps(msg_list_for_llm, ensure_ascii=False))
+    logger.info(f"加载消息耗时: {time.time() - start_time}")
 
     # 初始化处理器
     processor = StreamProcessor()
@@ -433,7 +436,7 @@ async def text_llm_tts(params: tts_data):
             done, pending = await asyncio.wait(
                 [text_task, audio_task],
                 return_when=asyncio.FIRST_COMPLETED,
-                timeout=0.1,
+                timeout=0.2,
             )
             # 当获取到任一任务完成时，取消另一个任务
             for task in pending:
@@ -446,6 +449,7 @@ async def text_llm_tts(params: tts_data):
 
                 elif task == audio_task:
                     async for response in processor.handle_audio_stream(task):
+                        # print("输出的时间:", time.time())
                         yield response
 
             # 检查是否所有任务都完成
@@ -454,7 +458,7 @@ async def text_llm_tts(params: tts_data):
                 for final_response in processor.create_final_response():
                     yield final_response
                 # agent写入上下文、日记
-                agent.add_msg("".join(processor.full_msg))
+                await agent.add_msg("".join(processor.full_msg))
                 break
 
         except asyncio.TimeoutError:
@@ -480,7 +484,7 @@ async def text_llm_tts_v2(params: tts_data):
         logger.error("[错误] 当前没有加载助手")
         return
     # 获取agent内容
-    msg_list_for_llm = agent.get_msg_data(params.msg[-1]["content"])
+    msg_list_for_llm = await agent.get_msg_data(params.msg[-1]["content"])
 
     # 初始化处理器
     processor = StreamProcessor()
@@ -554,7 +558,7 @@ async def text_llm_tts_v2(params: tts_data):
                 yield f"data: {json.dumps(final_response, ensure_ascii=False)}\n\n"
 
                 # agent写入上下文、日记
-                agent.add_msg("".join(processor.full_msg))
+                await agent.add_msg("".join(processor.full_msg))
                 break
 
         except asyncio.TimeoutError:

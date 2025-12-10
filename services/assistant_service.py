@@ -1,10 +1,10 @@
-import json
 import os
 import shutil
 import time
-
+import httpx
 import yaml
 from Config import Config
+from utils import config as CConfig
 from models.dto.assistant_request import AddAssistantRequest, UpdateAssistantRequest
 from models.types.assistant_info import AssistantInfo
 from utils.agent import Agent
@@ -35,6 +35,47 @@ class AssistantService:
         self.assistants_cache: dict[str, AssistantInfo] = {}
         # 初始化已加载助手为空字典
         self.loaded_agents: dict[str, Agent] = {}
+
+    async def set_gptsovits_models(self, vits_weights: str, gpt_weights: str):
+        """
+        设置助手的gptsovits模型
+        """
+        if not vits_weights or not gpt_weights:
+            Log.logger.warning(
+                "设置gptsovits模型出错，SoVITS模型路径或GPT_weights路径为空"
+            )
+            return
+        try:
+            params = {"weights_path": vits_weights}
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    str(CConfig.config["GSV"]["api"]).replace(
+                        "/tts", "/set_sovits_weights"
+                    ),
+                    params=params,
+                )
+            if response.status_code != 200:
+                Log.logger.error(f"设置SoVITS模型失败: {response.text}")
+                raise Exception(f"设置SoVITS模型失败: {response.text}")
+        except Exception as e:
+            Log.logger.error(f"设置SoVITS模型失败: {e}")
+            raise Exception(f"设置SoVITS模型失败: {e}")
+
+        try:
+            params = {"weights_path": gpt_weights}
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    str(CConfig.config["GSV"]["api"]).replace(
+                        "/tts", "/set_gpt_weights"
+                    ),
+                    params=params,
+                )
+            if response.status_code != 200:
+                Log.logger.error(f"设置GPT_weights失败: {response.text}")
+                raise Exception(f"设置GPT_weights失败: {response.text}")
+        except Exception as e:
+            Log.logger.error(f"设置GPT_weights失败: {e}")
+            raise Exception(f"设置GPT_weights失败: {e}")
 
     def load_assistant_info(self) -> list[AssistantInfo]:
         """
@@ -110,7 +151,14 @@ class AssistantService:
 
         # 保存更新后的信息
         with open(info_file_path, "w", encoding="utf-8") as f:
-            yaml.dump(existing_info, f, allow_unicode=True, default_flow_style=False)
+            yaml.dump(
+                existing_info,
+                f,
+                allow_unicode=True,
+                default_flow_style=False,
+                sort_keys=False,
+                indent=2,
+            )
 
         # 更新缓存
         assistant_info = AssistantInfo.from_dict(existing_info)
@@ -146,7 +194,7 @@ class AssistantService:
 
         special_settings = {
             "firstMeetTime": int(time.time()),
-            "love": 0,
+            "love": 0,  # 初始好感度为0
             "updatedAt": int(time.time()),
             "assetsLastModified": 0,
         }
@@ -158,7 +206,14 @@ class AssistantService:
 
         # 保存助手信息
         with open(info_file_path, "w", encoding="utf-8") as f:
-            yaml.dump(assistant_info, f, allow_unicode=True, default_flow_style=False)
+            yaml.dump(
+                assistant_info,
+                f,
+                allow_unicode=True,
+                default_flow_style=False,
+                sort_keys=False,
+                indent=2,
+            )
 
         # 更新缓存
         assistant_info_obj = AssistantInfo.from_dict(assistant_info)
@@ -192,7 +247,7 @@ class AssistantService:
         # 删除助手目录及其所有内容
         shutil.rmtree(assistant_dir)
 
-    def set_assistant(self, assistant_name: str) -> Agent:
+    async def set_assistant(self, assistant_name: str) -> Agent:
         """
         设置当前助手
 
@@ -216,12 +271,26 @@ class AssistantService:
         if assistant_name in self.loaded_agents:
             self.current_assistant = self.loaded_agents[assistant_name]
             self.current_assistant_name = assistant_name
+            try:
+                await self.set_gptsovits_models(
+                    self.current_assistant.agent_config.gsvSetting.sovitsModelPath,
+                    self.current_assistant.agent_config.gsvSetting.gptModelPath,
+                )
+            except Exception:
+                Log.logger.error(f"设置助手语音模型失败: {assistant_name},跳过设置模型")
             Log.logger.info(f"已切换到助手: {assistant_name}")
             return self.current_assistant
 
         # 尝试创建新的Agent实例
         try:
             agent = Agent(assistant_name)
+            try:
+                await self.set_gptsovits_models(
+                    agent.agent_config.gsvSetting.sovitsModelPath,
+                    agent.agent_config.gsvSetting.gptModelPath,
+                )
+            except Exception:
+                Log.logger.error(f"设置助手语音模型失败: {assistant_name},跳过设置模型")
             self.current_assistant = agent
             self.current_assistant_name = assistant_name
             self.loaded_agents[assistant_name] = agent
@@ -229,7 +298,7 @@ class AssistantService:
             return agent
         except Exception as e:
             Log.logger.error(f"加载助手失败: {assistant_name}, 错误: {e}")
-            raise FileNotFoundError(f"加载助手 '{assistant_name}' 失败: {str(e)}")
+            raise RuntimeError(f"加载助手 '{assistant_name}' 失败: {str(e)}")
 
     def get_current_assistant(self) -> Agent | None:
         """
@@ -268,7 +337,7 @@ class AssistantService:
                     f"重新加载助手 '{self.current_assistant_name}' 失败: {str(e)}"
                 )
 
-    def initialize_default_assistant(self) -> Agent | None:
+    async def initialize_default_assistant(self) -> Agent | None:
         """
         初始化默认助手
         1. 尝试加载上次使用的助手
@@ -290,13 +359,13 @@ class AssistantService:
         # 尝试加载上次使用的助手
         if last_used:
             try:
-                return self.set_assistant(last_used)
+                return await self.set_assistant(last_used)
             except:
                 Log.logger.info(f"无法加载上次使用的助手: {last_used}")
 
         # 尝试加载默认助手'Chat酱'
         try:
-            return self.set_assistant("Chat酱")
+            return await self.set_assistant("Chat酱")
         except:
             Log.logger.info("无法加载默认助手'Chat酱'")
         return None
