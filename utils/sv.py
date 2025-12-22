@@ -1,13 +1,29 @@
 # 声纹识别模块
 
+import threading
 from modelscope.pipelines import pipeline
 import soundfile as sf
 import numpy as np
 from scipy.signal import resample
 import io
 
+from modelscope import Pipeline
+
 
 class SV:
+    _instance = None
+    _lock = threading.Lock()
+    sv_pipeline: Pipeline
+
+    # 单例模式
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            with cls._lock:
+                # 双重检查锁定模式
+                if cls._instance is None:
+                    cls._instance = super(SV, cls).__new__(cls)
+        return cls._instance
+
     def __init__(self, config: dict):
         self.thr = ""
         with open(config["master_audio"], "rb") as f:

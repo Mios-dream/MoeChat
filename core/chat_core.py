@@ -19,12 +19,6 @@ from pydantic import BaseModel
 assistant_service = AssistantService()
 
 
-# 载入声纹识别模型
-sv_pipeline: SV | None = None
-if CConfig.config["Core"]["sv"]["is_up"]:
-    sv_pipeline = SV(CConfig.config["Core"]["sv"])
-
-
 class TTSData(BaseModel):
     """
     TTS数据类
@@ -349,9 +343,9 @@ def asr(audio_data: bytes):
     Returns
         str: 识别结果文本
     """
-    global sv_pipeline
 
-    if sv_pipeline:
+    if CConfig.config["Core"]["sv"]["is_up"]:
+        sv_pipeline = SV(CConfig.config["Core"]["sv"])
         if not sv_pipeline.check_speaker(audio_data):
             return None
 
@@ -413,7 +407,7 @@ async def text_llm_tts(params: tts_data):
     # 获取agent内容
     start_time = time.time()
     msg_list_for_llm = await agent.get_msg_data(params.msg[-1]["content"])
-    print(json.dumps(msg_list_for_llm, ensure_ascii=False))
+    # print(json.dumps(msg_list_for_llm, ensure_ascii=False))
     logger.info(f"加载消息耗时: {time.time() - start_time}")
 
     # 初始化处理器

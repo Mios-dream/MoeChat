@@ -19,21 +19,11 @@ if not %errorlevel% neq 0 (
         pause
         exit /b 1
     )
-
-    uv sync
 )
-
-if not exist .venv (
-    echo 创建虚拟环境
-    uv sync
-)
-
-
-call .venv\Scripts\activate.bat
 
 echo 正在检查环境更新... 
 
-uv pip install -r pyproject.toml
+uv sync
 
 uv run main_web.py
 

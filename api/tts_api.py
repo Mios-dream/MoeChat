@@ -26,7 +26,7 @@ async def start_tts_task(msg: list[str]):
         if audio_data is None:
             continue
         encode_data = base64.b64encode(audio_data).decode("utf-8")
-        data = {"text": i, "audio": encode_data}
+        data = {"message": i, "file": encode_data}
         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
