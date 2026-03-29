@@ -1,5 +1,4 @@
-from utils.llm_request import slm_request
-from utils.parse_json_response import parse_llm_json_response
+from utils.llm_request import slm_request, parse_llm_json_response
 
 
 async def isSpeakFinish(message: str) -> bool:

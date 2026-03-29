@@ -70,7 +70,7 @@ class AssistantSettings(BaseModel):
     enableEmotionPersist: bool = Field(
         False, description="助手是否开启情绪系统的持续存储"
     )
-    # 情绪系统的上下文长度
+    # 上下文长度
     contextLength: int = Field(40, description="助手的上下文长度")
 
     @staticmethod

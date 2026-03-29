@@ -3,14 +3,13 @@ from fastapi import (
     APIRouter,
 )
 from models.dto.asr_request import asr_data
-import core.chat_core as chat_core
-
 import base64
 import soundfile as sf
 from fastapi import WebSocket
 from io import BytesIO
 import numpy as np
 from utils.pysilero import VADIterator
+from utils.socket_asr import ASRServer
 from utils.speak_finish import isSpeakFinish, SpeakWithAssistant
 
 # from scipy.signal import resample
@@ -18,6 +17,7 @@ from utils.log import logger
 from fastapi.responses import JSONResponse
 
 asr_api = APIRouter()
+asrServer = ASRServer()
 
 
 @asr_api.post("/asr")
@@ -31,7 +31,8 @@ async def asr_audio(params: asr_data):
         if "," in raw_data:
             raw_data = raw_data.split(",")[1]
         audio_data = base64.b64decode(raw_data)
-        text = chat_core.asr(audio_data)
+        # text = chat_core.asr(audio_data)
+        text = asrServer.asr(audio_data)
 
         if not text:
             logger.warning("[ASR] 识别结果为空")
@@ -122,7 +123,7 @@ async def asr_websocket(c_websocket: WebSocket):
                     )
                     buffer.seek(0)
                     audio_bytes = buffer.read()  # 完整的 WAV bytes
-                res_text = chat_core.asr(audio_bytes)
+                res_text = asrServer.asr(audio_bytes)
 
                 if res_text:
                     await c_websocket.send_text(res_text)
@@ -211,7 +212,7 @@ async def asr_websocket_plus(c_websocket: WebSocket):
                     with open("test.wav", "wb") as f:
                         f.write(audio_bytes)
 
-                res_text = chat_core.asr(audio_bytes)
+                res_text = asrServer.asr(audio_bytes)
                 message_chucks.append(res_text)
                 finished_text = "".join(message_chucks)
                 # 判断是否结束

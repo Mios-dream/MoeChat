@@ -10,11 +10,14 @@
         "mktime",
         "modelscope",
         "moechat",
+        "pysilero",
+        "qwen",
         "scalarstring",
         "sovits",
+        "TTFT",
         "vect",
-        "VITS"
+        "VITS",
+        "vtube"
     ],
-    "python-envs.defaultEnvManager": "ms-python.python:system",
-    "python-envs.pythonProjects": []
+    "python-envs.defaultEnvManager": "ms-python.python:venv"
 }

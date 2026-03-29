@@ -12,7 +12,7 @@ import yaml
 from models.types.assistant_info import AssistantInfo
 from core.emotion.emotion_engine import EmotionEngine
 from concurrent.futures import ThreadPoolExecutor
-from utils.llm_request import Message, llm_request
+from utils.llm_request import llm_request
 
 
 class Agent:
@@ -190,8 +190,7 @@ class Agent:
             return 0
 
         # 解析 JSON
-
-        match = re.search(r"\{.*\}", content, re.DOTALL)
+        match = re.search(r"\{.*\}", content or "", re.DOTALL)
         if not match:
             return 0
 
@@ -429,7 +428,7 @@ class Agent:
 
         # 加载全局配置
         # 用于提取记录长期记忆的大模型
-        self.llm_config = CConfig.config["LLM2"]
+        self.llm_config = CConfig.config["LLM"]
         # 加载提示词模板
         self._load_prompt_template()
 
@@ -511,7 +510,7 @@ class Agent:
             f"助手 {self.agent_name} 好感度更新: 变化 {change}, 当前 {self.agent_config.love}"
         )
 
-    async def get_msg_data(self, msg: str) -> list[Message]:
+    async def get_msg_data(self, msg: str) -> list[dict]:
         """
         获取发送到大模型的上下文
 
@@ -541,11 +540,11 @@ class Agent:
         core_info, core_time = results[2]
         emotion_info, emotion_time = results[3]
 
-        # 打印或记录耗时
-        print(f"Knowledge search time: {db_time:.4f}s")
-        print(f"Memory search time: {mem_time:.4f}s")
-        print(f"Core memory search time: {core_time:.4f}s")
-        print(f"Emotion processing time: {emotion_time:.4f}s")
+        # # 打印或记录耗时
+        # print(f"Knowledge search time: {db_time:.4f}s")
+        # print(f"Memory search time: {mem_time:.4f}s")
+        # print(f"Core memory search time: {core_time:.4f}s")
+        # print(f"Emotion processing time: {emotion_time:.4f}s")
 
         # 返回消息列表
         res_msg = []
@@ -582,14 +581,20 @@ class Agent:
 
         # 合并上下文、世界书、记忆信息, 并添加情绪指令
         final_content = "\n".join(context_extras)
-        final_content += f"\n<当前时间>{format_time}</当前时间>\n<用户对话内容或动作>\n{msg}\n</用户对话内容或动作>"
-
-        self.msg_data_tmp = [{"role": "user", "content": final_content}]
-
         # 系统 Prompt + 历史记录 + 当前构建的 Context
-        system_msg: list[Message] = [{"role": "system", "content": self.prompt}]
+        system_msg: list[dict] = [
+            {"role": "system", "content": self.prompt},
+            {"role": "user", "content": final_content},
+        ]
 
-        return system_msg + self.msg_data + self.msg_data_tmp  # type: ignore
+        self.msg_data_tmp = [
+            {
+                "role": "user",
+                "content": f"\n当前时间:{format_time}\n用户对话内容或动作:\n{msg}\n",
+            }
+        ]
+
+        return system_msg + self.msg_data + self.msg_data_tmp
 
     async def add_msg(self, assistant_msg: str) -> None:
         """

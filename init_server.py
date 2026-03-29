@@ -1,6 +1,5 @@
 import sys
 import traceback
-from utils.socket_asr import ASRServer
 from utils.log import logger
 import os
 from utils.logo import print_moechat_logo
@@ -79,4 +78,3 @@ async def init_gptsovits():
         )
     except Exception as e:
         logger.error(f"初始化GPT-SoVITS失败: {e}")
-        exit()

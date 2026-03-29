@@ -1,14 +1,11 @@
 import base64
 import json
-from fastapi.responses import StreamingResponse
 from fastapi import (
     APIRouter,
 )
 from core.chat_core import tts_task, TTSData
-from utils.split_text import remove_parentheses_content_and_split
-
-# 聊天接口
 from pydantic import BaseModel
+from utils.split_text import remove_parentheses_content_and_split
 
 
 class msg_data(BaseModel):
@@ -35,4 +32,9 @@ async def tts(params: msg_data):
 
     msg = remove_parentheses_content_and_split(params.msg, is_remove_incomplete=False)
 
-    return StreamingResponse(start_tts_task(msg), media_type="text/event-stream")
+    audio_data = await tts_task(TTSData(text=params.msg, ref_audio="", ref_text=""))
+
+    if audio_data is None:
+        return {"message": msg, "file": None}
+    encode_data = base64.b64encode(audio_data).decode("utf-8")
+    return {"message": params.msg, "file": encode_data}

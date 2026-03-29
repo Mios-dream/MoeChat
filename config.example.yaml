@@ -1,0 +1,33 @@
+Core:
+  sv:
+    is_up: false
+    master_audio: test.wav # 包含你声音的wav音频文件，建议3s-5s左右。
+    thr: # 阈值，越小越敏感，建议0.5-0.8之间，实测好像不是很有用？
+
+LLM: # 用于其他任务的大模型
+  api: https://dashscope.aliyuncs.com/compatible-mode/v1
+  key: your-api-key-here
+  model: qwen3.5-flash-2026-02-23
+  extra_config:
+    enable_thinking: false
+    # 大模型API额外参数，如：temperature:0.7，温度参数
+
+ChatLLM: # 聊天专用大模型配置
+  api: https://dashscope.aliyuncs.com/compatible-mode/v1
+  key: your-api-key-here
+  model: qwen-flash-character
+  extra_config:
+    # enable_thinking: false
+    # 大模型API额外参数，如：temperature: 0.7，温度参数
+
+SLM: # 用于语音检测，改写，意图判断的小模型
+  api: http://localhost:11434/v1
+  key:
+  model: qwen3:0.6b
+  extra_config:
+    # 大模型API额外参数，如：temperature: 0.7，温度参数
+    temperature: 0.6
+    stream: false
+
+GSV:
+  api: http://127.0.0.1:9880/tts

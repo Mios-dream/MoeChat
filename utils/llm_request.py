@@ -1,32 +1,27 @@
-import json
-import httpx
 from utils import config as CConfig
-from typing import TypedDict
+from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessageParam
+import json
+import re
 
 
-# 大模型配置
-llm_key = CConfig.config["LLM"]["key"]
-llm_headers = {"Content-Type": "application/json", "Authorization": f"Bearer {llm_key}"}
-llm_data = {"model": CConfig.config["LLM"]["model"], "stream": True}
-# 添加额外配置（如果存在）
-if CConfig.config["LLM"]["extra_config"]:
-    llm_data.update(CConfig.config["LLM"]["extra_config"])
+def parse_llm_json_response(content: str):
+    """从 LLM 文本响应中提取首个 JSON 对象并反序列化。
 
-# 小模型配置
-slm_key = CConfig.config["SLM"]["key"]
-slm_headers = {"Content-Type": "application/json", "Authorization": f"Bearer {slm_key}"}
-slm_data = {"model": CConfig.config["SLM"]["model"], "stream": False}
-# 添加额外配置（如果存在）
-if CConfig.config["SLM"]["extra_config"]:
-    slm_data.update(CConfig.config["SLM"]["extra_config"])
+    背景：
+    - 部分模型可能返回 ```json 包裹文本或夹带说明文本。
+    - 这里使用正则抓取最外层 `{...}`，尽量容错。
 
-
-class Message(TypedDict):
-    role: str
-    content: str
+    异常：
+    - 若未找到 JSON 片段，抛出 `ValueError`。
+    """
+    json_match = re.search(r"\{[\s\S]*\}", content)
+    if not json_match:
+        raise ValueError("无法解析 LLM 返回的 JSON")
+    return json.loads(json_match.group())
 
 
-async def llm_request_stream(msg: list[Message]):
+async def llm_request_stream(msg: list[ChatCompletionMessageParam]):
     """
     流式HTTP请求函数，用于与大语言模型进行通信并流式返回输出内容,流式协议为sse
 
@@ -40,126 +35,83 @@ async def llm_request_stream(msg: list[Message]):
         async for content in llm_request_stream(messages):
             print(content, end='', flush=True)
     """
-    # 构造请求数据
-    llm_data["messages"] = msg
-
-    # 发起流式请求
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            async with client.stream(
-                "POST",
-                url=CConfig.config["LLM"]["api"],
-                json=llm_data,
-                headers=llm_headers,
-            ) as response:
-                # 检查响应状态
-                if response.status_code != 200:
-                    raise Exception(
-                        f"LLM API请求失败，状态码: {response.status_code}，响应内容: {response.text}"
-                    )
-
-                # 流式处理响应
-                async for line in response.aiter_lines():
-                    if line:
-                        # 处理SSE格式的数据行
-                        if line.startswith("data:"):
-                            data_str = line[5:].strip()
-
-                            # 检查是否为结束标记
-                            if data_str == "[DONE]":
-                                break
-
-                            try:
-                                # 解析JSON数据
-                                json_data = json.loads(data_str)
-
-                                # 提取内容
-                                content = json_data["choices"][0]["delta"].get(
-                                    "content", ""
-                                )
-
-                                # 如果有内容则返回
-                                if content:
-                                    yield content
-
-                            except json.JSONDecodeError:
-                                # 忽略无法解析的行
-                                continue
-
-    except httpx.TimeoutException:
-        raise Exception("LLM API请求超时")
-    except httpx.RequestError as e:
-        raise Exception(f"LLM API请求错误: {str(e)}")
-    except Exception as e:
-        raise Exception(f"LLM处理过程中发生错误: {str(e)}")
+    client = AsyncOpenAI(
+        api_key=CConfig.config["LLM"]["key"], base_url=CConfig.config["LLM"]["api"]
+    )
+    response = await client.chat.completions.create(
+        model=CConfig.config["LLM"]["model"],
+        messages=msg,
+        stream=True,
+        extra_body=CConfig.config["LLM"].get("extra_config", {}),
+    )
+    async for chunk in response:
+        content = chunk.choices[0].delta.content
+        if content:
+            yield content
 
 
-async def llm_request(msg: list[Message]) -> str:
+async def llm_request(msg: list[ChatCompletionMessageParam]) -> str | None:
     """
     LLM(大参数模型)快速请求，非流式
     :param data: 消息链
     :return: 请求结果
     """
-
-    # 发起流式请求
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                url=CConfig.config["LLM"]["api"],
-                json={
-                    "model": CConfig.config["LLM"]["model"],
-                    "stream": False,
-                    "messages": msg,
-                },
-                headers=llm_headers,
-            )
-            # 检查响应状态
-            if response.status_code != 200:
-                raise Exception(
-                    f"LLM API请求失败，状态码: {response.status_code}，响应内容: {response.text}"
-                )
-            # 解析响应
-            response_json = response.json()
-            content = response_json["choices"][0]["message"]["content"]
-            return content
-
-    except httpx.TimeoutException:
-        raise Exception("LLM API请求超时")
-    except httpx.RequestError as e:
-        raise Exception(f"LLM API请求错误: {str(e)}")
-    except Exception as e:
-        raise Exception(f"LLM处理过程中发生错误: {str(e)}")
+    client = AsyncOpenAI(
+        api_key=CConfig.config["LLM"]["key"], base_url=CConfig.config["LLM"]["api"]
+    )
+    response = await client.chat.completions.create(
+        model=CConfig.config["LLM"]["model"],
+        messages=msg,
+        stream=False,
+        extra_body=CConfig.config["LLM"].get("extra_config", {}),
+    )
+    content = response.choices[0].message.content
+    return content
 
 
-async def slm_request(messages: list) -> str | None:
+async def chat_llm_request_stream(msg: list[ChatCompletionMessageParam]):
+    """
+    流式HTTP请求函数，用于与大语言模型进行通信并流式返回输出内容,流式协议为sse
+
+    Args:
+        msg (list): 包含对话历史和当前用户消息的消息列表
+
+    Yields:
+        str: 模型流式输出的内容片段
+
+    Example:
+        async for content in llm_request_stream(messages):
+            print(content, end='', flush=True)
+    """
+    client = AsyncOpenAI(
+        api_key=CConfig.config["ChatLLM"]["key"],
+        base_url=CConfig.config["ChatLLM"]["api"],
+    )
+    response = await client.chat.completions.create(
+        model=CConfig.config["ChatLLM"]["model"],
+        messages=msg,
+        stream=True,
+        extra_body=CConfig.config["ChatLLM"].get("extra_config", {}),
+    )
+    async for chunk in response:
+        content = chunk.choices[0].delta.content
+        if content:
+            yield content
+
+
+async def slm_request(msg: list[ChatCompletionMessageParam]) -> str | None:
     """
     SLM(小参数模型)快速请求，非流式
     :param data: 消息链
     :return: 请求结果
     """
-
-    slm_data["messages"] = messages
-
-    # 异步发送post请求
-    # 创建一个httpx的异步客户端
-    async with httpx.AsyncClient() as client:
-        # 发送post请求
-        response = await client.post(
-            "",  # 这里应该是实际的API URL
-            headers=slm_headers,
-            json=slm_data,  # httpx直接支持json参数，无需手动json.dumps
-        )
-
-        if response.status_code != 200:
-            raise Exception(f"请求失败，状态码: {response.status_code}")
-
-        response_json = response.json()
-        content = response_json["choices"][0]["message"]["content"]
-        # 非思考输出兼容
-        # content = response_json["choices"][0]["message"]["content"]
-        # content = re.split(r"</think>", content)
-        # return content[1]
-
-        return content
-
-    return None
+    client = AsyncOpenAI(
+        api_key=CConfig.config["SLM"]["key"], base_url=CConfig.config["SLM"]["api"]
+    )
+    response = await client.chat.completions.create(
+        model=CConfig.config["SLM"]["model"],
+        messages=msg,
+        stream=False,
+    )
+    content = response.choices[0].message.content
+    return content

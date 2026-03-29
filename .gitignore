@@ -9,5 +9,6 @@ __pycache__
 /data/agents/*
 !/data/agents/Chat酱/info.yaml
 data/last_used_agent.txt
-
+uv.lock
+config.yaml
 test*
