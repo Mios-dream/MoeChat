@@ -1,7 +1,7 @@
 # import
 from models.types.assistant_info import AssistantInfo
-from utils import embedding
-from utils import log as Log
+from my_utils import embedding
+from my_utils import log as Log
 import yaml
 import time
 import faiss

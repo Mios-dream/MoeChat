@@ -2,7 +2,7 @@ import base64
 import json
 
 import numpy as np
-from utils.pysilero.pysilero import VADIterator
+from my_utils.pysilero.pysilero import VADIterator
 
 
 # vad接口

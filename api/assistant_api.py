@@ -14,7 +14,7 @@ from models.dto.assistant_request import (
 )
 
 from services.assistant_service import AssistantService
-from utils.file_utils import get_latest_modification_time
+from my_utils.file_utils import get_latest_modification_time
 from fastapi import (
     APIRouter,
     File,
@@ -24,7 +24,7 @@ from fastapi import (
     UploadFile,
 )
 from Config import Config
-from utils.log import logger
+from my_utils.log import logger
 
 
 assistant_api = APIRouter()

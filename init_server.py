@@ -1,10 +1,13 @@
+from Config import Config
 import sys
 import traceback
-from utils.log import logger
+from my_utils.log import logger
 import os
-from utils.logo import print_moechat_logo
-from utils.version import get_project_version
+from my_utils.logo import print_moechat_logo
+from my_utils.version import get_project_version
 from services.assistant_service import AssistantService
+from my_utils import config as CConfig
+from services.tts_service import ttsService
 
 assistant_service = AssistantService()
 
@@ -20,7 +23,6 @@ async def init():
 
         await create_data_folder()
         await initialize_assistant()
-        await init_gptsovits()
 
     except Exception as e:
         _exc_type, _exc_value, exc_traceback = sys.exc_info()
@@ -59,22 +61,3 @@ async def initialize_assistant():
         logger.info(f"成功初始化默认助手: {agent.agent_name}")
     else:
         logger.warning("未找到可用的助手，请创建一个助手后再使用")
-
-
-async def init_gptsovits():
-    """
-    对gptsovits进行初始化
-    """
-    # 获取当前助手的设置
-    current_agent = assistant_service.get_current_assistant()
-    if not current_agent:
-        logger.info("没有活动的助手，跳过GPT-SoVITS初始化")
-        return
-
-    try:
-        await assistant_service.set_gptsovits_models(
-            current_agent.agent_config.gsvSetting.sovitsModelPath,
-            current_agent.agent_config.gsvSetting.gptModelPath,
-        )
-    except Exception as e:
-        logger.error(f"初始化GPT-SoVITS失败: {e}")

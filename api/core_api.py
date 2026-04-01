@@ -1,7 +1,7 @@
 from fastapi import (
     APIRouter,
 )
-from utils.version import get_project_version
+from my_utils.version import get_project_version
 
 core_api = APIRouter()
 

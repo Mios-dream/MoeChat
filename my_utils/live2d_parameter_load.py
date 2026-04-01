@@ -1,5 +1,5 @@
-from utils.llm_request import llm_request, parse_llm_json_response
-from utils.log import logger
+from my_utils.llm_request import llm_request, parse_llm_json_response
+from my_utils.log import logger
 from pathlib import Path
 import json
 import time

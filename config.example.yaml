@@ -29,5 +29,11 @@ SLM: # 用于语音检测，改写，意图判断的小模型
     temperature: 0.6
     stream: false
 
+TTS:
+  mode: local # 可选: api / local。
+  gptsovits_lite:
+    use_bert: true
+    use_flash_attn: false
+
 GSV:
   api: http://127.0.0.1:9880/tts

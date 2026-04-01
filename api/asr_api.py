@@ -8,12 +8,12 @@ import soundfile as sf
 from fastapi import WebSocket
 from io import BytesIO
 import numpy as np
-from utils.pysilero import VADIterator
-from utils.socket_asr import ASRServer
-from utils.speak_finish import isSpeakFinish, SpeakWithAssistant
+from my_utils.pysilero import VADIterator
+from my_utils.socket_asr import ASRServer
+from my_utils.speak_finish import isSpeakFinish, SpeakWithAssistant
 
 # from scipy.signal import resample
-from utils.log import logger
+from my_utils.log import logger
 from fastapi.responses import JSONResponse
 
 asr_api = APIRouter()

@@ -4,12 +4,13 @@ import time
 import httpx
 import yaml
 from Config import Config
-from utils import config as CConfig
+from services.tts_service import ttsService
+from my_utils import config as CConfig
 from models.dto.assistant_request import AddAssistantRequest, UpdateAssistantRequest
 from models.types.assistant_info import AssistantInfo
-from utils.agent import Agent
-from utils.file_utils import get_latest_modification_time
-import utils.log as Log
+from my_utils.agent import Agent
+from my_utils.file_utils import get_latest_modification_time
+import my_utils.log as Log
 
 
 class AssistantService:
@@ -35,47 +36,6 @@ class AssistantService:
         self.assistants_cache: dict[str, AssistantInfo] = {}
         # 初始化已加载助手为空字典
         self.loaded_agents: dict[str, Agent] = {}
-
-    async def set_gptsovits_models(self, vits_weights: str, gpt_weights: str):
-        """
-        设置助手的gptsovits模型
-        """
-        if not vits_weights or not gpt_weights:
-            Log.logger.warning(
-                "设置gptsovits模型出错，SoVITS模型路径或GPT_weights路径为空"
-            )
-            return
-        try:
-            params = {"weights_path": vits_weights}
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    str(CConfig.config["GSV"]["api"]).replace(
-                        "/tts", "/set_sovits_weights"
-                    ),
-                    params=params,
-                )
-            if response.status_code != 200:
-                Log.logger.error(f"设置SoVITS模型失败: {response.text}")
-                raise Exception(f"设置SoVITS模型失败: {response.text}")
-        except Exception as e:
-            Log.logger.error(f"设置SoVITS模型失败: {e}")
-            raise Exception(f"设置SoVITS模型失败: {e}")
-
-        try:
-            params = {"weights_path": gpt_weights}
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    str(CConfig.config["GSV"]["api"]).replace(
-                        "/tts", "/set_gpt_weights"
-                    ),
-                    params=params,
-                )
-            if response.status_code != 200:
-                Log.logger.error(f"设置GPT_weights失败: {response.text}")
-                raise Exception(f"设置GPT_weights失败: {response.text}")
-        except Exception as e:
-            Log.logger.error(f"设置GPT_weights失败: {e}")
-            raise Exception(f"设置GPT_weights失败: {e}")
 
     def load_assistant_info(self) -> list[AssistantInfo]:
         """
@@ -267,17 +227,44 @@ class AssistantService:
         if not os.path.exists(assistant_info_path):
             raise FileNotFoundError(f"助手 '{assistant_name}' 不存在")
 
+        assistant_asset_base_path = f"{Config.BASE_AGENTS_PATH}/{assistant_name}/assets"
+
         # 检查助手是否已经加载
         if assistant_name in self.loaded_agents:
+
             self.current_assistant = self.loaded_agents[assistant_name]
             self.current_assistant_name = assistant_name
+
             try:
-                await self.set_gptsovits_models(
-                    self.current_assistant.agent_config.gsvSetting.sovitsModelPath,
-                    self.current_assistant.agent_config.gsvSetting.gptModelPath,
+                await ttsService.switch_tts_models(
+                    gpt_model_path=os.path.join(
+                        assistant_asset_base_path,
+                        "models",
+                        self.current_assistant.agent_config.gsvSetting.sovitsModelPath,
+                    ),
+                    sovits_model_path=os.path.join(
+                        assistant_asset_base_path,
+                        "models",
+                        self.current_assistant.agent_config.gsvSetting.gptModelPath,
+                    ),
+                    spk_audio_path=os.path.join(
+                        assistant_asset_base_path,
+                        "audio",
+                        self.current_assistant.agent_config.gsvSetting.refAudioPath,
+                    ),
+                    ref_audio_path=os.path.join(
+                        assistant_asset_base_path,
+                        "audio",
+                        self.current_assistant.agent_config.gsvSetting.refAudioPath,
+                    ),
+                    prompt_text=self.current_assistant.agent_config.gsvSetting.promptText,
+                    language=self.current_assistant.agent_config.gsvSetting.textLang,
                 )
             except Exception:
-                Log.logger.error(f"设置助手语音模型失败: {assistant_name},跳过设置模型")
+                Log.logger.error(
+                    f"设置助手语音模型失败: {assistant_name},跳过设置模型",
+                    exc_info=True,
+                )
             Log.logger.info(f"已切换到助手: {assistant_name}")
             return self.current_assistant
 
@@ -285,19 +272,44 @@ class AssistantService:
         try:
             agent = Agent(assistant_name)
             try:
-                await self.set_gptsovits_models(
-                    agent.agent_config.gsvSetting.sovitsModelPath,
-                    agent.agent_config.gsvSetting.gptModelPath,
+                await ttsService.switch_tts_models(
+                    gpt_model_path=os.path.join(
+                        assistant_asset_base_path,
+                        "models",
+                        agent.agent_config.gsvSetting.sovitsModelPath,
+                    ),
+                    sovits_model_path=os.path.join(
+                        assistant_asset_base_path,
+                        "models",
+                        agent.agent_config.gsvSetting.gptModelPath,
+                    ),
+                    spk_audio_path=os.path.join(
+                        assistant_asset_base_path,
+                        "audio",
+                        agent.agent_config.gsvSetting.refAudioPath,
+                    ),
+                    ref_audio_path=os.path.join(
+                        assistant_asset_base_path,
+                        "audio",
+                        agent.agent_config.gsvSetting.refAudioPath,
+                    ),
+                    prompt_text=agent.agent_config.gsvSetting.promptText,
+                    language=agent.agent_config.gsvSetting.textLang,
                 )
             except Exception:
-                Log.logger.error(f"设置助手语音模型失败: {assistant_name},跳过设置模型")
+                Log.logger.error(
+                    f"设置助手语音模型失败: {assistant_name},跳过设置模型",
+                    exc_info=True,
+                )
             self.current_assistant = agent
             self.current_assistant_name = assistant_name
             self.loaded_agents[assistant_name] = agent
             Log.logger.info(f"已加载并切换到助手: {assistant_name}")
             return agent
         except Exception as e:
-            Log.logger.error(f"加载助手失败: {assistant_name}, 错误: {e}")
+            Log.logger.error(
+                f"加载助手失败: {assistant_name}, 错误: {e}", exc_info=True
+            )
             raise RuntimeError(f"加载助手 '{assistant_name}' 失败: {str(e)}")
 
     def get_current_assistant(self) -> Agent | None:

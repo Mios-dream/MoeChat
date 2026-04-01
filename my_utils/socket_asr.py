@@ -4,7 +4,7 @@ import gc
 import torch
 from funasr import AutoModel
 from funasr.utils.postprocess_utils import rich_transcription_postprocess
-from utils.log import logger
+from my_utils.log import logger
 
 
 class ASRServer:

@@ -5,7 +5,7 @@ from fastapi import (
 )
 from core.chat_core import tts_task, TTSData
 from pydantic import BaseModel
-from utils.split_text import remove_parentheses_content_and_split
+from my_utils.split_text import remove_parentheses_content_and_split
 
 
 class msg_data(BaseModel):

@@ -2,7 +2,7 @@ import os
 import yaml
 import jionlp as jio
 import time
-from utils import embedding, prompt
+from my_utils import embedding, prompt
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import LiteralScalarString
 import numpy as np
@@ -10,7 +10,7 @@ import pickle
 import requests
 import jionlp
 from bisect import bisect_left, bisect_right
-from utils import log as Log
+from my_utils import log as Log
 from models.types.assistant_info import AssistantInfo
 
 
@@ -224,8 +224,8 @@ class Memory:
                 res_tag = res
             else:
                 res_tag = "日常闲聊"
-        except:
-            Log.logger.error("错误获取聊天信息失败！")
+        except Exception:
+            Log.logger.error("错误获取聊天信息失败！", exc_info=True)
             res_tag = "日常闲聊"
         t_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t_n))
         m1 = data[-2]["content"]

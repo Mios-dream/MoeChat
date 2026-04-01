@@ -4,8 +4,8 @@ import hashlib
 import pickle
 import numpy as np
 import faiss
-from utils import embedding
-from utils import log as Log
+from my_utils import embedding
+from my_utils import log as Log
 from models.types.assistant_info import AssistantInfo
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"

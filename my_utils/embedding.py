@@ -2,7 +2,7 @@ from transformers import AutoTokenizer, AutoModel
 import torch
 from modelscope import snapshot_download
 import numpy as np
-from utils.log import logger as Log
+from my_utils.log import logger as Log
 
 import os
 

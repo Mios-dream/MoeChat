@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from utils.llm_request import llm_request
+from my_utils.llm_request import llm_request
 from pydantic import BaseModel
 from typing import Any, cast
 from openai.types.chat import ChatCompletionMessageParam

@@ -1,18 +1,21 @@
 from collections.abc import Callable
 import json
+import os
 import time
 import asyncio
 import base64
 import re
 import heapq
 from typing import Any
-import httpx
 from dataclasses import dataclass
+
+from Config import Config
 from models.dto.chat_request import chat_data
-from utils import config as CConfig
-from utils.live2d_parameter_load import load_live2d_parameters
-from utils.log import logger
-from utils.llm_request import chat_llm_request_stream
+from services.tts_service import ttsService
+from my_utils import config as CConfig
+from my_utils.live2d_parameter_load import load_live2d_parameters
+from my_utils.log import logger
+from my_utils.llm_request import chat_llm_request_stream
 from services.assistant_service import AssistantService
 from services.expression_generator_service import ExpressionGenerator
 from pydantic import BaseModel
@@ -161,32 +164,6 @@ class StreamProcessor:
         self.sentence_complete_callbacks.append(callback)
 
 
-async def gptsovits_tts(data: dict):
-    """
-    调用gptsovits进行语音合成
-
-    Parameters:
-        data (dict): 符合gptsovits的语音合成参数
-    """
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.post(CConfig.config["GSV"]["api"], json=data, timeout=60)
-            if res.status_code == 200:
-                return res.content
-            else:
-                logger.error(f"[错误]tts语音合成失败！！！")
-                logger.error(data)
-                logger.error(res.text)
-                return None
-        except httpx.TimeoutException as e:
-            logger.error(f"[错误]tts语音合成超时！！！")
-            return None
-        except Exception as e:
-            logger.error(f"[错误]tts语音合成失败！！！ 错误信息: {e}")
-            logger.error(data)
-            return None
-
-
 async def tts_task(tts_data: TTSData) -> bytes | None:
     """
     构建tts任务
@@ -206,29 +183,32 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
     # msg = clear_text(tts_data.text)
     if len(msg) == 0:
         return None
-    ref_audio = tts_data.ref_audio
-    ref_text = tts_data.ref_text
     logger.info(f"[tts文本]{msg}")
+    assistant_asset_base_path = f"{Config.BASE_AGENTS_PATH}/{agent.agent_name}/assets"
     data = {
         "text": msg,
         "text_lang": agent.agent_config.gsvSetting.textLang,
-        "ref_audio_path": agent.agent_config.gsvSetting.refAudioPath,
-        "prompt_text": agent.agent_config.gsvSetting.promptText,
+        "ref_audio_path": os.path.join(
+            assistant_asset_base_path,
+            "audio",
+            (tts_data.ref_text or agent.agent_config.gsvSetting.refAudioPath),
+        ),
+        "prompt_text": tts_data.ref_text or agent.agent_config.gsvSetting.promptText,
         "prompt_lang": agent.agent_config.gsvSetting.promptLang,
-        "seed": agent.agent_config.gsvSetting.seed,
-        "top_k": agent.agent_config.gsvSetting.topK,
-        "batch_size": agent.agent_config.gsvSetting.batchSize,
     }
-    if ref_audio:
-        data["ref_audio_path"] = ref_audio
-        data["prompt_text"] = ref_text
+    tts_mode = CConfig.config.get("TTS", {}).get("mode", "api") or "api"
     try:
         start_time = time.time()
-        # print("开始合成的时间:", start_time)
-        byte_data = await gptsovits_tts(data)
-        print("合成完成的耗时:", time.time() - start_time)
+        if tts_mode == "local":
+            byte_data = await ttsService.local_gsv_tts(
+                data=data,
+            )
+        else:
+            byte_data = await ttsService.api_gsv_tts(data)
+        logger.info(f"合成完成的耗时: {time.time() - start_time}")
         return byte_data
-    except:
+    except Exception as e:
+        logger.error(f"[错误] TTS执行失败，mode={tts_mode}，错误信息: {e}")
         return None
 
 
@@ -344,15 +324,9 @@ async def motion_wrapper(
                 context=context,
                 speech_duration_ms=len(sentence_text_clean)
                 * 100,  # 粗略估计每个字100ms
-                timeout_seconds=3,
+                timeout_seconds=5,
                 previous_action=previous_action,  # 传入前一个动作状态
             )
-
-            if not frame_plans:
-                logger.warning(
-                    f"[动作规划] 第{sentence_id + 1}句未生成动作计划，跳过 motion_frame"
-                )
-                return
 
             logger.info(f"生成的动作帧: {frame_plans}")
 

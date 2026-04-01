@@ -1,4 +1,4 @@
-from utils import config as CConfig
+from my_utils import config as CConfig
 from fastapi import (
     APIRouter,
 )

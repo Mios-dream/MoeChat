@@ -1,7 +1,7 @@
 from pathlib import Path
-from utils.log import logger as Log
-from utils import config as CConfig
-from utils.llm_request import llm_request, parse_llm_json_response
+from my_utils.log import logger as Log
+from my_utils import config as CConfig
+from my_utils.llm_request import llm_request, parse_llm_json_response
 import asyncio
 import json
 import time
@@ -241,23 +241,18 @@ class ExpressionGenerator:
             else "优先输出与当前模型相关的参数。"
         )
         base_prompt = f"""你是一个 Live2D 虚拟形象的表情控制器。根据场景、对话或情感描述，生成表情参数。
-
 当前模型可用参数：
 {param_descriptions}
-
 返回 JSON 格式：
 {{
-  "expression": "表情描述",
   "parameters": {{
     "参数ID": 数值
-  }},
-  "duration": 过渡时间毫秒数
+  }}
 }}
 
-【必须输出的参数】每次生成必须包含以下所有参数的数值（即使变化很小也要给出）：
+【必须输出的参数】每次生成必须包含以下所有参数的数值：
 ParamEyeLOpen, ParamEyeROpen, ParamEyeBallX, ParamEyeBallY,
-ParamBrowLY, ParamBrowRY, ParamMouthOpenY, ParamMouthForm,
-ParamCheek, ParamAngleX, ParamAngleY, ParamAngleZ,
+ParamBrowLY, ParamBrowRY, ParamCheek, ParamAngleX, ParamAngleY, ParamAngleZ,
 ParamBodyAngleX, ParamBodyAngleY, ParamBodyAngleZ
 
 要求：
@@ -265,7 +260,9 @@ ParamBodyAngleX, ParamBodyAngleY, ParamBodyAngleZ
 2. 眼睛、眉毛、嘴巴、头部角度可组合表达，动作要明显，面部的参数一定要非常丰富，尤其是眼睛眉毛眼球等最细节的面部表情
 3. {eye_rule}
 4. {joint_rule}
-5. 只返回 JSON，不要附加解释"""
+5. 仅返回最必要的参数，减少动作延迟。
+6. 除非明确提及，否则不要修改发型等内容。
+"""
 
         # 如果有模型专属 prompt，附加到末尾
         if self.custom_prompt:

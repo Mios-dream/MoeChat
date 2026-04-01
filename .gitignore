@@ -12,3 +12,5 @@ data/last_used_agent.txt
 uv.lock
 config.yaml
 test*
+ffmpeg
+nltk_data
