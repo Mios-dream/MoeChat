@@ -336,11 +336,9 @@ class Agent:
         Parameters:
             turn_data: 对话数据
         """
-
-        def wrapper():
-            self.memoryEngine.add_memory(turn_data, self.current_time, self.llm_config)
-
-        await self._run_sync_task(wrapper)
+        await self.memoryEngine.add_memory(
+            turn_data, self.current_time, self.llm_config
+        )
 
     async def _task_save_history(self, turn_data):
         """

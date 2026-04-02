@@ -6,6 +6,7 @@ from api.core_api import core_api
 from api.tts_api import tts_api
 from api.assistant_api import assistant_api
 from api.llm_api import llm_api
+from api.config_api import config_api
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(asr_api)
@@ -14,3 +15,4 @@ api_router.include_router(core_api)
 api_router.include_router(tts_api)
 api_router.include_router(assistant_api)
 api_router.include_router(llm_api)
+api_router.include_router(config_api)

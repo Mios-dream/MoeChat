@@ -14,8 +14,7 @@ class Config:
 
     PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
     # nltk数据路径
-    NLTK_DATA_DIR = os.path.join(PROJECT_ROOT, "nltk_data")
-
+    NLTK_DATA_DIR = os.path.join(PROJECT_ROOT, "data", "models", "nltk_data")
     # FFMPEG路径
     FFMPEG_BIN = os.path.join(PROJECT_ROOT, "data", "models", "ffmpeg", "bin")
 

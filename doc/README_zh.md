@@ -126,11 +126,10 @@ uv run main_web.py
 整合包默认配置文件为 `config.yaml`。
 
 ```yaml
-Core:
-  sv:
-    is_up: false
-    master_audio: test.wav # 包含你声音的 wav 文件，建议 3s-5s
-    thr: # 阈值，越小越敏感，建议 0.5-0.8
+SV: # verify_speaker
+  enable: false
+  master_audio: test.wav # 包含你声音的 wav 文件，建议 3s-5s
+  thr: # 阈值，越小越敏感，建议 0.5-0.8
 
 LLM: # 其他任务使用的大模型
   api: https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -156,8 +155,13 @@ SLM: # 用于语音检测、改写、意图判断的小模型
     temperature: 0.6
     stream: false
 
-GSV:
-  api: http://127.0.0.1:9880/tts
+TTS: # 文本到语音模块
+  mode: local # 可选：api / local
+  gptsovits_lite:
+    use_bert: true # 是否使用 Bert 模型，默认 true，对中文进行优化，可能导致其他语言语音质量下降
+    use_flash_attn: false # 是否使用 Flash Attention，默认 false，需要安装 Flash Attention 库
+  gptsovits:
+    api: http://127.0.0.1:9880/tts # API 地址
 ```
 
 ## 接口说明

@@ -42,7 +42,7 @@ class TTSService:
                 params = {"weights_path": sovits_model_path}
                 async with httpx.AsyncClient() as client:
                     response = await client.get(
-                        str(CConfig.config["GSV"]["api"]).replace(
+                        str(CConfig.config["TTS"]["gptsovits"]["api"]).replace(
                             "/tts", "/set_sovits_weights"
                         ),
                         params=params,
@@ -58,7 +58,7 @@ class TTSService:
                 params = {"weights_path": gpt_model_path}
                 async with httpx.AsyncClient() as client:
                     response = await client.get(
-                        str(CConfig.config["GSV"]["api"]).replace(
+                        str(CConfig.config["TTS"]["gptsovits"]["api"]).replace(
                             "/tts", "/set_gpt_weights"
                         ),
                         params=params,
@@ -127,7 +127,7 @@ class TTSService:
         async with httpx.AsyncClient() as client:
             try:
                 res = await client.post(
-                    CConfig.config["GSV"]["api"], json=data, timeout=60
+                    CConfig.config["TTS"]["gptsovits"]["api"], json=data, timeout=60
                 )
                 if res.status_code == 200:
                     return res.content

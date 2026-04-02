@@ -96,6 +96,17 @@ async def switch_assistant(switch_request: SwitchAssistantRequest):
         切换结果信息
     """
     try:
+        if not switch_request.name:
+            raise HTTPException(status_code=400, detail="Assistant name is required")
+        if switch_request.name == assistant_service.get_current_assistant_name():
+            # 获取助手详细信息返回给客户端
+            assistant_info = assistant_service.get_assistant_by_name(
+                switch_request.name
+            )
+            return {
+                "msg": f"成功切换到助手 '{switch_request.name}'",
+                "data": assistant_info.model_dump(),  # type: ignore
+            }
         # 调用服务层切换助手
         await assistant_service.set_assistant(switch_request.name)
 
@@ -395,4 +406,3 @@ async def delete_assistant(delete_request: DeleteAssistantRequest):
     except Exception as e:
         logger.error(f"删除助手失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"删除助手失败: {str(e)}")
-

@@ -12,6 +12,7 @@ import jionlp
 from bisect import bisect_left, bisect_right
 from my_utils import log as Log
 from models.types.assistant_info import AssistantInfo
+from my_utils.llm_request import llm_request
 
 
 class Memory:
@@ -41,8 +42,9 @@ class Memory:
         for root, dirs, files in os.walk(path):
             # print(files)
             for file in files:
+                file_path = os.path.join(root, file)
                 try:
-                    file_path = os.path.join(root, file)
+
                     if file_path.find(".yaml") == -1:
                         continue
                     msgs = []
@@ -200,25 +202,22 @@ class Memory:
             pickle.dump(v_list, f)
 
     # 提取记忆摘要，记录长期记忆
-    def add_memory(self, data: list, t_n: int, llm_config: dict):
+    async def add_memory(self, data: list, t_n: int, llm_config: dict):
         summary_memory_prompt = prompt.get_mem_tag_prompt
         res_msg = "用户：" + data[-2]["content"]
-        res_body = {
-            "model": llm_config["model"],
-            "messages": [
-                {"role": "system", "content": summary_memory_prompt},
-                {"role": "user", "content": res_msg},
-            ],
-        }
-        key = llm_config["key"]
-        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
         res_tag = ""
         try:
-            res = requests.post(
-                llm_config["api"], json=res_body, headers=headers, timeout=15
+            res = await llm_request(
+                [
+                    {"role": "system", "content": summary_memory_prompt},
+                    {"role": "user", "content": res_msg},
+                ]
             )
-            res = res.json()["choices"][0]["message"]["content"]
-            res = jionlp.remove_html_tag(res).replace(" ", "").replace("\n", "")
+            if not res:
+                Log.logger.error("LLM请求失败，未获取到记忆摘要！")
+                return
+
             Log.logger.info(f"记录日记结果【{res}】")
             if res.find("日常闲聊") == -1:
                 res_tag = res

@@ -126,11 +126,10 @@ Screenshots:
 The integrated package uses `config.yaml`.
 
 ```yaml
-Core:
-  sv:
-    is_up: false
-    master_audio: test.wav # WAV file containing your voice (3s-5s recommended)
-    thr: # Threshold. Lower means more sensitive. Suggested range: 0.5-0.8
+SV: # verify_speaker
+  enable: false
+  master_audio: test.wav # WAV file containing your voice (3s-5s recommended)
+  thr: # Threshold. Lower means more sensitive. Suggested range: 0.5-0.8
 
 LLM: # General-purpose LLM for non-chat tasks
   api: https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -153,11 +152,15 @@ SLM: # Small model for VAD rewrite and intent tasks
   key:
   model: qwen3:0.6b
   extra_config:
-    temperature: 0.6
     stream: false
 
-GSV:
-  api: http://127.0.0.1:9880/tts
+TTS: # Text-to-Speech module
+  mode: local # api / local。
+  gptsovits_lite:
+    use_bert: true # use Bert model, default true, may cause poor voice quality for other languages
+    use_flash_attn: false # use Flash Attention, default false, need to install Flash Attention library
+  gptsovits:
+    api: http://127.0.0.1:9880/tts
 ```
 
 ## API
