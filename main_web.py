@@ -1,3 +1,4 @@
+from Config import Config
 import asyncio
 from init_server import init
 from router.router import app

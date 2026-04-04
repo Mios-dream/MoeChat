@@ -2,15 +2,6 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 
-class ConfigManager:
-    """
-    统一配置管理器
-    所有配置从 config.yaml 读取，用户无需修改代码
-    """
-
-    pass
-
-
 # 读取配置文件
 yaml = YAML()
 yaml.preserve_quotes = True

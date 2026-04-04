@@ -2,25 +2,24 @@ SV: # verify_speaker 声纹验证配置
   enable: false
   master_audio: test.wav # 包含你声音的wav音频文件，建议3s-5s左右。
   thr: # 阈值，越小越敏感，建议0.5-0.8之间，实测好像不是很有用？
-
 LLM: # 用于其他任务的大模型
   api: https://dashscope.aliyuncs.com/compatible-mode/v1
-  key: your-api-key-here
-  model: qwen3.5-flash-2026-02-23
+  key: your-api-key
+  model: qwen3.5-plus
   extra_config:
     enable_thinking: false
     # 大模型API额外参数，如：temperature:0.7，温度参数
 
 ChatLLM: # 聊天专用大模型配置
   api: https://dashscope.aliyuncs.com/compatible-mode/v1
-  key: your-api-key-here
+  key: your-api-key
   model: qwen-flash-character
   extra_config:
-    # enable_thinking: false
+    enable_thinking: false
     # 大模型API额外参数，如：temperature: 0.7，温度参数
 
 SLM: # 用于语音检测，改写，意图判断的小模型
-  api: http://localhost:11434/v1
+  api: http://localhost:11434/v1/chat/completions
   key:
   model: qwen3:0.6b
   extra_config:
@@ -29,9 +28,15 @@ SLM: # 用于语音检测，改写，意图判断的小模型
     stream: false
 
 TTS:
-  mode: local # 可选: api / local。
+  mode: local # 可选: api / local
   gptsovits_lite:
     use_bert: true
     use_flash_attn: false
   gptsovits:
     api: http://127.0.0.1:9880/tts
+
+WakeWord:
+  enable: false
+  provider: cpu # 可选: cpu / cuda
+  keywords_score: 1.0
+  keywords_threshold: 0.25

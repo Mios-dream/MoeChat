@@ -1,4 +1,4 @@
-from my_utils import config as CConfig
+from my_utils import config_manager as CConfig
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 import json

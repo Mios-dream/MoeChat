@@ -1,4 +1,4 @@
-from my_utils import config as CConfig
+from my_utils import config_manager as CConfig
 from fastapi import (
     APIRouter,
     HTTPException,

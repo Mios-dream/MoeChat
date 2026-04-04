@@ -17,7 +17,8 @@
         "TTFT",
         "vect",
         "VITS",
-        "vtube"
+        "vtube",
+        "wakeword"
     ],
     "python-envs.defaultEnvManager": "ms-python.python:venv"
 }

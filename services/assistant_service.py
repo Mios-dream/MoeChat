@@ -5,7 +5,7 @@ import httpx
 import yaml
 from Config import Config
 from services.tts_service import ttsService
-from my_utils import config as CConfig
+from my_utils import config_manager as CConfig
 from models.dto.assistant_request import AddAssistantRequest, UpdateAssistantRequest
 from models.types.assistant_info import AssistantInfo
 from my_utils.agent import Agent

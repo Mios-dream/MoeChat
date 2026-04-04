@@ -1,4 +1,3 @@
-from Config import Config
 import sys
 import traceback
 from my_utils.log import logger
@@ -6,8 +5,7 @@ import os
 from my_utils.logo import print_moechat_logo
 from my_utils.version import get_project_version
 from services.assistant_service import AssistantService
-from my_utils import config as CConfig
-from services.tts_service import ttsService
+
 
 assistant_service = AssistantService()
 

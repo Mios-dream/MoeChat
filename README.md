@@ -87,15 +87,25 @@ Download links:
 - Backup (123Pan): [Download](https://www.123865.com/s/kxlvjv-0Jayv)
 - QQ Group: [967981851](https://qm.qq.com/q/6pfdCFxJcc)
 
-### Start Core Services
+## How to Use This Project
+
+1. Install dependencies
 
 ```bash
-# Start GPT-SoVITS server
-cd GPT-SoVITS-v2pro-20250604-nvidia50
-runtime\python.exe api_v2.py
-
-# Start MoeChat server (in integrated package root)
 uv sync
+```
+
+2. Check `download.py` and `Config.py`, then download required model files
+
+```bash
+uv run download.py
+```
+
+3. Configure `config.yaml`
+
+4. Start core services
+
+```bash
 uv run main_web.py
 ```
 
@@ -105,7 +115,7 @@ Thanks to SanSan for providing client support for MoeChat.
 
 > The current official client supports Windows only.
 
-The client provides Live2D display, desktop companion features, and configuration management.
+The client provides Live2D rendering, desktop companion capabilities, and configuration management, aiming to be an all-in-one desktop companion assistant.
 
 Client repository: [Meochat-APP](https://github.com/Mios-dream/Meochat-APP)
 
@@ -152,6 +162,7 @@ SLM: # Small model for VAD rewrite and intent tasks
   key:
   model: qwen3:0.6b
   extra_config:
+    temperature: 0.6
     stream: false
 
 TTS: # Text-to-Speech module
@@ -161,6 +172,12 @@ TTS: # Text-to-Speech module
     use_flash_attn: false # use Flash Attention, default false, need to install Flash Attention library
   gptsovits:
     api: http://127.0.0.1:9880/tts
+
+WakeWord: # Wake word detection
+  enable: false
+  provider: cpu # Optional: cpu / cuda
+  keywords_score: 1.0
+  keywords_threshold: 0.25
 ```
 
 ## API

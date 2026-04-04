@@ -87,15 +87,25 @@
 - 123 网盘备用：[下载链接](https://www.123865.com/s/kxlvjv-0Jayv)
 - QQ 群：[967981851](https://qm.qq.com/q/6pfdCFxJcc)
 
-### 启动核心
+## 如何使用本项目
+
+1. 安装依赖
 
 ```bash
-# 启动 GPT-SoVITS 服务端
-cd GPT-SoVITS-v2pro-20250604-nvidia50
-runtime\python.exe api_v2.py
-
-# 启动 MoeChat 服务端（在整合包根目录）
 uv sync
+```
+
+1. 查看`download.py`,和`Config.py`,下载必要的模型文件
+
+```bash
+uv run download.py
+```
+
+2. 配置`config.yaml`文件
+
+3. 启动核心服务
+
+```bash
 uv run main_web.py
 ```
 
@@ -162,6 +172,12 @@ TTS: # 文本到语音模块
     use_flash_attn: false # 是否使用 Flash Attention，默认 false，需要安装 Flash Attention 库
   gptsovits:
     api: http://127.0.0.1:9880/tts # API 地址
+
+WakeWord:
+  enable: false
+  provider: cpu # 可选: cpu / cuda
+  keywords_score: 1.0
+  keywords_threshold: 0.25
 ```
 
 ## 接口说明

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from Config import Config
 from models.dto.chat_request import chat_data
 from services.tts_service import ttsService
-from my_utils import config as CConfig
+from my_utils import config_manager as CConfig
 from my_utils.live2d_parameter_load import load_live2d_parameters
 from my_utils.log import logger
 from my_utils.llm_request import chat_llm_request_stream

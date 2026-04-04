@@ -4,6 +4,7 @@ import gc
 import torch
 from funasr import AutoModel
 from funasr.utils.postprocess_utils import rich_transcription_postprocess
+from Config import Config
 from my_utils.log import logger
 
 
@@ -11,8 +12,8 @@ class ASRServer:
     _instance = None
     _instance_lock = threading.Lock()
 
-    # ===== 可配置参数 =====
-    IDLE_TIMEOUT = 300  # 超过 300 秒未使用自动释放（5分钟）
+    # 配置参数
+    IDLE_TIMEOUT = 60  # 超过 60 秒未使用自动释放（1分钟）
     CHECK_INTERVAL = 30  # 后台检测间隔（秒）
 
     def __new__(cls):
@@ -42,35 +43,14 @@ class ASRServer:
         with self._model_lock:
             if self.asr_model is not None:
                 return
-
-            model_dir = "./data/models/SenseVoiceSmall"
             logger.info("[ASR] 正在加载 ASR 模型...")
 
-            try:
-                self.asr_model = AutoModel(
-                    model=model_dir,
-                    disable_update=True,
-                    device="cuda:0",
-                )
-                logger.info("[ASR] ASR 模型加载完成（GPU）")
-            except Exception as e:
-                logger.warning(e)
-                logger.info("[ASR] 未检测到本地模型，开始下载...")
-
-                from modelscope import snapshot_download
-
-                model_dir = snapshot_download(
-                    model_id="iic/SenseVoiceSmall",
-                    local_dir=model_dir,
-                    revision="master",
-                )
-
-                self.asr_model = AutoModel(
-                    model=model_dir,
-                    disable_update=True,
-                    device="cpu",
-                )
-                logger.info("[ASR] ASR 模型加载完成（CPU）")
+            self.asr_model = AutoModel(
+                model=Config.ASR_MODEL_DIR,
+                disable_update=True,
+                device="cuda:0",
+            )
+            logger.info("[ASR] ASR 模型加载完成（GPU）")
 
     def ensure_model_loaded(self):
         """
@@ -111,21 +91,20 @@ class ASRServer:
             if idle_time > self.IDLE_TIMEOUT:
                 self.release_model()
 
-    # =========================
     # ASR 接口
-    # =========================
     def asr(self, audio_data: bytes) -> str | None:
         self.ensure_model_loaded()
         if self.asr_model is None:
             return None
-        res = self.asr_model.generate(
-            input=audio_data,
-            cache={},
-            language="zh",
-            ban_emo_unk=True,
-            use_itn=False,
-            disable_pbar=True,
-        )
+        with torch.inference_mode():
+            res = self.asr_model.generate(
+                input=audio_data,
+                cache={},
+                language="zh",
+                ban_emo_unk=True,
+                use_itn=False,
+                disable_pbar=True,
+            )
 
         text = str(rich_transcription_postprocess(res[0]["text"])).replace(" ", "")
 

@@ -4,7 +4,7 @@ import soundfile as sf
 import io
 from Config import Config
 from my_utils.log import logger
-from my_utils import config as CConfig
+from my_utils import config_manager as CConfig
 import my_utils.log as Log
 
 

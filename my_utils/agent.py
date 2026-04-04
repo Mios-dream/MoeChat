@@ -3,7 +3,7 @@ import os
 import re
 from Config import Config
 from my_utils import long_mem, data_base, prompt, core_mem, log as Log
-from my_utils import config as CConfig
+from my_utils import config_manager as CConfig
 import time
 import jionlp
 import ast
@@ -395,6 +395,8 @@ class Agent:
         """
         # 角色名称
         self.char = self.agent_config.name
+        # 别称
+        self.alias = self.agent_config.alias
         # 对用户的称呼
         self.user = self.agent_config.user
         # 角色描述（角色设定）

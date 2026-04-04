@@ -14,12 +14,6 @@ class GSVSetting(BaseModel):
     refAudioPath: str = Field(..., description="助手语音合成的参考音频")
     promptText: str = Field(..., description="助手语音合成的参考文字")
     promptLang: str = Field(..., description="助手语音合成的参考文字语言")
-    seed: int = Field(-1, description="助手语音合成的随机种子")
-    topK: int = Field(30, description="助手语音合成的TopK")
-    batchSize: int = Field(20, description="助手语音合成的批量大小")
-    extra: dict = Field(
-        {"text_split_method": "cut0"}, description="助手语音合成的额外参数"
-    )
     extraRefAudio: dict = Field({}, description="助手语音合成的额外参考音频")
 
     @staticmethod
@@ -34,10 +28,6 @@ class GSVSetting(BaseModel):
             refAudioPath=data.get("refAudioPath", ""),
             promptText=data.get("promptText", ""),
             promptLang=data.get("promptLang", "zh"),
-            seed=data.get("seed", -1),
-            topK=data.get("topK", 30),
-            batchSize=data.get("batchSize", 20),
-            extra=data.get("extra", {"text_split_method": "cut0"}),
             extraRefAudio=data.get("extraRefAudio", {}),
         )
 
@@ -101,6 +91,8 @@ class AssistantInfo(BaseModel):
 
     # 助手名称
     name: str = Field(..., description="助手名称")
+    # 别称
+    alias: str = Field(..., description="助手别称")
     # 对用户的称呼
     user: str = Field(..., description="对用户的称呼")
     # 头像
@@ -137,7 +129,7 @@ class AssistantInfo(BaseModel):
     settings: AssistantSettings = Field(..., description="助手设置")
     # 助手GSV设置
     gsvSetting: GSVSetting = Field(..., description="助手GSV设置")
-
+    # 助手情绪系统设置
     emotionSetting: dict = Field({}, description="助手情绪系统设置")
 
     @staticmethod
@@ -147,6 +139,7 @@ class AssistantInfo(BaseModel):
         """
         return AssistantInfo(
             name=data.get("name", ""),
+            alias=data.get("alias", ""),
             user=data.get("user", "阁下"),
             avatar=data.get("avatar", ""),
             birthday=data.get("birthday", ""),
