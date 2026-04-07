@@ -20,8 +20,8 @@ from pydantic import BaseModel
 
 assistant_service = AssistantService()
 
-SENTENCE_END_PATTERNS = ("。", "！", "？", "...\n", "...")
-MIN_SENTENCE_LENGTH = 5
+SENTENCE_END_PATTERNS = ("。", "！", "？", "……\n", "……", "...\n", "...")
+MIN_SENTENCE_LENGTH = 6
 
 agent_expression_generators = {}  # 全局缓存助手对应的动作生成器实例，避免重复创建
 
@@ -58,8 +58,12 @@ class StreamProcessor:
         # 全部消息，ai可能回复多条语句
         self.full_msg: list[str] = []
 
-        # 缓存不完整的句子
+        # 普通文本缓存（不包含括号段）
         self.sentence_buffer = ""
+
+        # 括号段缓存：括号内容单独成段，优先保证完整
+        self.bracket_buffer = ""
+        self.segment_bracket_stack: list[str] = []
 
         # 创建标志，用于记录任务是否已完成
         self.llm_done = False
@@ -80,6 +84,77 @@ class StreamProcessor:
         self.motion_history: dict[int, str] = {}  # 句子ID -> 动作描述
         # TTS 专用：跨流式片段跟踪括号作用域，保证括号内容可跨句过滤
         self.tts_bracket_stack: list[str] = []
+
+    @staticmethod
+    def _is_sentence_end_at(text: str, idx: int) -> int:
+        """若 idx 处命中句尾模式，返回命中长度；否则返回 0。"""
+        for pattern in sorted(SENTENCE_END_PATTERNS, key=len, reverse=True):
+            if text.startswith(pattern, idx):
+                return len(pattern)
+        return 0
+
+    def _extract_plain_segments(self, force_flush: bool = False) -> list[str]:
+        """从普通文本缓存中提取可输出片段：句尾命中且长度达标。"""
+        ready: list[str] = []
+
+        while True:
+            boundary_end = -1
+            i = 0
+            while i < len(self.sentence_buffer):
+                hit_len = self._is_sentence_end_at(self.sentence_buffer, i)
+                if hit_len > 0:
+                    boundary_end = i + hit_len
+                    candidate = self.sentence_buffer[:boundary_end]
+                    cleaned = "".join(candidate.split())
+                    if len(cleaned) >= MIN_SENTENCE_LENGTH:
+                        break
+
+                    # 该句尾过短，继续查找后续句尾，避免阻断整个缓冲区的切分
+                    i = boundary_end
+                    boundary_end = -1
+                    continue
+                i += 1
+
+            if boundary_end < 0:
+                break
+
+            candidate = self.sentence_buffer[:boundary_end]
+            ready.append(candidate)
+            self.sentence_buffer = self.sentence_buffer[boundary_end:]
+
+        if force_flush and self.sentence_buffer.strip():
+            ready.append(self.sentence_buffer)
+            self.sentence_buffer = ""
+
+        return ready
+
+    @staticmethod
+    def _bracket_pairs() -> dict[str, str]:
+        return {
+            "(": ")",
+            "（": "）",
+            "[": "]",
+            "【": "】",
+            "{": "}",
+        }
+
+    async def _emit_segment(self, message_chunk: str):
+        """统一输出一个片段并触发回调。"""
+        if not message_chunk:
+            return
+
+        self.full_msg.append(message_chunk)
+        cleaned = "".join(message_chunk.split())
+        tts_cleaned = "".join(self._filter_tts_text(message_chunk).split())
+
+        await asyncio.gather(
+            *[
+                callback(self.sentence_count, cleaned, tts_cleaned)
+                for callback in self.sentence_complete_callbacks
+            ]
+        )
+
+        self.sentence_count += 1
 
     def _filter_tts_text(self, text: str) -> str:
         """过滤供 TTS 使用的文本：移除括号及其内部内容（支持跨句/跨片段）。"""
@@ -123,16 +198,6 @@ class StreamProcessor:
                 if match in agent.agent_config.gsvSetting.extraRefAudio:
                     return match
 
-    def _can_finalize_sentence(self) -> bool:
-        """句子完成判定：句尾命中且去空白后长度不小于阈值。"""
-        has_sentence_end = any(
-            self.sentence_buffer.endswith(p) for p in SENTENCE_END_PATTERNS
-        )
-        if not has_sentence_end:
-            return False
-        cleaned = "".join(self.sentence_buffer.split())
-        return len(cleaned) >= MIN_SENTENCE_LENGTH
-
     async def process_text_chunk(self, chunk: str):
         """
         改进版文本块处理：检测完整句子，并推送给前端和任务队列
@@ -143,52 +208,56 @@ class StreamProcessor:
         3. 检测到句尾符号时，立即触发回调（TTS+动作规划）
         """
 
-        # 将新文本添加到缓冲区
-        self.sentence_buffer += chunk
+        bracket_pairs = self._bracket_pairs()
+        opening_brackets = set(bracket_pairs.keys())
 
-        if self._can_finalize_sentence():
-            # 立即处理完整句子
-            message_chunk = self.sentence_buffer
+        for ch in chunk:
+            if self.segment_bracket_stack:
+                # 括号作用域内：无视句尾规则，直到括号完整闭合再输出
+                self.bracket_buffer += ch
+                if ch in opening_brackets:
+                    self.segment_bracket_stack.append(bracket_pairs[ch])
+                elif ch == self.segment_bracket_stack[-1]:
+                    self.segment_bracket_stack.pop()
+                    if not self.segment_bracket_stack:
+                        await self._emit_segment(self.bracket_buffer)
+                        self.bracket_buffer = ""
+                continue
 
-            self.full_msg.append(message_chunk)
-            # self.pending_sentences.append(message_chunk)
+            if ch in opening_brackets:
+                # 进入括号前先尝试释放已满足条件的普通句段
+                for plain_segment in self._extract_plain_segments(force_flush=False):
+                    await self._emit_segment(plain_segment)
 
-            # 清除句子中的空格和换行符，得到干净的文本用于TTS和动作规划
-            cleaned = "".join(message_chunk.split())
-            tts_cleaned = "".join(self._filter_tts_text(message_chunk).split())
-            # 并发句子完成回调
-            await asyncio.gather(
-                *[
-                    callback(self.sentence_count, cleaned, tts_cleaned)
-                    for callback in self.sentence_complete_callbacks
-                ]
-            )
+                self.segment_bracket_stack.append(bracket_pairs[ch])
+                self.bracket_buffer = ch
+                continue
 
-            # 递增句子计数器
-            self.sentence_count += 1
-            self.sentence_buffer = ""
+            self.sentence_buffer += ch
+            for plain_segment in self._extract_plain_segments(force_flush=False):
+                await self._emit_segment(plain_segment)
 
     async def process_remaining_text(self):
         """
         处理缓存的剩余文本（即没有结尾符号的情况）
         """
-        if len(self.sentence_buffer) > 0:
-            cleaned = "".join(self.sentence_buffer.split())
-            tts_cleaned = "".join(self._filter_tts_text(self.sentence_buffer).split())
-            self.full_msg.append(cleaned)
+        # 先释放普通文本中已命中句尾的片段
+        for plain_segment in self._extract_plain_segments(force_flush=False):
+            await self._emit_segment(plain_segment)
 
-            # 并发句子完成回调
-            await asyncio.gather(
-                *[
-                    callback(self.sentence_count, cleaned, tts_cleaned)
-                    for callback in self.sentence_complete_callbacks
-                ]
-            )
-            self.sentence_count += 1
-            self.sentence_buffer = ""
-            # 如果LLM已经完成，标记所有任务完成，且当前回调任务也完成也算完成
-            if self.llm_done:
-                self.tasks_done = True
+        # 再强制释放普通文本尾部残留
+        for plain_segment in self._extract_plain_segments(force_flush=True):
+            await self._emit_segment(plain_segment)
+
+        # 最后处理未闭合或尾部括号片段，避免内容丢失
+        if self.bracket_buffer.strip():
+            await self._emit_segment(self.bracket_buffer)
+            self.bracket_buffer = ""
+            self.segment_bracket_stack = []
+
+        # 如果LLM已经完成，标记所有任务完成，且当前回调任务也完成也算完成
+        if self.llm_done:
+            self.tasks_done = True
 
     def register_sentence_complete_callback(
         self, callback: Callable[[int, str, str], Any]
@@ -330,6 +399,7 @@ async def motion_wrapper(
         "sentence_id": sentence_id,
         "source_text": sentence_text,
         "motions": [],
+        "duration": 0,
         "timestamp_ms": current_time_ms,
         "done": False,
     }
@@ -358,20 +428,18 @@ async def motion_wrapper(
                 if sentence_id - 1 in motion_history:
                     previous_action = motion_history[sentence_id - 1]
 
-            # sentence_text_clean = re.sub(
-            #     r"\(.*?\)|（.*?）|【.*?】|\[.*?\]|\{.*?\}", "", sentence_text
-            # )
-            # sentence_text_clean = sentence_text_clean.replace(" ", "").replace("\n", "")
             sentence_text_clean = sentence_text.replace(" ", "").replace("\n", "")
+
+            duration_time = len(sentence_text_clean) * 100  # 粗略估计每个字100ms
 
             frame_plans = await motion_generator.generate_motion_plan(
                 speech_text=sentence_text,
                 context=context,
-                speech_duration_ms=len(sentence_text_clean)
-                * 200,  # 粗略估计每个字100ms
+                speech_duration_ms=duration_time,  # 粗略估计每个字100ms
                 timeout_seconds=5,
                 previous_action=previous_action,  # 传入前一个动作状态
             )
+            motion_event["duration"] = duration_time
 
             logger.info(f"生成的动作帧: {frame_plans}")
 
