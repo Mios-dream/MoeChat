@@ -182,7 +182,7 @@ class Agent:
         try:
             content = await llm_request(
                 [
-                    {"role": "system", "content": emotion_analysis_prompt},
+                    {"role": "user", "content": emotion_analysis_prompt},
                 ]
             )
         except Exception as e:

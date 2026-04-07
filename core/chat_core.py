@@ -5,9 +5,7 @@ import time
 import asyncio
 import base64
 import re
-import heapq
 from typing import Any
-from dataclasses import dataclass
 
 from Config import Config
 from models.dto.chat_request import chat_data
@@ -23,6 +21,7 @@ from pydantic import BaseModel
 assistant_service = AssistantService()
 
 SENTENCE_END_PATTERNS = ("。", "！", "？", "...\n", "...")
+MIN_SENTENCE_LENGTH = 5
 
 agent_expression_generators = {}  # 全局缓存助手对应的动作生成器实例，避免重复创建
 
@@ -40,21 +39,6 @@ class TTSData(BaseModel):
     text: str
     ref_audio: str
     ref_text: str
-
-
-@dataclass
-class PriorityEvent:
-    """优先级事件封装 - 用于SSE事件排序"""
-
-    priority: int  # 0=text_token, 1=sentence_ready, 2=audio, 3=motion, 4=done
-    timestamp_ms: float  # 事件时间戳 (ms)
-    data: dict  # 事件数据
-
-    def __lt__(self, other: "PriorityEvent") -> bool:
-        """用于优先级队列排序"""
-        if self.priority == other.priority:
-            return self.timestamp_ms < other.timestamp_ms
-        return self.priority < other.priority
 
 
 class StreamProcessor:
@@ -86,12 +70,45 @@ class StreamProcessor:
 
         # 句子跟踪
         self.sentence_count = 1  # 当前句子计数
-        self.sentence_complete_callbacks: list[Callable] = []  # 句子完成时的回调函数
+        self.sentence_complete_callbacks: list[Callable[[int, str, str], Any]] = (
+            []
+        )  # 句子完成时的回调函数
 
         # 时间戳与性能监控
         self.first_token_recorded = False
         # 新增：动作历史状态管理
         self.motion_history: dict[int, str] = {}  # 句子ID -> 动作描述
+        # TTS 专用：跨流式片段跟踪括号作用域，保证括号内容可跨句过滤
+        self.tts_bracket_stack: list[str] = []
+
+    def _filter_tts_text(self, text: str) -> str:
+        """过滤供 TTS 使用的文本：移除括号及其内部内容（支持跨句/跨片段）。"""
+        bracket_pairs = {
+            "(": ")",
+            "（": "）",
+            "[": "]",
+            "【": "】",
+            "{": "}",
+        }
+        opening = set(bracket_pairs.keys())
+
+        filtered_chars: list[str] = []
+        for ch in text:
+            if self.tts_bracket_stack:
+                # 在括号作用域内：支持嵌套与闭合
+                if ch in opening:
+                    self.tts_bracket_stack.append(bracket_pairs[ch])
+                elif ch == self.tts_bracket_stack[-1]:
+                    self.tts_bracket_stack.pop()
+                continue
+
+            if ch in opening:
+                self.tts_bracket_stack.append(bracket_pairs[ch])
+                continue
+
+            filtered_chars.append(ch)
+
+        return "".join(filtered_chars)
 
     def _get_emotion(self, msg: str) -> str | None:
         """查询文字中的情感字段"""
@@ -106,6 +123,16 @@ class StreamProcessor:
                 if match in agent.agent_config.gsvSetting.extraRefAudio:
                     return match
 
+    def _can_finalize_sentence(self) -> bool:
+        """句子完成判定：句尾命中且去空白后长度不小于阈值。"""
+        has_sentence_end = any(
+            self.sentence_buffer.endswith(p) for p in SENTENCE_END_PATTERNS
+        )
+        if not has_sentence_end:
+            return False
+        cleaned = "".join(self.sentence_buffer.split())
+        return len(cleaned) >= MIN_SENTENCE_LENGTH
+
     async def process_text_chunk(self, chunk: str):
         """
         改进版文本块处理：检测完整句子，并推送给前端和任务队列
@@ -119,21 +146,23 @@ class StreamProcessor:
         # 将新文本添加到缓冲区
         self.sentence_buffer += chunk
 
-        # 检测句尾符号 (句子完成)
-        has_sentence_end = any(
-            self.sentence_buffer.endswith(p) for p in SENTENCE_END_PATTERNS
-        )
-
-        if has_sentence_end:
+        if self._can_finalize_sentence():
             # 立即处理完整句子
             message_chunk = self.sentence_buffer
 
             self.full_msg.append(message_chunk)
             # self.pending_sentences.append(message_chunk)
 
-            # 触发句子完成回调
-            for callback in self.sentence_complete_callbacks:
-                await callback(self.sentence_count, message_chunk)
+            # 清除句子中的空格和换行符，得到干净的文本用于TTS和动作规划
+            cleaned = "".join(message_chunk.split())
+            tts_cleaned = "".join(self._filter_tts_text(message_chunk).split())
+            # 并发句子完成回调
+            await asyncio.gather(
+                *[
+                    callback(self.sentence_count, cleaned, tts_cleaned)
+                    for callback in self.sentence_complete_callbacks
+                ]
+            )
 
             # 递增句子计数器
             self.sentence_count += 1
@@ -144,12 +173,14 @@ class StreamProcessor:
         处理缓存的剩余文本（即没有结尾符号的情况）
         """
         if len(self.sentence_buffer) > 0:
-            self.full_msg.append(self.sentence_buffer)
+            cleaned = "".join(self.sentence_buffer.split())
+            tts_cleaned = "".join(self._filter_tts_text(self.sentence_buffer).split())
+            self.full_msg.append(cleaned)
 
             # 并发句子完成回调
             await asyncio.gather(
                 *[
-                    callback(self.sentence_count, self.sentence_buffer)
+                    callback(self.sentence_count, cleaned, tts_cleaned)
                     for callback in self.sentence_complete_callbacks
                 ]
             )
@@ -159,7 +190,9 @@ class StreamProcessor:
             if self.llm_done:
                 self.tasks_done = True
 
-    def register_sentence_complete_callback(self, callback: Callable[[int, str], Any]):
+    def register_sentence_complete_callback(
+        self, callback: Callable[[int, str, str], Any]
+    ):
         """注册句子完成时的回调函数 (用于触发TTS和动作规划)"""
         self.sentence_complete_callbacks.append(callback)
 
@@ -177,9 +210,7 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
         logger.error("[错误] 当前没有加载助手")
         return None
 
-    msg = tts_data.text
-    msg = re.sub(r"\(.*?\)|（.*?）|【.*?】|\[.*?\]|\{.*?\}", "", msg)
-    msg = msg.replace(" ", "").replace("\n", "")
+    msg = "".join(tts_data.text.split())
     # msg = clear_text(tts_data.text)
     if len(msg) == 0:
         return None
@@ -212,38 +243,43 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
         return None
 
 
-# 文本事件封装，触发TTS和动作规划任务
-async def text_wrapper(sentence_id, sentence_text, priority_queue):
-    # 记录文本完成事件（最高优先级）
+# 文本事件封装
+async def text_wrapper(sentence_id: int, sentence_text: str) -> dict[str, Any]:
     current_time_ms = time.time() * 1000
-    text_event = PriorityEvent(
-        priority=0,
-        timestamp_ms=current_time_ms,
-        data={
-            "type": "text",
-            "sentence_id": sentence_id,
-            "message": sentence_text,
-            "timestamp_ms": current_time_ms,
-            "done": False,
-        },
-    )
-    heapq.heappush(priority_queue, text_event)
+    return {
+        "type": "text",
+        "sentence_id": sentence_id,
+        "message": sentence_text,
+        "timestamp_ms": current_time_ms,
+        "done": False,
+    }
 
 
-# TTS任务封装，使用信号量控制并发，完成后推送音频事件到优先级队列
+# TTS任务封装，使用信号量控制并发，失败时返回空音频事件
 async def tts_wrapper(
     tts_semaphore: asyncio.Semaphore,
     sentence_id: int,
     sentence_text: str,
-    priority_queue: list[PriorityEvent],
+    tts_text: str,
     processor: StreamProcessor,
-):
+) -> dict[str, Any]:
+    current_time_ms = time.time() * 1000
+    audio_event: dict[str, Any] = {
+        "type": "audio",
+        "sentence_id": sentence_id,
+        "message": tts_text,
+        "source_text": sentence_text,
+        "file": "",
+        "timestamp_ms": current_time_ms,
+        "done": False,
+    }
+
     async with tts_semaphore:
         try:
             agent = assistant_service.get_current_assistant()
             if not agent:
                 logger.error("[错误] 当前没有加载助手")
-                return
+                return audio_event
             # 获取情绪和参考音频
             emotion = processor._get_emotion(sentence_text)
             ref_audio = ""
@@ -254,50 +290,58 @@ async def tts_wrapper(
                     ref_audio = agent_config[emotion][0]
                     ref_text = agent_config[emotion][1]
 
-            # 设置TTS数据并执行TTS任务
-            tts_data_item = TTSData(
-                text=sentence_text,
-                ref_audio=ref_audio,
-                ref_text=ref_text,
-            )
-            audio_data = await tts_task(tts_data_item)
-            if not audio_data:
-                logger.warning(
-                    f"[动作规划] TTS生成空音频，跳过 sentence_id: {sentence_id}"
+            if tts_text:
+                # 设置TTS数据并执行TTS任务
+                tts_data_item = TTSData(
+                    text=tts_text,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
                 )
-                return
-            encode_data = base64.b64encode(audio_data).decode("utf-8")
-            audio_event = PriorityEvent(
-                priority=1,  # TTS优先级次于文本
-                timestamp_ms=time.time() * 1000,
-                data={
-                    "type": "audio",
-                    "sentence_id": sentence_id,
-                    "message": sentence_text,
-                    "file": encode_data,
-                    "timestamp_ms": time.time() * 1000,
-                    "done": False,
-                },
-            )
-            heapq.heappush(priority_queue, audio_event)
+                audio_data = await tts_task(tts_data_item)
+                if audio_data:
+                    audio_event["file"] = base64.b64encode(audio_data).decode("utf-8")
+                else:
+                    logger.warning(
+                        f"[动作规划] TTS生成空音频，sentence_id: {sentence_id}"
+                    )
+            else:
+                logger.info(
+                    f"[动作规划] 句子无可读语音内容，发送空音频事件，sentence_id: {sentence_id}"
+                )
 
         except Exception as e:
             logger.error(f"[动作规划] 启动失败: {e}")
+        return audio_event
 
 
-# 动作规划任务封装，使用信号量控制并发，完成后推送动作事件到优先级队列
+# 动作规划任务封装，使用信号量控制并发，失败时返回空动作事件
 async def motion_wrapper(
     motion_semaphore: asyncio.Semaphore,
     sentence_id: int,
     sentence_text: str,
-    priority_queue: list[PriorityEvent],
-    motion_generator: ExpressionGenerator,
+    motion_generator: ExpressionGenerator | None,
     motion_history: dict | None = None,  # 新增：历史动作状态
-):
+) -> dict[str, Any]:
     logger.info(f"准备生成动作，句子ID: {sentence_id}, 内容: {sentence_text}")
+
+    current_time_ms = time.time() * 1000
+    motion_event: dict[str, Any] = {
+        "type": "motion_frame",
+        "sentence_id": sentence_id,
+        "source_text": sentence_text,
+        "motions": [],
+        "timestamp_ms": current_time_ms,
+        "done": False,
+    }
 
     async with motion_semaphore:
         try:
+            if motion_generator is None:
+                logger.warning(
+                    f"[动作规划] 动作生成器不可用，发送空动作事件，sentence_id: {sentence_id}"
+                )
+                return motion_event
+
             # 构建上下文信息，包含历史动作状态
             context = ""
             previous_action = ""
@@ -314,16 +358,17 @@ async def motion_wrapper(
                 if sentence_id - 1 in motion_history:
                     previous_action = motion_history[sentence_id - 1]
 
-            sentence_text_clean = re.sub(
-                r"\(.*?\)|（.*?）|【.*?】|\[.*?\]|\{.*?\}", "", sentence_text
-            )
-            sentence_text_clean = sentence_text_clean.replace(" ", "").replace("\n", "")
+            # sentence_text_clean = re.sub(
+            #     r"\(.*?\)|（.*?）|【.*?】|\[.*?\]|\{.*?\}", "", sentence_text
+            # )
+            # sentence_text_clean = sentence_text_clean.replace(" ", "").replace("\n", "")
+            sentence_text_clean = sentence_text.replace(" ", "").replace("\n", "")
 
             frame_plans = await motion_generator.generate_motion_plan(
                 speech_text=sentence_text,
                 context=context,
                 speech_duration_ms=len(sentence_text_clean)
-                * 100,  # 粗略估计每个字100ms
+                * 200,  # 粗略估计每个字100ms
                 timeout_seconds=5,
                 previous_action=previous_action,  # 传入前一个动作状态
             )
@@ -334,26 +379,49 @@ async def motion_wrapper(
                 frame_plans
             )
             # 记录动作到历史状态
-            if motion_history is not None:
+            if motion_history is not None and frame_plans:
                 motion_history[sentence_id] = frame_plans[0].get("action", "自然动作")
 
-            # 推送到优先级队列
-            current_time_ms = time.time() * 1000
-            motion_event = PriorityEvent(
-                priority=2,  # 低优先级
-                timestamp_ms=current_time_ms,
-                data={
-                    "type": "motion_frame",
-                    "sentence_id": sentence_id,
-                    "source_text": sentence_text,
-                    "motions": frame,
-                    "timestamp_ms": current_time_ms,
-                    "done": False,
-                },
-            )
-            heapq.heappush(priority_queue, motion_event)
+            motion_event["motions"] = frame or []
         except Exception as e:
             logger.warning(f"[动作规划] 第{sentence_id + 1}句动作生成失败: {e}")
+        return motion_event
+
+
+def _store_sentence_event(
+    sentence_events: dict[int, dict[str, dict[str, Any]]],
+    sentence_id: int,
+    event_key: str,
+    payload: dict[str, Any],
+):
+    """按句子聚合事件。"""
+    if sentence_id not in sentence_events:
+        sentence_events[sentence_id] = {}
+    sentence_events[sentence_id][event_key] = payload
+
+
+def _drain_ready_sentence_events(
+    sentence_events: dict[int, dict[str, dict[str, Any]]],
+    expected_sentence_id: int,
+    event_order: tuple[str, ...],
+) -> tuple[int, list[dict[str, Any]]]:
+    """按 sentence_id 递增释放完整事件集合。"""
+    ready_payloads: list[dict[str, Any]] = []
+
+    while True:
+        current = sentence_events.get(expected_sentence_id)
+        if not current:
+            break
+        if not all(event_type in current for event_type in event_order):
+            break
+
+        for event_type in event_order:
+            ready_payloads.append(current[event_type])
+
+        sentence_events.pop(expected_sentence_id, None)
+        expected_sentence_id += 1
+
+    return expected_sentence_id, ready_payloads
 
 
 # 启动LLM任务，处理流式响应，并在完成时处理剩余文本
@@ -413,8 +481,10 @@ async def llm_chat_with_tts(params: chat_data):
     # 创建流处理器实例，规划任务
     processor = StreamProcessor()
 
-    # 优先级事件队列（用于合并所有事件并按优先级输出）
-    priority_queue: list[PriorityEvent] = []
+    sentence_events: dict[int, dict[str, dict[str, Any]]] = {}
+    expected_sentence_id = 1
+    event_order = ("text", "audio")
+
     # 任务跟踪集合，确保所有后台任务完成后才结束主循环
     pending_tasks: set[asyncio.Task[Any]] = set()
 
@@ -427,28 +497,28 @@ async def llm_chat_with_tts(params: chat_data):
     tts_semaphore = asyncio.Semaphore(1)  # 最多1个并发TTS任务，防止过高的资源占用
 
     # 句子完成时的回调函数：启动TTS和动作规划
-    async def on_sentence_complete(sentence_id: int, sentence_text: str):
+    async def on_sentence_complete(sentence_id: int, sentence_text: str, tts_text: str):
         """当检测到句子完成时，立即启动TTS和动作规划"""
-        track_task(
-            asyncio.create_task(
-                text_wrapper(
-                    sentence_id=sentence_id,
-                    sentence_text=sentence_text,
-                    priority_queue=priority_queue,
-                )
+
+        async def create_text_event():
+            payload = await text_wrapper(
+                sentence_id=sentence_id,
+                sentence_text=sentence_text,
             )
-        )
-        track_task(
-            asyncio.create_task(
-                tts_wrapper(
-                    tts_semaphore=tts_semaphore,
-                    sentence_id=sentence_id,
-                    sentence_text=sentence_text,
-                    priority_queue=priority_queue,
-                    processor=processor,
-                )
+            _store_sentence_event(sentence_events, sentence_id, "text", payload)
+
+        async def create_audio_event():
+            payload = await tts_wrapper(
+                tts_semaphore=tts_semaphore,
+                sentence_id=sentence_id,
+                sentence_text=sentence_text,
+                tts_text=tts_text,
+                processor=processor,
             )
-        )
+            _store_sentence_event(sentence_events, sentence_id, "audio", payload)
+
+        track_task(asyncio.create_task(create_text_event()))
+        track_task(asyncio.create_task(create_audio_event()))
 
     # 注册句子完成回调
     processor.register_sentence_complete_callback(on_sentence_complete)
@@ -459,11 +529,15 @@ async def llm_chat_with_tts(params: chat_data):
     try:
         # 持续输出事件，直到 LLM 完成且后台任务全部结束。
         while True:
-            while priority_queue:
-                event = heapq.heappop(priority_queue)
-                yield _to_sse(event.data)
+            expected_sentence_id, ready_payloads = _drain_ready_sentence_events(
+                sentence_events=sentence_events,
+                expected_sentence_id=expected_sentence_id,
+                event_order=event_order,
+            )
+            for payload in ready_payloads:
+                yield _to_sse(payload)
 
-            if llm_task.done() and not pending_tasks:
+            if llm_task.done() and not pending_tasks and not sentence_events:
                 break
 
             await asyncio.sleep(0.01)
@@ -471,7 +545,7 @@ async def llm_chat_with_tts(params: chat_data):
         final_response = {
             "type": "done",
             "timestamp_ms": time.time() * 1000,
-            "total_sentences": processor.sentence_count,
+            "total_sentences": max(0, processor.sentence_count - 1),
             "full_text": ("".join(processor.full_msg) if processor.full_msg else ""),
             "done": True,
         }
@@ -512,8 +586,10 @@ async def llm_chat_with_tts_and_motion(params: chat_data):
     # 创建流处理器实例，规划任务
     processor = StreamProcessor()
 
-    # 优先级事件队列（用于合并所有事件并按优先级输出）
-    priority_queue: list[PriorityEvent] = []
+    sentence_events: dict[int, dict[str, dict[str, Any]]] = {}
+    expected_sentence_id = 1
+    event_order = ("text", "audio", "motion_frame")
+
     # 任务跟踪集合，确保所有后台任务完成后才结束主循环
     pending_tasks: set[asyncio.Task[Any]] = set()
 
@@ -523,50 +599,51 @@ async def llm_chat_with_tts_and_motion(params: chat_data):
         task.add_done_callback(pending_tasks.discard)
 
     # 为当前助手创建动作生成器
-    motion_generator = await _get_agent_expression_generator(agent.agent_name)
+    motion_generator: ExpressionGenerator | None = (
+        await _get_agent_expression_generator(agent.agent_name)
+    )
 
     if motion_generator is None:
-        logger.warning("[动作规划] 未找到可用 Live2D 参数，将仅输出 text/audio")
+        logger.warning("[动作规划] 未找到可用 Live2D 参数，将输出空动作事件")
 
     # 并发控制信号量
     tts_semaphore = asyncio.Semaphore(1)  # 最多1个并发TTS任务，防止过高的资源占用
     motion_semaphore = asyncio.Semaphore(4)  # 最多4个并发动作规划任务
 
     # 句子完成时的回调函数：启动TTS和动作规划
-    async def on_sentence_complete(sentence_id: int, sentence_text: str):
+    async def on_sentence_complete(sentence_id: int, sentence_text: str, tts_text: str):
         """当检测到句子完成时，立即启动TTS和动作规划"""
-        track_task(
-            asyncio.create_task(
-                text_wrapper(
-                    sentence_id=sentence_id,
-                    sentence_text=sentence_text,
-                    priority_queue=priority_queue,
-                )
+
+        async def create_text_event():
+            payload = await text_wrapper(
+                sentence_id=sentence_id,
+                sentence_text=sentence_text,
             )
-        )
-        track_task(
-            asyncio.create_task(
-                tts_wrapper(
-                    tts_semaphore=tts_semaphore,
-                    sentence_id=sentence_id,
-                    sentence_text=sentence_text,
-                    priority_queue=priority_queue,
-                    processor=processor,
-                )
+            _store_sentence_event(sentence_events, sentence_id, "text", payload)
+
+        async def create_audio_event():
+            payload = await tts_wrapper(
+                tts_semaphore=tts_semaphore,
+                sentence_id=sentence_id,
+                sentence_text=sentence_text,
+                tts_text=tts_text,
+                processor=processor,
             )
-        )
-        track_task(
-            asyncio.create_task(
-                motion_wrapper(
-                    motion_semaphore=motion_semaphore,
-                    sentence_id=sentence_id,
-                    sentence_text=sentence_text,
-                    priority_queue=priority_queue,
-                    motion_generator=motion_generator,
-                    motion_history=processor.motion_history,
-                )
+            _store_sentence_event(sentence_events, sentence_id, "audio", payload)
+
+        async def create_motion_event():
+            payload = await motion_wrapper(
+                motion_semaphore=motion_semaphore,
+                sentence_id=sentence_id,
+                sentence_text=sentence_text,
+                motion_generator=motion_generator,
+                motion_history=processor.motion_history,
             )
-        )
+            _store_sentence_event(sentence_events, sentence_id, "motion_frame", payload)
+
+        track_task(asyncio.create_task(create_text_event()))
+        track_task(asyncio.create_task(create_audio_event()))
+        track_task(asyncio.create_task(create_motion_event()))
 
     # 注册句子完成回调
     processor.register_sentence_complete_callback(on_sentence_complete)
@@ -577,11 +654,15 @@ async def llm_chat_with_tts_and_motion(params: chat_data):
     try:
         # 持续输出事件，直到 LLM 完成且后台任务全部结束。
         while True:
-            while priority_queue:
-                event = heapq.heappop(priority_queue)
-                yield _to_sse(event.data)
+            expected_sentence_id, ready_payloads = _drain_ready_sentence_events(
+                sentence_events=sentence_events,
+                expected_sentence_id=expected_sentence_id,
+                event_order=event_order,
+            )
+            for payload in ready_payloads:
+                yield _to_sse(payload)
 
-            if llm_task.done() and not pending_tasks:
+            if llm_task.done() and not pending_tasks and not sentence_events:
                 break
 
             await asyncio.sleep(0.01)
@@ -589,7 +670,7 @@ async def llm_chat_with_tts_and_motion(params: chat_data):
         final_response = {
             "type": "done",
             "timestamp_ms": time.time() * 1000,
-            "total_sentences": processor.sentence_count,
+            "total_sentences": max(0, processor.sentence_count - 1),
             "full_text": ("".join(processor.full_msg) if processor.full_msg else ""),
             "done": True,
         }

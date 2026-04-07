@@ -38,7 +38,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 for speech_dict, speech_samples in vad_iterator(samples):
                     if "start" in speech_dict:
                         # current_speech = []
-                        print("开始说话...")
+
                         await websocket.send_text("开始说话...")
                         pass
                     # if status:
@@ -51,7 +51,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         # t.daemon = True
                         # t.start()
                         await websocket.send_text("结束说话")
-                        print("结束说话")
+
                         # current_speech = []  # 清空当前段落
 
         except:

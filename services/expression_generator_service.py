@@ -1,4 +1,3 @@
-from pathlib import Path
 from my_utils.log import logger as Log
 from my_utils import config_manager as CConfig
 from my_utils.llm_request import llm_request, parse_llm_json_response
@@ -86,7 +85,7 @@ class ExpressionGenerator:
         - 该方法不会做深层校验，实际数值校验在 `_clamp_parameters` 中完成。
         """
         self.available_parameters = parameters
-        print(f"🎭 参数已更新: {len(parameters)} 个参数")
+        Log.info(f"🎭 参数已更新: {len(parameters)} 个参数")
 
     @classmethod
     def _is_mouth_param(cls, param_id: str) -> bool:
@@ -350,9 +349,9 @@ ParamBodyAngleX, ParamBodyAngleY, ParamBodyAngleZ
         start_time = time.time()
         content = await llm_request(request_body)
         elapsed = (time.time() - start_time) * 1000
-        print(f"{log_prefix} 完成 ⏱️ {elapsed:.0f}ms")
+        Log.info(f"{log_prefix} 完成 ⏱️ {elapsed:.0f}ms")
         if not content:
-            print("LLM 返回内容为空")
+            Log.warning("LLM 返回内容为空")
             return {}
         return parse_llm_json_response(content)
 

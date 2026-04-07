@@ -4,7 +4,6 @@ import math
 import datetime
 from enum import Enum
 import json
-import httpx
 import re
 import os
 
@@ -18,6 +17,7 @@ from core.emotion.create_mood_instruction import create_mood_instruction
 from core.emotion.hormone_cycle import HormoneCycle
 from models.types.assistant_info import AssistantInfo
 from Config import Config
+from my_utils.llm_request import llm_request
 
 
 class EmotionState(Enum):
@@ -219,84 +219,61 @@ class EmotionEngine:
             {"role": "system", "content": sentiment_system_prompt},
             {"role": "user", "content": text},
         ]
-        headers = {
-            "Authorization": f"Bearer {self.llm_key_for_sentiment}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.llm_model_for_sentiment,
-            "messages": messages_for_sentiment,
-            "stream": False,
-        }
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    self.llm_api_for_sentiment, json=payload, headers=headers
-                )
 
-            if response.status_code == 200:
-                try:
-                    llm_content_str = response.json()["choices"][0]["message"][
-                        "content"
-                    ]
-                except (KeyError, IndexError, TypeError):
-                    print("[情绪引擎] 错误: LLM返回的JSON结构不完整。")
-                    return self.valence, self.arousal, "neutral", 0.0
-
-                json_match = re.search(r"\{.*\}", llm_content_str, re.DOTALL)
-
-                if not json_match:
-                    print("[情绪引擎] 警告: 在LLM的返回中未找到有效的JSON结构。")
-                    return self.valence, self.arousal, "neutral", 0.0
-
-                cleaned_json_str = json_match.group(0)
-
-                try:
-                    analysis = json.loads(cleaned_json_str)
-                except json.JSONDecodeError:
-                    print(
-                        "[情绪引擎] 警告: 清洗后的字符串依然不是有效的JSON，本轮情绪无变化。"
-                    )
-                    return self.valence, self.arousal, "neutral", 0.0
-
-                sentiment = analysis.get("sentiment", "neutral")
-                intensity = float(analysis.get("intensity", 0.0))
-                arousal_impact = float(analysis.get("arousal_impact", 0.0))
-
-                if sentiment == "neutral":
-                    new_valence = self.valence
-                    impact_strength = 0.0
-                else:
-                    impact_strength = (intensity / 8.1) ** 1.1
-                    potential_delta = (
-                        impact_strength if sentiment == "positive" else -impact_strength
-                    )
-
-                    acceptance_ratio = compute_acceptance_ratio(
-                        self.valence, impact_strength, inertia_factor
-                    )
-                    final_delta = potential_delta * acceptance_ratio
-                    new_valence = self.valence + final_delta
-
-                base_delta_arousal = arousal_impact / 10.0
-
-                permission_factor = compute_arousal_permission_factor(self.arousal)
-                damped_delta_arousal = base_delta_arousal * permission_factor
-                valence_pull = self._compute_valence_pull(new_valence, arousal_impact)
-                new_arousal = self.arousal + damped_delta_arousal + valence_pull
-
-                final_valence = max(-1.0, min(1.0, new_valence))
-                final_arousal = max(0.0, min(1.0, new_arousal))
-
-                return final_valence, final_arousal, sentiment, impact_strength
-            else:
-                print(f"[情绪系统] API请求失败，状态码: {response.status_code}")
-                print(
-                    f"[情绪系统] API响应内容: {response.text}，模型：{self.llm_model_for_sentiment}"
-                )
-
+            response = await llm_request(messages_for_sentiment)
+            if not response:
+                print("[情绪引擎] 警告: LLM未返回任何内容，无法更新情绪状态。")
                 return self.valence, self.arousal, "neutral", 0.0
+
+            json_match = re.search(r"\{.*\}", response, re.DOTALL)
+
+            if not json_match:
+                print("[情绪引擎] 警告: 在LLM的返回中未找到有效的JSON结构。")
+                return self.valence, self.arousal, "neutral", 0.0
+
+            cleaned_json_str = json_match.group(0)
+
+            try:
+                analysis = json.loads(cleaned_json_str)
+            except json.JSONDecodeError:
+                print(
+                    "[情绪引擎] 警告: 清洗后的字符串依然不是有效的JSON，本轮情绪无变化。"
+                )
+                return self.valence, self.arousal, "neutral", 0.0
+
+            sentiment = analysis.get("sentiment", "neutral")
+            intensity = float(analysis.get("intensity", 0.0))
+            arousal_impact = float(analysis.get("arousal_impact", 0.0))
+
+            if sentiment == "neutral":
+                new_valence = self.valence
+                impact_strength = 0.0
+            else:
+                impact_strength = (intensity / 8.1) ** 1.1
+                potential_delta = (
+                    impact_strength if sentiment == "positive" else -impact_strength
+                )
+
+                acceptance_ratio = compute_acceptance_ratio(
+                    self.valence, impact_strength, inertia_factor
+                )
+                final_delta = potential_delta * acceptance_ratio
+                new_valence = self.valence + final_delta
+
+            base_delta_arousal = arousal_impact / 10.0
+
+            permission_factor = compute_arousal_permission_factor(self.arousal)
+            damped_delta_arousal = base_delta_arousal * permission_factor
+            valence_pull = self._compute_valence_pull(new_valence, arousal_impact)
+            new_arousal = self.arousal + damped_delta_arousal + valence_pull
+
+            final_valence = max(-1.0, min(1.0, new_valence))
+            final_arousal = max(0.0, min(1.0, new_arousal))
+
+            return final_valence, final_arousal, sentiment, impact_strength
+
         except Exception as e:
             print(f"[情绪系统] 情绪状态更新过程中发生错误: {e}")
             return self.valence, self.arousal, "neutral", 0.0

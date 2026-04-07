@@ -75,13 +75,14 @@ def _resolve_model_json_path(assistant_name: str) -> Path | None:
     - 命中时返回文件路径
     - 未命中返回 None
     """
-    assets_root = Path("data") / "agents" / assistant_name / "assets"
+    assets_root = Path("data") / "agents" / assistant_name / "assets" / "live2d"
     if not assets_root.exists():
+        logger.warning(f"[动作规划] 模型参数目录 {assets_root} 不存在。")
         return None
 
     model_json_path: Path | None = None
 
-    candidates = list(assets_root.glob("*.model3.json"))
+    candidates = list(assets_root.rglob("*.model3.json"))
     if candidates:
         model_json_path = candidates[0]
 
@@ -316,7 +317,7 @@ async def _filter_parameters_with_llm(
     try:
         response = await llm_request(
             [
-                {"role": "system", "content": prompt},
+                {"role": "user", "content": prompt},
             ]
         )
         if not response:
