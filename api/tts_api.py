@@ -5,7 +5,7 @@ from fastapi import (
 )
 from core.chat_core import tts_task, TTSData
 from pydantic import BaseModel
-from my_utils.split_text import remove_parentheses_content_and_split
+import re
 
 
 class msg_data(BaseModel):
@@ -29,12 +29,11 @@ async def start_tts_task(msg: list[str]):
 
 @tts_api.post("/gptsovits")
 async def tts(params: msg_data):
-
-    msg = remove_parentheses_content_and_split(params.msg, is_remove_incomplete=False)
+    msg = re.sub(r"\(.*?\)", "", params.msg)
 
     audio_data = await tts_task(TTSData(text=params.msg, ref_audio="", ref_text=""))
 
     if audio_data is None:
         return {"message": msg, "file": None}
     encode_data = base64.b64encode(audio_data).decode("utf-8")
-    return {"message": params.msg, "file": encode_data}
+    return {"message": msg, "file": encode_data}
