@@ -1,11 +1,10 @@
 import os
 import shutil
 import time
-import httpx
 import yaml
 from Config import Config
-from services.tts_service import ttsService
 from my_utils import config_manager as CConfig
+from services.tts_service import ttsService
 from models.dto.assistant_request import AddAssistantRequest, UpdateAssistantRequest
 from models.types.assistant_info import AssistantInfo
 from my_utils.agent import Agent
@@ -227,8 +226,6 @@ class AssistantService:
         if not os.path.exists(assistant_info_path):
             raise FileNotFoundError(f"助手 '{assistant_name}' 不存在")
 
-        assistant_asset_base_path = f"{Config.BASE_AGENTS_PATH}/{assistant_name}/assets"
-
         # 检查助手是否已经加载
         if assistant_name in self.loaded_agents:
 
@@ -236,30 +233,7 @@ class AssistantService:
             self.current_assistant_name = assistant_name
 
             try:
-                await ttsService.switch_tts_models(
-                    gpt_model_path=os.path.join(
-                        assistant_asset_base_path,
-                        "models",
-                        self.current_assistant.agent_config.gsvSetting.sovitsModelPath,
-                    ),
-                    sovits_model_path=os.path.join(
-                        assistant_asset_base_path,
-                        "models",
-                        self.current_assistant.agent_config.gsvSetting.gptModelPath,
-                    ),
-                    spk_audio_path=os.path.join(
-                        assistant_asset_base_path,
-                        "audio",
-                        self.current_assistant.agent_config.gsvSetting.refAudioPath,
-                    ),
-                    ref_audio_path=os.path.join(
-                        assistant_asset_base_path,
-                        "audio",
-                        self.current_assistant.agent_config.gsvSetting.refAudioPath,
-                    ),
-                    prompt_text=self.current_assistant.agent_config.gsvSetting.promptText,
-                    language=self.current_assistant.agent_config.gsvSetting.textLang,
-                )
+                await self._set_gsv_models(self.current_assistant)
             except Exception:
                 Log.logger.error(
                     f"设置助手语音模型失败: {assistant_name},跳过设置模型",
@@ -272,30 +246,7 @@ class AssistantService:
         try:
             agent = Agent(assistant_name)
             try:
-                await ttsService.switch_tts_models(
-                    gpt_model_path=os.path.join(
-                        assistant_asset_base_path,
-                        "models",
-                        agent.agent_config.gsvSetting.sovitsModelPath,
-                    ),
-                    sovits_model_path=os.path.join(
-                        assistant_asset_base_path,
-                        "models",
-                        agent.agent_config.gsvSetting.gptModelPath,
-                    ),
-                    spk_audio_path=os.path.join(
-                        assistant_asset_base_path,
-                        "audio",
-                        agent.agent_config.gsvSetting.refAudioPath,
-                    ),
-                    ref_audio_path=os.path.join(
-                        assistant_asset_base_path,
-                        "audio",
-                        agent.agent_config.gsvSetting.refAudioPath,
-                    ),
-                    prompt_text=agent.agent_config.gsvSetting.promptText,
-                    language=agent.agent_config.gsvSetting.textLang,
-                )
+                await self._set_gsv_models(agent)
             except Exception:
                 Log.logger.error(
                     f"设置助手语音模型失败: {assistant_name},跳过设置模型",
@@ -438,3 +389,52 @@ class AssistantService:
                 Log.logger.error(f"加载助手信息失败: {assistant_name}, 错误: {e}")
 
         return None
+
+    async def _set_gsv_models(self, agent: Agent) -> None:
+        """
+        设置当前助手的语音模型路径
+        """
+        assistant_asset_base_path = (
+            f"{Config.BASE_AGENTS_PATH}/{agent.agent_name}/assets"
+        )
+        is_api = CConfig.config["TTS"]["mode"] == "api"
+        await ttsService.switch_tts_models(
+            gpt_model_path=(
+                agent.agent_config.gsvSetting.sovitsModelPath
+                if is_api
+                else os.path.join(
+                    assistant_asset_base_path,
+                    "models",
+                    agent.agent_config.gsvSetting.sovitsModelPath,
+                )
+            ),
+            sovits_model_path=(
+                agent.agent_config.gsvSetting.gptModelPath
+                if is_api
+                else os.path.join(
+                    assistant_asset_base_path,
+                    "models",
+                    agent.agent_config.gsvSetting.gptModelPath,
+                )
+            ),
+            spk_audio_path=(
+                agent.agent_config.gsvSetting.refAudioPath
+                if is_api
+                else os.path.join(
+                    assistant_asset_base_path,
+                    "audio",
+                    agent.agent_config.gsvSetting.refAudioPath,
+                )
+            ),
+            ref_audio_path=(
+                agent.agent_config.gsvSetting.refAudioPath
+                if is_api
+                else os.path.join(
+                    assistant_asset_base_path,
+                    "audio",
+                    agent.agent_config.gsvSetting.refAudioPath,
+                )
+            ),
+            prompt_text=agent.agent_config.gsvSetting.promptText,
+            language=agent.agent_config.gsvSetting.textLang,
+        )

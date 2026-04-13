@@ -7,8 +7,6 @@ from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import LiteralScalarString
 import numpy as np
 import pickle
-import requests
-import jionlp
 from bisect import bisect_left, bisect_right
 from my_utils import log as Log
 from models.types.assistant_info import AssistantInfo

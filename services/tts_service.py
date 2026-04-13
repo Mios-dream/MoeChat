@@ -14,11 +14,25 @@ class TTSService:
     """
 
     # 初始化TTS引擎
-    _local_tts_engine = TTS(
-        models_dir=Config.GSV_MODELS_PATH,
-        use_bert=CConfig.config.get("TTS", {}).get("use_bert", True),
-        use_flash_attn=CConfig.config.get("TTS", {}).get("use_flash_attn", False),
-    )
+    _local_tts_engine: TTS | None = None
+
+    def __init__(self):
+        if CConfig.config.get("TTS", {}).get("mode", "api") == "local":
+            self.get_tts_engine()
+
+    def get_tts_engine(self) -> TTS:
+        """
+        加载GPT-SoVITS底膜
+        """
+        if self._local_tts_engine:
+            return self._local_tts_engine
+
+        self._local_tts_engine = TTS(
+            models_dir=Config.GSV_MODELS_PATH,
+            use_bert=CConfig.config.get("TTS", {}).get("use_bert", True),
+            use_flash_attn=CConfig.config.get("TTS", {}).get("use_flash_attn", False),
+        )
+        return self._local_tts_engine
 
     async def switch_tts_models(
         self,
@@ -33,6 +47,7 @@ class TTSService:
         切换GPT-SoVITS模型
         """
         if CConfig.config.get("TTS", {}).get("mode", "api") == "api":
+            # API模式下，调用接口设置模型路径
             if not sovits_model_path or not gpt_model_path:
                 Log.logger.warning(
                     "设置gptsovits模型出错，SoVITS模型路径或GPT_weights路径为空"
@@ -70,6 +85,7 @@ class TTSService:
                 Log.logger.error(f"设置GPT_weights失败: {e}")
                 raise Exception(f"设置GPT_weights失败: {e}")
         else:
+            # 本地模式下，直接加载模型
             if not gpt_model_path or not sovits_model_path:
                 logger.warning(
                     "GPT模型路径或SOVITS模型路径为空，无法切换GPT-SoVITS模型"
@@ -83,13 +99,14 @@ class TTSService:
             if language not in ["zh", "en", "ja"]:
                 logger.warning("不支持的语言类型，无法切换GPT-SoVITS模型")
                 return
-                # 拼接资源路径
+            # 拼接资源路径
+            local_tts_engine = self.get_tts_engine()
 
-            self._local_tts_engine.load_gpt_model(gpt_model_path)
-            self._local_tts_engine.load_sovits_model(sovits_model_path)
-            self._local_tts_engine.init_language_module(language)
-            self._local_tts_engine.cache_prompt_audio(ref_audio_path, prompt_text)
-            self._local_tts_engine.cache_spk_audio(spk_audio_path)
+            local_tts_engine.load_gpt_model(gpt_model_path)
+            local_tts_engine.load_sovits_model(sovits_model_path)
+            local_tts_engine.init_language_module(language)
+            local_tts_engine.cache_prompt_audio(ref_audio_path, prompt_text)
+            local_tts_engine.cache_spk_audio(spk_audio_path)
 
     async def local_gsv_tts(
         self,
@@ -98,6 +115,9 @@ class TTSService:
         """
         在异步环境中调用的本地GPT-SoVITS推理函数，内部使用线程池执行同步推理。
         """
+        if self._local_tts_engine is None:
+            logger.warning("本地GPT-SoVITS模型未加载，无法进行语音合成")
+            return None
         clip = await self._local_tts_engine.infer_async(
             text=data["text"],
             spk_audio_path=data["ref_audio_path"],

@@ -29,11 +29,12 @@ async def start_tts_task(msg: list[str]):
 
 @tts_api.post("/gptsovits")
 async def tts(params: msg_data):
-    msg = re.sub(r"\(.*?\)", "", params.msg)
+    # 移除括号中的内容
+    msg = re.sub(r"\(.*?\)|（.*?）|【.*?】|\[.*?\]|\{.*?\}", "", params.msg)
 
-    audio_data = await tts_task(TTSData(text=params.msg, ref_audio="", ref_text=""))
+    audio_data = await tts_task(TTSData(text=msg, ref_audio="", ref_text=""))
 
     if audio_data is None:
-        return {"message": msg, "file": None}
+        return {"message": params.msg, "file": None}
     encode_data = base64.b64encode(audio_data).decode("utf-8")
-    return {"message": msg, "file": encode_data}
+    return {"message": params.msg, "file": encode_data}

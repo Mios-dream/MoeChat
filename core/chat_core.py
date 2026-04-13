@@ -279,27 +279,31 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
         logger.error("[错误] 当前没有加载助手")
         return None
 
-    msg = "".join(tts_data.text.split())
-    # msg = clear_text(tts_data.text)
-    if len(msg) == 0:
+    if len(tts_data.text) == 0:
         return None
-    logger.info(f"[tts文本]{msg}")
+    logger.info(f"[tts文本]{tts_data.text}")
     assistant_asset_base_path = f"{Config.BASE_AGENTS_PATH}/{agent.agent_name}/assets"
+    is_api = CConfig.config["TTS"]["mode"] == "api"
+
     data = {
-        "text": msg,
+        "text": tts_data.text,
         "text_lang": agent.agent_config.gsvSetting.textLang,
-        "ref_audio_path": os.path.join(
-            assistant_asset_base_path,
-            "audio",
-            (tts_data.ref_text or agent.agent_config.gsvSetting.refAudioPath),
+        "ref_audio_path": (
+            tts_data.ref_text or agent.agent_config.gsvSetting.refAudioPath
+            if is_api
+            else os.path.join(
+                assistant_asset_base_path,
+                "audio",
+                (tts_data.ref_text or agent.agent_config.gsvSetting.refAudioPath),
+            )
         ),
         "prompt_text": tts_data.ref_text or agent.agent_config.gsvSetting.promptText,
         "prompt_lang": agent.agent_config.gsvSetting.promptLang,
     }
-    tts_mode = CConfig.config.get("TTS", {}).get("mode", "api") or "api"
     try:
         start_time = time.time()
-        if tts_mode == "local":
+        if not is_api:
+            print(data)
             byte_data = await ttsService.local_gsv_tts(
                 data=data,
             )
@@ -308,7 +312,7 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
         logger.info(f"合成完成的耗时: {time.time() - start_time}")
         return byte_data
     except Exception as e:
-        logger.error(f"[错误] TTS执行失败，mode={tts_mode}，错误信息: {e}")
+        logger.error(f"[错误] TTS执行失败，错误信息: {e}，文本: {data['text']}")
         return None
 
 
@@ -358,6 +362,8 @@ async def tts_wrapper(
                 if emotion in agent_config:
                     ref_audio = agent_config[emotion][0]
                     ref_text = agent_config[emotion][1]
+            # 清除文本中的特殊符号
+            tts_text = re.sub(r"[…‘’“”'\"—\n\r\t\f]", "", tts_text)
 
             if tts_text:
                 # 设置TTS数据并执行TTS任务
