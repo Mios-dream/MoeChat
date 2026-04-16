@@ -363,7 +363,7 @@ async def tts_wrapper(
                     ref_audio = agent_config[emotion][0]
                     ref_text = agent_config[emotion][1]
             # 清除文本中的特殊符号
-            tts_text = re.sub(r"[…‘’“”'\"—\n\r\t\f]", "", tts_text)
+            tts_text = re.sub(r"[…‘’“”'\"—\n\r\t\f ]", "", tts_text)
 
             if tts_text:
                 # 设置TTS数据并执行TTS任务

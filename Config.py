@@ -19,8 +19,6 @@ class Config:
     )
     # nltk数据路径
     NLTK_DATA_DIR = os.path.join(PROJECT_ROOT, "data", "models", "nltk_data")
-    # FFMPEG路径
-    FFMPEG_BIN = os.path.join(PROJECT_ROOT, "data", "models", "ffmpeg", "bin")
     # GSV模型路径,设置为None以自动下载
     GSV_MODELS_PATH = os.path.join(PROJECT_ROOT, "data", "models", "gsv")
     # ASR模型路径
@@ -48,4 +46,3 @@ class Config:
 
 # 设置环境变量,使用项目目录下的模型数据,而不是下载模型到默认位置，取消以下载到默认位置
 os.environ["NLTK_DATA"] = Config.NLTK_DATA_DIR
-os.environ["PATH"] = Config.FFMPEG_BIN + os.pathsep + os.environ.get("PATH", "")
