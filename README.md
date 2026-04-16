@@ -7,7 +7,7 @@
 [![Version](https://img.shields.io/badge/version-1.0.0-2ea44f?style=for-the-badge)](./pyproject.toml)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](./LICENSE)
+[![License](https://img.shields.io/badge/license-GPL3.0-blue?style=for-the-badge)](./LICENSE)
 </div>
 
 <div align="center">
