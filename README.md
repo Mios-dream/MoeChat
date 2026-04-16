@@ -3,6 +3,7 @@
 </div>
 
 <div align="center">
+  
 [![Version](https://img.shields.io/badge/version-1.0.0-2ea44f?style=for-the-badge)](./pyproject.toml)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -10,8 +11,9 @@
 </div>
 
 <div align="center">
+  
 [![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-967981851-00BFFF?style=for-the-badge&logo=tencent-qq)](https://qm.qq.com/q/6pfdCFxJcc)
-[![BiliBili](https://custom-icon-badges.demolab.com/badge/BiliBili-芙兰蠢兔-FF69B4?style=for-the-badge&logo=bilibili)](https://space.bilibili.com/3156308)
+[![BiliBili](https://custom-icon-badges.demolab.com/badge/BiliBili-浮华星弦-FF69B4?style=for-the-badge&logo=bilibili)](https://space.bilibili.com/205296924)
 </div>
 
 
