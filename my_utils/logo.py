@@ -17,12 +17,12 @@ def print_moechat_logo(delay=0.2):
     ]
 
     gradient_colors = [
-        "cyan",
-        "bright_cyan",
-        "bright_blue",
-        "blue",
-        "purple",
-        "magenta",
+        "rgb(254,126,169)",
+        "rgb(254,152,185)",
+        "rgb(254,178,201)",
+        "rgb(254,204,217)",
+        "rgb(255,230,233)",
+        "rgb(255,240,245)",
     ]
     total_lines = len(ascii_lines)
 

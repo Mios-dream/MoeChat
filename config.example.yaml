@@ -40,3 +40,8 @@ WakeWord:
   provider: cpu # 可选: cpu / cuda
   keywords_score: 1.0
   keywords_threshold: 0.25
+
+KnowledgeBase:
+  base_dir: database
+  enable_llm_extract: true
+  health_check_interval_sec: 3600

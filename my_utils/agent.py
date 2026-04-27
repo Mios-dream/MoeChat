@@ -6,13 +6,12 @@ from my_utils import long_mem, data_base, prompt, core_mem, log as Log
 from my_utils import config_manager as CConfig
 import time
 import jionlp
-import ast
 import json
 import yaml
 from models.types.assistant_info import AssistantInfo
 from core.emotion.emotion_engine import EmotionEngine
 from concurrent.futures import ThreadPoolExecutor
-from my_utils.llm_request import llm_request
+from my_utils.llm_request import llm_request, parse_llm_json_response
 
 
 class Agent:
@@ -73,16 +72,12 @@ class Agent:
         self._init_history()
 
     def _init_history(self):
-        """初始化历史记录"""
-        history_path = f"./data/agents/{self.agent_name}/history.yaml"
+        """初始化历史记录（从 SQLite 读取最近上下文）"""
         try:
-            if os.path.exists(history_path):
-                with open(history_path, "r", encoding="utf-8") as f:
-                    msg_list = yaml.safe_load(f) or []
-                    self.msg_data = msg_list[
-                        -self.agent_config.settings.contextLength :
-                    ]
-                    Log.logger.info(f"当前上下文长度：{len(msg_list)}")
+            self.msg_data = self.memoryEngine.get_recent_chat_turns(
+                self.agent_config.settings.contextLength
+            )
+            Log.logger.info(f"当前上下文长度：{len(self.msg_data)}")
         except Exception as e:
             Log.logger.error(f"加载上下文失败：{self.agent_name}, 错误: {e}")
 
@@ -267,7 +262,7 @@ class Agent:
         elapsed_time = end_time - start_time
         return result, elapsed_time
 
-    async def _async_search_memory(self, msg: str, time_str: str) -> tuple[str, float]:
+    async def _async_search_memory(self, msg: str) -> tuple[str, float]:
         """
         异步包装记忆检索
         Parameters:
@@ -280,14 +275,7 @@ class Agent:
         if not self.enable_long_memory:
             return "", 0.0
 
-        # 假设 get_memories 内部是同步的，需要修改 utils 让其支持返回数据而不是 append 到 list
-        # 这里为了兼容旧代码逻辑，我们包装一下
-        def wrapper():
-            temp_list = []
-            self.memoryEngine.get_memories(msg, temp_list, time_str)
-            return temp_list[0] if temp_list else ""
-
-        result = await self._run_sync_task(wrapper)
+        result = await self._run_sync_task(self.memoryEngine.get_memories, msg)
         end_time = time.time()
         elapsed_time = end_time - start_time
         return result, elapsed_time
@@ -305,9 +293,7 @@ class Agent:
             return "", 0.0
 
         def wrapper():
-            temp_list = []
-            self.coreMemoryEngine.find_memories(msg, temp_list)
-            return temp_list[0] if temp_list else ""
+            return self.coreMemoryEngine.find_memories(msg) or ""
 
         result = await self._run_sync_task(wrapper)
         end_time = time.time()
@@ -336,26 +322,11 @@ class Agent:
         Parameters:
             turn_data: 对话数据
         """
-        await self.memoryEngine.add_memory(
-            turn_data, self.current_time, self.llm_config
-        )
+        await self.memoryEngine.add_memory(turn_data, self.current_time)
 
     async def _task_save_history(self, turn_data):
-        """
-        后台任务：保存文件
-        Parameters:
-            turn_data: 对话数据
-        """
-
-        def save():
-            with open(
-                f"./data/agents/{self.agent_name}/history.yaml", "a", encoding="utf-8"
-            ) as f:
-                yaml.dump(
-                    turn_data, stream=f, allow_unicode=True, indent=2, sort_keys=False
-                )
-
-        await self._run_sync_task(save)
+        """兼容旧任务名：历史已由 _task_add_long_memory 统一写入 SQLite。"""
+        return
 
     def save_agent_config(self):
         """
@@ -453,11 +424,7 @@ class Agent:
             assistant_reply: 助手回复的消息
             previous_assistant_msg: 上一条助手回复的消息
         """
-        # 调用提取核心记忆的提示词，并替换模板中的占位符
-        core_memory_extract_prompt = prompt.get_core_mem.replace(
-            "{{memories}}",
-            json.dumps(self.coreMemoryEngine.mems[-100:], ensure_ascii=False),
-        )
+
         # 检查上下文最后一条是否是助手回复，不是则不插入核心记忆
         if self.msg_data[-1]["role"] != "assistant":
             return
@@ -474,16 +441,17 @@ class Agent:
 
             res_msg = await llm_request(
                 [
-                    {"role": "system", "content": core_memory_extract_prompt},
+                    {"role": "system", "content": prompt.get_core_mem},
                     {"role": "user", "content": re_msg},
                 ]
             )
 
-            mem_list = ast.literal_eval(
-                jionlp.extract_parentheses(res_msg, "[]")[0]
-                .replace(" ", "")
-                .replace("\n", "")
-            )
+            if not res_msg:
+                Log.logger.info("核心记忆提取失败，跳过插入")
+                return
+
+            mem_list = parse_llm_json_response(res_msg).get("core_mem", [])
+
             if len(mem_list) > 0:
                 self.coreMemoryEngine.add_memory(mem_list)
         except Exception as e:
@@ -529,7 +497,7 @@ class Agent:
         # 使用 asyncio.gather 同时启动所有任务
         tasks = [
             self._async_search_knowledge(msg),
-            self._async_search_memory(msg, format_time),
+            self._async_search_memory(msg),
             self._async_search_core_mem(msg),
             self._async_process_emotion(msg),
         ]
@@ -621,7 +589,6 @@ class Agent:
                 user_msg_content, assistant_msg, previous_assistant_msg
             ),
             self.update_love_level(user_msg_content, assistant_msg),
-            self._task_save_history(current_turn),
             self._task_add_long_memory(current_turn),
         )
 

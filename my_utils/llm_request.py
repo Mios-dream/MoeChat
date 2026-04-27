@@ -1,4 +1,5 @@
 from my_utils import config_manager as CConfig
+from my_utils import log as Log
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 import json
@@ -56,17 +57,21 @@ async def llm_request(msg: list[ChatCompletionMessageParam]) -> str | None:
     :param data: 消息链
     :return: 请求结果
     """
-    client = AsyncOpenAI(
-        api_key=CConfig.config["LLM"]["key"], base_url=CConfig.config["LLM"]["api"]
-    )
-    response = await client.chat.completions.create(
-        model=CConfig.config["LLM"]["model"],
-        messages=msg,
-        stream=False,
-        extra_body=CConfig.config["LLM"].get("extra_config", {}),
-    )
-    content = response.choices[0].message.content
-    return content
+    try:
+        client = AsyncOpenAI(
+            api_key=CConfig.config["LLM"]["key"], base_url=CConfig.config["LLM"]["api"]
+        )
+        response = await client.chat.completions.create(
+            model=CConfig.config["LLM"]["model"],
+            messages=msg,
+            stream=False,
+            extra_body=CConfig.config["LLM"].get("extra_config", {}),
+        )
+        content = response.choices[0].message.content
+        return content
+    except:
+        Log.logger.error("大模型请求失败")
+        return None
 
 
 async def chat_llm_request_stream(msg: list[ChatCompletionMessageParam]):

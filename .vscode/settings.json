@@ -1,5 +1,6 @@
 {
     "cSpell.words": [
+        "dedupe",
         "dspeaker",
         "faiss",
         "frombuffer",
@@ -18,7 +19,8 @@
         "vect",
         "VITS",
         "vtube",
-        "wakeword"
+        "wakeword",
+        "worldbook"
     ],
     "python-envs.defaultEnvManager": "ms-python.python:venv"
 }

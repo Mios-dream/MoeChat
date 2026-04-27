@@ -3,8 +3,6 @@ from fastapi import APIRouter, HTTPException
 from models.dto.chat_request import chat_data
 import core.chat_core as chat_core
 from fastapi import Query
-import os
-import yaml
 
 chat_api = APIRouter()
 
@@ -54,39 +52,52 @@ async def get_chat_history(
     if not agent:
         raise HTTPException(status_code=400, detail="当前没有加载助手")
 
-    history_path = f"./data/agents/{agent.agent_name}/history.yaml"
-    history_list = []
-
     try:
-        if os.path.exists(history_path):
-            with open(history_path, "r", encoding="utf-8") as f:
-                loaded = yaml.safe_load(f) or []
-                if isinstance(loaded, list):
-                    history_list = loaded
-        else:
-            history_list = agent.msg_data.copy()
+        history_list = agent.memoryEngine.get_recent_chat_turns(
+            limit=limit, only_assistant=only_assistant
+        )
     except Exception:
         history_list = agent.msg_data.copy()
-
-    if only_assistant:
-        history_list = [
-            item
-            for item in history_list
-            if isinstance(item, dict) and item.get("role") == "assistant"
-        ]
-    else:
-        history_list = [
-            item
-            for item in history_list
-            if isinstance(item, dict) and item.get("role") in {"user", "assistant"}
-        ]
-
-    history_list = history_list[-limit:]
 
     return {
         "msg": "Get chat history success",
         "assistant": agent.agent_name,
         "onlyAssistant": only_assistant,
+        "source": "sqlite",
         "count": len(history_list),
         "data": history_list,
+    }
+
+
+@chat_api.get("/chat/diary")
+async def get_chat_diary(
+    limit: int = Query(20, ge=1, le=100, description="单次返回的日记条数"),
+    offset: int = Query(0, ge=0, description="分页偏移量"),
+    start_day: str | None = Query(None, description="起始日期，格式 YYYY-MM-DD"),
+    end_day: str | None = Query(None, description="结束日期，格式 YYYY-MM-DD"),
+):
+    agent = chat_core.assistant_service.get_current_assistant()
+    if not agent:
+        raise HTTPException(status_code=400, detail="当前没有加载助手")
+
+    try:
+        records, total = agent.memoryEngine.get_diary_records(
+            limit=limit,
+            offset=offset,
+            start_day=start_day,
+            end_day=end_day,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取日记记录失败: {str(e)}")
+
+    return {
+        "msg": "Get diary records success",
+        "assistant": agent.agent_name,
+        "limit": limit,
+        "offset": offset,
+        "startDay": start_day,
+        "endDay": end_day,
+        "count": len(records),
+        "total": total,
+        "data": records,
     }
