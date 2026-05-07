@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c 'from models.dto.interaction_request import InteractionMessageRequest, InteractionContext; print\\('\\\\''models OK'\\\\''\\) *)",
+      "Bash(where python3 *)",
+      "Bash(where python *)",
+      "Read(//c/Users/sansan/AppData/Local/Programs/**)"
+    ]
+  }
+}

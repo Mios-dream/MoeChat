@@ -69,8 +69,8 @@ async def llm_request(msg: list[ChatCompletionMessageParam]) -> str | None:
         )
         content = response.choices[0].message.content
         return content
-    except:
-        Log.logger.error("大模型请求失败")
+    except Exception as e:
+        Log.logger.error(f"大模型请求失败: {e}")
         return None
 
 

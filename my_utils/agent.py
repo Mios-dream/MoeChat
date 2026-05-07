@@ -322,11 +322,8 @@ class Agent:
         Parameters:
             turn_data: 对话数据
         """
+        self.current_time = int(time.time())
         await self.memoryEngine.add_memory(turn_data, self.current_time)
-
-    async def _task_save_history(self, turn_data):
-        """兼容旧任务名：历史已由 _task_add_long_memory 统一写入 SQLite。"""
-        return
 
     def save_agent_config(self):
         """
@@ -591,6 +588,23 @@ class Agent:
             self.update_love_level(user_msg_content, assistant_msg),
             self._task_add_long_memory(current_turn),
         )
+
+    async def add_interaction_msg(self, msg: str) -> None:
+        """
+        保存交互事件消息到上下文,保存聊天历史,更新长期记忆
+        Parameters:
+            msg: 交互事件消息
+        """
+        # 添加交互事件消息到上下文
+        self.msg_data_tmp.append({"role": "assistant", "content": msg})
+
+        current_turn = self.msg_data_tmp.copy()
+        self.msg_data += current_turn
+        self.msg_data = self.msg_data[-self.agent_config.settings.contextLength :]
+        # 清空临时消息列表
+        self.msg_data_tmp = []
+
+        await self._task_add_long_memory(current_turn)
 
     async def _run_sync_task(self, func, *args):
         """

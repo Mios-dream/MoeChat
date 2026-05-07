@@ -9,6 +9,7 @@ from api.llm_api import llm_api
 from api.config_api import config_api
 from api.wakeword_api import wakeword_api
 from api.knowledge_api import knowledge_api
+from api.interaction_api import interaction_api
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(asr_api)
@@ -20,3 +21,4 @@ api_router.include_router(llm_api)
 api_router.include_router(config_api)
 api_router.include_router(wakeword_api)
 api_router.include_router(knowledge_api)
+api_router.include_router(interaction_api)
