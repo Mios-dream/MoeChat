@@ -35,6 +35,7 @@ class Memory:
         self.agent_id = agent_config.name
         self.char = agent_config.name
         self.user = agent_config.user
+        self.firstMeetTime = agent_config.firstMeetTime
         self.thresholds = agent_config.settings.longMemoryThreshold
         self.enable_search_enhance = agent_config.settings.enableLongMemorySearchEnhance
         # 每日对话记录阈值：仅当日记录数 > 5 时才生成日记。
@@ -59,19 +60,16 @@ class Memory:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS chat_turns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp_sec INTEGER NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL
             )
-            """
-        )
+            """)
 
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS diary_days (
                 day TEXT PRIMARY KEY,
                 summary TEXT NOT NULL,
@@ -79,8 +77,7 @@ class Memory:
                 vec_blob BLOB,
                 day_last_timestamp_sec INTEGER NOT NULL
             )
-            """
-        )
+            """)
 
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_turns_timestamp_sec ON chat_turns(timestamp_sec)"
@@ -316,10 +313,9 @@ class Memory:
         3.允许适度加入内心独白。
         4.不要逐字复述对话，要真实日记那样有个人感受和小情绪。
         5.日记在描述"{self.user}"时，不要增加"{self.user}"在对话中没说过的事情。
-        6.用【日记】作为开头标题，但不要记录日期。
-        7.日记内容不要太长，字数100字到1000字之间)
+        7.日记内容不要太长，字数100字到500字之间)
         """
-        diary_user_prompt = f"以下是今日互动摘要:{summary}。\n请写日记："
+        diary_user_prompt = f"今天是你和{self.user}认识的的第{self.firstMeetTime//(60*60*24)}天，以下是今日互动摘要:{summary}。\n请写日记："
 
         diary_text = ""
         try:
@@ -337,9 +333,7 @@ class Memory:
 
         # LLM 异常时使用保底文本，保证数据库记录完整。
         if not diary_text:
-            diary_text = (
-                f"【日记】今天和{self.user}聊了很多事情，记录了一些值得记住的片段。"
-            )
+            diary_text = f"今天和{self.user}聊了很多事情，虽然聊的都是日常琐事，但每一句都让我觉得很温暖。"
         return diary_text.strip()
 
     def _extract_time_range(self, msg: str) -> tuple[int, int] | None:
@@ -406,13 +400,11 @@ class Memory:
                 (low_day, high_day),
             )
         else:
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT day, summary, facts, vec_blob
                 FROM diary_days
                 ORDER BY day DESC
-                """
-            )
+                """)
 
         rows = cursor.fetchall()
         conn.close()

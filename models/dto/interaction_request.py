@@ -49,7 +49,6 @@ class InteractionContext(BaseModel):
     isInConversation: bool | None = None
     lastEventTime: int | None = None
     lastEventType: str | None = None
-    lastMessage: str | None = None
     mouseEventStatus: MouseEventStatus | None = None
     appEventStatus: AppEventStatus | None = None
     systemPowerStatus: SystemPowerStatus | None = None
