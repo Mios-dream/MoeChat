@@ -1,4 +1,3 @@
-import time
 from pydantic import BaseModel, Field
 import yaml
 
@@ -109,18 +108,10 @@ class AssistantInfo(BaseModel):
     description: str = Field(..., description="助手描述")
     # 用户的设定，用于在提示词中填充用户的信息，进行个性化对话。
     mask: str = Field(..., description="用户的设定")
-    # 初次相遇时间，存储为时间戳
-    firstMeetTime: int = Field(..., description="助手初次相遇时间")
-    # 好感度
-    love: int = Field(..., description="助手好感度")
     # 对话案例
     messageExamples: list[str] = Field(..., description="助手对话案例")
     # 额外描述
     extraDescription: str = Field(..., description="助手额外描述")
-    # 助手更新时间,存储为时间戳
-    updatedAt: int = Field(..., description="助手更新时间")
-    # 资产最后修改时间,存储为时间戳
-    assetsLastModified: int = Field(..., description="助手资产最后修改时间")
     # 自定义提示词
     customPrompt: str = Field(..., description="自定义提示词")
     # 开场白，数组形式。用于创建开场内容，填入用户与AI的对话内容，只能填入用户和Ai的对话内容，开场白会直接被插入到上下文的开头。
@@ -148,12 +139,8 @@ class AssistantInfo(BaseModel):
             personality=data.get("personality", ""),
             description=data.get("description", ""),
             mask=data.get("mask", ""),
-            firstMeetTime=data.get("firstMeetTime", time.time()),
-            love=data.get("love", 0),
             messageExamples=data.get("messageExamples", []),
             extraDescription=data.get("extraDescription", ""),
-            updatedAt=data.get("updatedAt", time.time()),
-            assetsLastModified=data.get("assetsLastModified", 0),
             settings=AssistantSettings.from_dict(data.get("settings", {})),
             customPrompt=data.get("customPrompt", ""),
             gsvSetting=GSVSetting.from_dict(data.get("gsvSetting", {})),
@@ -174,12 +161,8 @@ if __name__ == "__main__":
         "personality": "开朗",
         "description": "这是一个测试助手",
         "mask": "用户是一个18岁的男性",
-        "firstMeetTime": 1620000,
-        "love": 50,
         "messageExamples": ["你好", "你好吗"],
         "extraDescription": "这是一个测试助手",
-        "updatedAt": 1620000,
-        "assetsLastModified": 1620000,
         "settings": {
             "enableLongMemory": True,
             "enableLongMemorySearchEnhance": True,

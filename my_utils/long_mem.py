@@ -31,11 +31,11 @@ class Memory:
     - 查询时优先检索 diary_days，再补充尚未归档的 chat_turns。
     """
 
-    def __init__(self, agent_config: AssistantInfo):
+    def __init__(self, agent_config: AssistantInfo, firstMeetTime: int = 0):
         self.agent_id = agent_config.name
         self.char = agent_config.name
         self.user = agent_config.user
-        self.firstMeetTime = agent_config.firstMeetTime
+        self.firstMeetTime = firstMeetTime
         self.thresholds = agent_config.settings.longMemoryThreshold
         self.enable_search_enhance = agent_config.settings.enableLongMemorySearchEnhance
         # 每日对话记录阈值：仅当日记录数 > 5 时才生成日记。

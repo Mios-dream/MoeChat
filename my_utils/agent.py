@@ -9,6 +9,7 @@ import jionlp
 import json
 import yaml
 from models.types.assistant_info import AssistantInfo
+from models.types.user_state import UserStateInfo
 from core.emotion.emotion_engine import EmotionEngine
 from concurrent.futures import ThreadPoolExecutor
 from my_utils.llm_request import llm_request, parse_llm_json_response
@@ -67,6 +68,8 @@ class Agent:
         self.msg_data_tmp = []
         # 线程池执行器，用于处理同步的 CPU 密集任务
         self._executor = ThreadPoolExecutor(max_workers=4)
+        # 用户私有状态（好感度、首次相遇时间等）
+        self.user_state: UserStateInfo = UserStateInfo()
 
         self.load_config()
         self._init_history()
@@ -97,11 +100,19 @@ class Agent:
         with open(config_path, "r", encoding="utf-8") as f:
             self.agent_config = AssistantInfo.from_dict(yaml.safe_load(f))
 
+        # 加载用户私有状态
+        user_state_path = f"./data/agents/{self.agent_name}/user_state.yaml"
+        if os.path.exists(user_state_path):
+            with open(user_state_path, "r", encoding="utf-8") as f:
+                self.user_state = UserStateInfo.from_dict(yaml.safe_load(f) or {})
+        else:
+            self.user_state = UserStateInfo()
+
     def _get_love_prompt(self):
         """
         获取好感度相关的提示词
         """
-        love_level = self._get_love_level(self.agent_config.love)
+        love_level = self._get_love_level(self.user_state.love)
         level_info = self.LOVE_LEVELS.get(love_level, self.LOVE_LEVELS[0])
 
         return prompt.love_level_prompt.format(
@@ -327,18 +338,18 @@ class Agent:
 
     def save_agent_config(self):
         """
-        保存角色配置到配置文件
+        保存用户私有状态到 user_state.yaml
         """
         config_path = os.path.join(
-            Config.BASE_AGENTS_PATH, self.agent_name, "info.yaml"
+            Config.BASE_AGENTS_PATH, self.agent_name, "user_state.yaml"
         )
 
         try:
+            self.user_state.updatedAt = int(time.time())
 
-            # 保存配置
             with open(config_path, "w", encoding="utf-8") as f:
                 yaml.dump(
-                    self.agent_config.model_dump(),
+                    self.user_state.model_dump(),
                     stream=f,
                     default_flow_style=False,
                     sort_keys=False,
@@ -346,7 +357,7 @@ class Agent:
                     indent=2,
                 )
         except Exception as e:
-            Log.logger.error(f"保存好感度失败: {e}")
+            Log.logger.error(f"保存用户状态失败: {e}")
 
     def load_config(self):
         """
@@ -401,7 +412,9 @@ class Agent:
         self._load_prompt_template()
 
         # 加载角色记忆
-        self.memoryEngine = long_mem.Memory(self.agent_config)
+        self.memoryEngine = long_mem.Memory(
+            self.agent_config, self.user_state.firstMeetTime
+        )
         # 加载核心记忆
         self.coreMemoryEngine = core_mem.CoreMemory(self.agent_config)
         # 载入知识库
@@ -463,7 +476,7 @@ class Agent:
             assistant_reply: 助手回复的消息
         """
         change = await self._calculate_love_change(user_message, assistant_reply)
-        self.agent_config.love = max(self.agent_config.love + change, -50)
+        self.user_state.love = max(self.user_state.love + change, -50)
 
         # 异步保存配置
         def save_config():
@@ -472,7 +485,7 @@ class Agent:
         await self._run_sync_task(save_config)
 
         Log.logger.info(
-            f"助手 {self.agent_name} 好感度更新: 变化 {change}, 当前 {self.agent_config.love}"
+            f"助手 {self.agent_name} 好感度更新: 变化 {change}, 当前 {self.user_state.love}"
         )
 
     async def get_msg_data(self, msg: str) -> list[dict]:

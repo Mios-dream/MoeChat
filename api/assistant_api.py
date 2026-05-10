@@ -26,7 +26,6 @@ from fastapi import (
 from Config import Config
 from my_utils.log import logger
 
-
 assistant_api = APIRouter()
 
 assistant_service = AssistantService()
@@ -58,7 +57,7 @@ async def get_current_assistant():
     获取当前选择的助手信息
 
     Returns:
-        当前助手的信息或空对象
+        当前助手的信息或空对象（含 userState 嵌套）
     """
     try:
         # 获取当前助手名称
@@ -67,7 +66,7 @@ async def get_current_assistant():
         if not current_assistant_name:
             return {"msg": "No current assistant selected", "data": None}
 
-        # 获取当前助手的详细信息
+        # 获取当前助手的详细信息（含 userState）
         current_assistant = assistant_service.get_assistant_by_name(
             current_assistant_name
         )
@@ -75,7 +74,7 @@ async def get_current_assistant():
         if current_assistant:
             return {
                 "msg": "Get current assistant success",
-                "data": current_assistant.model_dump(),
+                "data": current_assistant,
             }
         else:
             return {"msg": "Current assistant info not found", "data": None}
@@ -105,7 +104,7 @@ async def switch_assistant(switch_request: SwitchAssistantRequest):
             )
             return {
                 "msg": f"成功切换到助手 '{switch_request.name}'",
-                "data": assistant_info.model_dump(),  # type: ignore
+                "data": assistant_info,
             }
         # 调用服务层切换助手
         await assistant_service.set_assistant(switch_request.name)
@@ -124,7 +123,7 @@ async def switch_assistant(switch_request: SwitchAssistantRequest):
 
         return {
             "msg": f"成功切换到助手 '{switch_request.name}'",
-            "data": assistant_info.model_dump(),
+            "data": assistant_info,
         }
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -358,12 +357,12 @@ async def update_assistant(update_request: UpdateAssistantRequest):
     更新助手信息接口
     """
     try:
-        # 调用服务层更新助手信息
+        # 调用服务层更新助手信息，返回含 userState 嵌套的字典
         updated_assistant = assistant_service.update_assistant_info(update_request)
 
         return {
             "msg": f"助手 '{update_request.name}' 信息更新成功",
-            "data": updated_assistant.model_dump(),
+            "data": updated_assistant,
         }
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -378,12 +377,12 @@ async def add_assistant(add_request: AddAssistantRequest):
     添加新助手接口
     """
     try:
-        # 调用服务层添加助手
+        # 调用服务层添加助手，返回含 userState 嵌套的字典
         new_assistant = assistant_service.add_assistant(add_request)
 
         return {
             "msg": f"助手 '{add_request.name}' 添加成功",
-            "data": new_assistant.model_dump(),
+            "data": new_assistant,
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
