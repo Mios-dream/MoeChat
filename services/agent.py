@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 from Config import Config
-from my_utils import long_mem, data_base, prompt, core_mem, log as Log
+from my_utils import prompt, log as Log
 from my_utils import config_manager as CConfig
 import time
 import jionlp
@@ -13,6 +13,7 @@ from models.types.user_state import UserStateInfo
 from core.emotion.emotion_engine import EmotionEngine
 from concurrent.futures import ThreadPoolExecutor
 from my_utils.llm_request import llm_request, parse_llm_json_response
+from services import core_mem, data_base, long_mem
 
 
 class Agent:

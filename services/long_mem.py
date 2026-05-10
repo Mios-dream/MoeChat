@@ -233,6 +233,9 @@ class Memory:
             facts = await self._build_diary_summary_text(day_rows)
             # 第二阶段：根据摘要生成日记正文。
             summary = await self._build_diary_text(facts)
+            if not summary:
+                Log.logger.warning(f"[长期记忆] 日记生成失败，跳过归档: {day}")
+                continue
 
             vector = embedding.t2vect([f"{summary}\n{facts}"])[0]
             vec_blob = self._vector_to_blob(vector)
@@ -331,9 +334,8 @@ class Memory:
         except Exception:
             Log.logger.error("记录日记失败", exc_info=True)
 
-        # LLM 异常时使用保底文本，保证数据库记录完整。
         if not diary_text:
-            diary_text = f"今天和{self.user}聊了很多事情，虽然聊的都是日常琐事，但每一句都让我觉得很温暖。"
+            return ""
         return diary_text.strip()
 
     def _extract_time_range(self, msg: str) -> tuple[int, int] | None:

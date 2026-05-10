@@ -8,7 +8,7 @@ from services.tts_service import ttsService
 from models.dto.assistant_request import AddAssistantRequest, UpdateAssistantRequest
 from models.types.assistant_info import AssistantInfo
 from models.types.user_state import UserStateInfo
-from my_utils.agent import Agent
+from services.agent import Agent
 from my_utils.file_utils import get_latest_modification_time
 import my_utils.log as Log
 
