@@ -1,6 +1,7 @@
 # 下载模型到指定文件夹
 from modelscope import snapshot_download
 from Config import Config
+from gsv_tts import TTS
 
 
 def download_embedding_model():
@@ -9,7 +10,7 @@ def download_embedding_model():
     """
     snapshot_download(
         model_id="iic/nlp_gte_sentence-embedding_chinese-base",
-        local_dir=Config.PROJECT_ROOT + "data" + "models",
+        local_dir=Config.EMBEDDING_MODEL_PATH,
     )
 
 
@@ -19,7 +20,7 @@ def download_asr_model():
     """
     snapshot_download(
         model_id="iic/SenseVoiceSmall",
-        local_dir=Config.PROJECT_ROOT + "data" + "models",
+        local_dir=Config.ASR_MODEL_DIR,
     )
 
 
@@ -31,7 +32,22 @@ def download_kws_model():
     pass
 
 
+def download_tts_pretrained_model():
+    """
+    下载文本转语音的预训练模型到本地指定路径。
+    """
+    TTS(
+        use_bert=True,
+        models_dir=Config.GSV_MODELS_PATH,
+    )
+
+
 def main():
     download_embedding_model()
     download_asr_model()
-    download_kws_model()
+    # download_kws_model()
+    download_tts_pretrained_model()
+
+
+if __name__ == "__main__":
+    main()

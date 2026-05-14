@@ -49,7 +49,6 @@ url = "https://mirrors.ustc.edu.cn/pypi/simple"
 default = true
 
 [tool.uv.sources]
-llama-cpp-python = { git = "https://github.com/JamePeng/llama-cpp-python", branch = "main" }
 torch = [
    { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }
 ]

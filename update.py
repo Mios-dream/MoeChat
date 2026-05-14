@@ -1,6 +1,12 @@
 """
 自动更新脚本
 从 GitHub Releases 检查最新版本并自动下载更新
+
+用法:
+    python update.py                  # 检查并更新（交互模式）
+    python update.py --check-only     # 仅检查，不下载
+    python update.py --json           # 输出 JSON 格式（供前端调用）
+    python update.py --check-only --json  # 仅检查 + JSON 输出
 """
 
 import os
@@ -225,62 +231,130 @@ def apply_update(zip_path: str, project_root: str):
         shutil.rmtree(temp_extract, ignore_errors=True)
 
 
-def check_and_update():
+def check_and_update(json_output: bool = False, check_only: bool = False):
     """
     主流程：检查更新 → 下载 → 应用
+
+    Args:
+        json_output: 是否输出 JSON 格式
+        check_only: 仅检查，不下载更新
+
     Returns:
-        bool: 是否执行了更新
+        bool: 是否执行了更新（check_only 时返回是否有更新）
     """
     project_root = os.path.dirname(os.path.abspath(__file__))
     current_ver = get_current_version()
 
-    print(f"📋 MoeChat 自动更新工具")
-    print(f"{'=' * 40}")
-    print(f"当前版本: v{current_ver}")
-    print(f"正在检查更新...")
+    if not json_output:
+        print(f"📋 MoeChat 自动更新工具")
+        print(f"{'=' * 40}")
+        print(f"当前版本: v{current_ver}")
+        print(f"正在检查更新...")
 
     release = get_latest_release()
     if release is None:
-        print("⚠️  无法获取最新版本信息，请检查网络连接")
+        if json_output:
+            print(
+                json.dumps(
+                    {"error": "无法获取最新版本信息", "current_version": current_ver},
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            print("⚠️  无法获取最新版本信息，请检查网络连接")
         return False
 
     latest_tag = release.get("tag_name", "v0.0.0")
     latest_ver = latest_tag.lstrip("v")
     release_url = release.get("html_url", "")
+    release_notes = release.get("body", "")
 
-    print(f"最新版本: {latest_tag}")
-    print(f"Release:   {release_url}")
-    print()
+    if not json_output:
+        print(f"最新版本: {latest_tag}")
+        print(f"Release:   {release_url}")
+        print()
 
     if compare_versions(current_ver, latest_ver) >= 0:
-        print("✅ 已是最新版本，无需更新")
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "update_available": False,
+                        "current_version": current_ver,
+                        "latest_version": latest_ver,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            print("✅ 已是最新版本，无需更新")
         return False
 
-    print(f"✨ 发现新版本 {latest_tag}，准备下载...")
-    print()
+    # 发现新版本
+    if check_only:
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "update_available": True,
+                        "current_version": current_ver,
+                        "latest_version": latest_ver,
+                        "release_url": release_url,
+                        "release_notes": release_notes,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            print(f"✨ 发现新版本 {latest_tag}")
+        return True
+
+    if not json_output:
+        print(f"✨ 发现新版本 {latest_tag}，准备下载...")
+        print()
 
     asset = find_zip_asset(release)
     if not asset:
-        print("❌ 未在 Release 中找到 zip 包")
-        print("提示: 推送标签后 GitHub Actions 会自动打包，请确认工作流已成功运行")
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "error": "未找到 zip 包",
+                        "current_version": current_ver,
+                        "latest_version": latest_ver,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            print("❌ 未在 Release 中找到 zip 包")
+            print("提示: 推送标签后 GitHub Actions 会自动打包，请确认工作流已成功运行")
         return False
 
     download_url = asset.get("browser_download_url", "")
     if not download_url:
-        print("❌ 无法获取下载链接")
+        if json_output:
+            print(json.dumps({"error": "无法获取下载链接"}, ensure_ascii=False))
+        else:
+            print("❌ 无法获取下载链接")
         return False
 
     # 下载到临时文件
     tmp_zip = os.path.join(tempfile.gettempdir(), f"moechat_{latest_ver}.zip")
     try:
-        print(f"⬇️  正在下载更新包...")
+        if not json_output:
+            print(f"⬇️  正在下载更新包...")
         download_with_progress(download_url, tmp_zip)
     except Exception as e:
-        print(f"❌ 下载失败: {e}")
+        if json_output:
+            print(json.dumps({"error": f"下载失败: {e}"}, ensure_ascii=False))
+        else:
+            print(f"❌ 下载失败: {e}")
         return False
 
     # 应用更新
-    print()
+    if not json_output:
+        print()
     success = apply_update(tmp_zip, project_root)
 
     # 清理下载的 zip
@@ -290,26 +364,50 @@ def check_and_update():
         pass
 
     if success:
-        print()
-        print(f"🎉 更新完成！已升级到 {latest_tag}")
-        print("💡 建议重启程序以加载更新")
+        if json_output:
+            print(
+                json.dumps(
+                    {
+                        "success": True,
+                        "message": f"已升级到 {latest_tag}",
+                        "current_version": latest_ver,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            print()
+            print(f"🎉 更新完成！已升级到 {latest_tag}")
+            print("💡 建议重启程序以加载更新")
         return True
 
+    if json_output:
+        print(json.dumps({"error": "解压更新失败"}, ensure_ascii=False))
     return False
 
 
 def main():
     """入口函数"""
+    # 解析命令行参数
+    json_output = "--json" in sys.argv
+    check_only = "--check-only" in sys.argv
+
     try:
-        updated = check_and_update()
+        updated = check_and_update(json_output=json_output, check_only=check_only)
         if not updated:
             # 没有更新或更新失败
             pass
     except KeyboardInterrupt:
-        print("\n⚠️  用户取消更新")
+        if json_output:
+            print(json.dumps({"error": "用户取消"}, ensure_ascii=False))
+        else:
+            print("\n⚠️  用户取消更新")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ 更新过程出现异常: {e}")
+        if json_output:
+            print(json.dumps({"error": str(e)}, ensure_ascii=False))
+        else:
+            print(f"\n❌ 更新过程出现异常: {e}")
         sys.exit(1)
 
 
