@@ -1,11 +1,14 @@
-import sys
 import traceback
+import sys
+
+from my_utils.check_and_download_default_assistant import (
+    check_and_download_default_assistant,
+)
 from my_utils.log import logger
 import os
 from my_utils.logo import print_moechat_logo
 from my_utils.version import get_project_version
 from services.assistant_service import AssistantService
-
 
 assistant_service = AssistantService()
 
@@ -20,6 +23,7 @@ async def init():
         logger.info(f"当前版本为: {get_project_version()}")
 
         await create_data_folder()
+        await check_and_download_default_assistant()
         await initialize_assistant()
 
     except Exception as e:

@@ -338,9 +338,9 @@ class AssistantService:
                 Log.logger.info(f"无法加载上次使用的助手: {last_used}")
 
         try:
-            return await self.set_assistant("Chat酱")
+            return await self.set_assistant("澪")
         except:
-            Log.logger.info("无法加载默认助手'Chat酱'")
+            Log.logger.info("无法加载默认助手'澪'")
         return None
 
     def save_last_used_agent(self) -> None:

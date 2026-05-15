@@ -1,6 +1,24 @@
+import os
+import shutil
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+
+def _init_config():
+    """
+    初始化配置文件：如果 config.yaml 不存在，则从 config.example.yaml 模板创建。
+    """
+    if not os.path.exists("config.yaml"):
+        if os.path.exists("config.example.yaml"):
+            shutil.copy2("config.example.yaml", "config.yaml")
+            print("[MoeChat] 未检测到 config.yaml，已从模板 config.example.yaml 创建，请修改配置后重新启动。")
+        else:
+            raise FileNotFoundError(
+                "config.example.yaml 模板文件不存在，无法创建 config.yaml。"
+            )
+
+
+_init_config()
 
 # 读取配置文件
 yaml = YAML()

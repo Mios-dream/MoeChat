@@ -6,7 +6,7 @@
 用法:
     python -m my_utils.core_mem_migrate <角色名>
 示例:
-    python -m my_utils.core_mem_migrate Chat酱
+    python -m my_utils.core_mem_migrate 澪
 """
 
 import sys
@@ -51,15 +51,13 @@ def migrate(agent_id: str):
     os.makedirs(data_dir, exist_ok=True)
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute(
-        """
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS memories (
             uuid TEXT PRIMARY KEY,
             time TEXT NOT NULL,
             text TEXT NOT NULL
         )
-    """
-    )
+    """)
 
     # 迁移数据
     migrated = 0
@@ -97,7 +95,7 @@ def migrate(agent_id: str):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("用法: python -m my_utils.core_mem_migrate <角色名>")
-        print("示例: python -m my_utils.core_mem_migrate Chat酱")
+        print("示例: python -m my_utils.core_mem_migrate 澪")
         sys.exit(1)
 
     agent_id = sys.argv[1]

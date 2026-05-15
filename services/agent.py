@@ -166,6 +166,13 @@ class Agent:
             )
             self.prompt += self.message_example_prompt + "\n\n"
 
+        if self.agent_config.extraDescription:
+            self.extra_description_prompt = prompt.extra_description_prompt.format(
+                extra_description=self.agent_config.extraDescription,
+                char=self.char,
+                user=self.user,
+            )
+            self.prompt += self.extra_description_prompt + "\n\n"
         # 加入自定义提示词到提示词
         if self.agent_config.customPrompt:
             self.prompt += self.agent_config.customPrompt + "\n\n"
