@@ -44,4 +44,3 @@ jobs:
           fail_on_unmatched: true
           files: |
             MoeChat-${{ steps.get_version.outputs.VERSION }}.zip
-          generate_release_notes: true
