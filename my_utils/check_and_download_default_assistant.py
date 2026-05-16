@@ -43,10 +43,10 @@ async def check_and_download_default_assistant():
         f"未检测到初始助手 '{_DEFAULT_ASSISTANT_NAME}'，尝试从 GitHub Releases 下载..."
     )
 
-    # 查询最新 Release
-    api_url = (
-        f"https://api.github.com/repos/{_GITHUB_OWNER}/{_GITHUB_REPO}/releases/latest"
-    )
+    # 从 "assistant" 标签下载固定的 assistant.zip
+    _ASSISTANT_TAG = "assistant"
+    _ASSISTANT_ZIP_NAME = "assistant.zip"
+    api_url = f"https://api.github.com/repos/{_GITHUB_OWNER}/{_GITHUB_REPO}/releases/tags/{_ASSISTANT_TAG}"
     req = Request(api_url)
     req.add_header("Accept", "application/vnd.github+json")
 
@@ -54,23 +54,23 @@ async def check_and_download_default_assistant():
         with urlopen(req, timeout=15) as resp:
             release_data = json.loads(resp.read().decode("utf-8"))
     except (URLError, json.JSONDecodeError) as e:
-        logger.warning(f"获取 GitHub Release 信息失败: {e}，跳过助手数据下载。")
+        logger.warning(
+            f"获取 GitHub Release (tag={_ASSISTANT_TAG}) 信息失败: {e}，跳过助手数据下载。"
+        )
         return
 
-    # 查找包含 "assistant" 关键字的 zip 资产
+    # 查找固定的 assistant.zip 资产
     assets = release_data.get("assets", [])
     assistant_asset = None
     for asset in assets:
-        name = asset.get("name", "")
-        if name.endswith(".zip") and "assistant" in name.lower():
+        if asset.get("name", "") == _ASSISTANT_ZIP_NAME:
             assistant_asset = asset
             break
-        # 备选：匹配任何含 "chat" 的 zip
-        if assistant_asset is None and name.endswith(".zip") and "chat" in name.lower():
-            assistant_asset = asset
 
     if assistant_asset is None:
-        logger.warning("未在最新 Release 中找到助手数据压缩包，请手动配置助手。")
+        logger.warning(
+            f"未在 Release (tag={_ASSISTANT_TAG}) 中找到 {_ASSISTANT_ZIP_NAME}，请手动配置助手。"
+        )
         return
 
     download_url = assistant_asset.get("browser_download_url", "")
@@ -78,7 +78,7 @@ async def check_and_download_default_assistant():
         logger.warning("无法获取助手数据下载链接。")
         return
 
-    asset_name = assistant_asset.get("name", "assistant.zip")
+    asset_name = _ASSISTANT_ZIP_NAME
     asset_size = assistant_asset.get("size", 0)
     logger.info(
         f"找到助手数据包: {asset_name} ({asset_size / 1024:.0f} KB)，开始下载..."
