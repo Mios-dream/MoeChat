@@ -6,14 +6,7 @@ import os
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 
-from rich.progress import (
-    Progress,
-    BarColumn,
-    TextColumn,
-    DownloadColumn,
-    TransferSpeedColumn,
-    TimeRemainingColumn,
-)
+from tqdm import tqdm
 
 from Config import Config
 from services.assistant_service import AssistantService
@@ -93,24 +86,21 @@ async def check_and_download_default_assistant():
             total_size = int(resp.headers.get("Content-Length", 0))
             chunk_size = 8192
 
-            with Progress(
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                DownloadColumn(),
-                TransferSpeedColumn(),
-                TimeRemainingColumn(),
-                transient=False,
-            ) as progress:
-                task = progress.add_task(
-                    f"[cyan]下载 {asset_name}", total=total_size or None
-                )
-                with open(tmp_zip, "wb") as f:
+            with open(tmp_zip, "wb") as f:
+                with tqdm(
+                    total=total_size or None,
+                    unit="B",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                    desc=f"下载 {asset_name}",
+                    leave=True,
+                ) as pbar:
                     while True:
                         chunk = resp.read(chunk_size)
                         if not chunk:
                             break
                         f.write(chunk)
-                        progress.update(task, advance=len(chunk))
+                        pbar.update(len(chunk))
 
         logger.info(f"助手数据包下载完成 ({os.path.getsize(tmp_zip) / 1024:.0f} KB)。")
     except Exception as e:
@@ -127,13 +117,7 @@ async def check_and_download_default_assistant():
             members = [m for m in zf.namelist() if not m.endswith("/")]
             total_files = len(members)
 
-            with Progress(
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TextColumn("{task.completed}/{task.total}"),
-                transient=False,
-            ) as progress:
-                task = progress.add_task("[green]解压", total=total_files)
+            with tqdm(total=total_files, desc="解压", unit="file", leave=True) as pbar:
                 for member in members:
                     dest = os.path.join(agents_dir, member)
                     os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -141,7 +125,7 @@ async def check_and_download_default_assistant():
                         shutil.copyfileobj(src, dst)
                         dst.flush()
                         os.fsync(dst.fileno())
-                    progress.update(task, advance=1)
+                    pbar.update(1)
 
         logger.info(f"助手数据包解压完成 → {agents_dir}")
     except Exception as e:
