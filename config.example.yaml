@@ -46,3 +46,13 @@ KnowledgeBase:
   # 是否启用大模型抽取知识库功能，启用后会定时检查知识库文件是否有更新，有更新则调用大模型接口抽取知识库
   enable_llm_extract: true
   health_check_interval_sec: 3600
+
+Tools:
+  # 是否启用工具/技能系统
+  enabled: true
+  # 是否自动扫描 plugins/ 目录加载技能
+  auto_discover: true
+  # 工具执行超时时间（秒）
+  timeout: 30
+  # 工具调用最大轮次（防止无限循环）
+  max_rounds: 5

@@ -1,7 +1,7 @@
 from my_utils import config_manager as CConfig
 from my_utils import log as Log
 from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionMessageParam
+from openai.types.chat import ChatCompletionMessageParam, ChatCompletion
 import json
 import re
 
@@ -104,19 +104,43 @@ async def chat_llm_request_stream(msg: list[ChatCompletionMessageParam]):
             yield content
 
 
-async def slm_request(msg: list[ChatCompletionMessageParam]) -> str | None:
+async def llm_request_with_tools(
+    msg: list[ChatCompletionMessageParam],
+    tools: list[dict] | None = None,
+    model_key: str = "ChatLLM",
+) -> ChatCompletion:
     """
-    SLM(小参数模型)快速请求，非流式
-    :param data: 消息链
-    :return: 请求结果
+    带工具调用支持的 LLM 请求（非流式）
+
+    用于支持 OpenAI function calling 协议。调用方需要检查返回的
+    response.choices[0].message.tool_calls 来判断是否需要执行工具。
+
+    Parameters:
+        msg: 消息链
+        tools: OpenAI tools 格式的工具定义列表
+        model_key: 使用的模型配置键名（"LLM", "ChatLLM", "SLM"）
+
+    Returns:
+        ChatCompletion: 完整的 OpenAI 响应对象，包含可能的 tool_calls
     """
+    config = CConfig.config[model_key]
     client = AsyncOpenAI(
-        api_key=CConfig.config["SLM"]["key"], base_url=CConfig.config["SLM"]["api"]
+        api_key=config["key"],
+        base_url=config["api"],
     )
-    response = await client.chat.completions.create(
-        model=CConfig.config["SLM"]["model"],
-        messages=msg,
-        stream=False,
-    )
-    content = response.choices[0].message.content
-    return content
+
+    kwargs = {
+        "model": config["model"],
+        "messages": msg,
+        "stream": False,
+        "extra_body": config.get("extra_config", {}),
+    }
+
+    # 仅在传入 tools 时添加工具参数
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+
+    response = await client.chat.completions.create(**kwargs)
+    print(f"LLM 请求完成，response: {response}")
+    return response

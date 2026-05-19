@@ -14,6 +14,7 @@ from my_utils import config_manager as CConfig
 from my_utils.live2d_parameter_load import load_live2d_parameters
 from my_utils.log import logger
 from my_utils.llm_request import chat_llm_request_stream
+from my_utils.tool_manager import ToolManager
 from services.assistant_service import AssistantService
 from services.expression_generator_service import ExpressionGenerator
 from pydantic import BaseModel
@@ -503,6 +504,9 @@ async def start_llm_task(msg, stream_processor: StreamProcessor):
     """
     将消息发送到大语言模型(LLM)并处理返回的流式响应
 
+    支持工具调用：如果配置了工具，会先进行工具调用循环，
+    然后再将最终回复以流式方式输出。
+
     只在流完全结束时处理剩余文本，确保最后一段输出被正确处理
 
     Args:
@@ -516,17 +520,31 @@ async def start_llm_task(msg, stream_processor: StreamProcessor):
     # 标记第一次打印时间
     first_print_time_flag = True
 
-    # logger.info(f"发送给LLM的消息: {json.dumps(msg, ensure_ascii=False)}")
-
     try:
-        # 正常处理所有流式chunk
-        async for chunk in chat_llm_request_stream(msg):
-            if first_print_time_flag:
-                first_print_time_flag = False
-                logger.info(f"[大模型延迟]{time.time() - start_time}")
+        # 检查是否有可用工具
+        tools = ToolManager.get_openai_tools()
 
-            # 处理每个文本chunk
-            await stream_processor.process_text_chunk(chunk)
+        if tools:
+            # 有工具时，先进行工具调用循环（非流式）
+            logger.info(f"[LLM] 检测到 {len(tools)} 个可用工具，进入工具调用模式")
+            final_content = await ToolManager.chat_with_tools(msg)
+
+            if final_content:
+                # 工具调用完成后，将最终回复以流式方式输出
+                logger.info("[LLM] 工具调用完成，开始流式输出最终回复")
+                # 模拟流式输出：逐字符发送
+                for char in final_content:
+                    await stream_processor.process_text_chunk(char)
+                    await asyncio.sleep(0.01)  # 模拟流式输出的间隔
+        else:
+            # 无工具时，正常流式处理
+            async for chunk in chat_llm_request_stream(msg):
+                if first_print_time_flag:
+                    first_print_time_flag = False
+                    logger.info(f"[大模型延迟]{time.time() - start_time}")
+
+                # 处理每个文本chunk
+                await stream_processor.process_text_chunk(chunk)
 
     except Exception as e:
         logger.error(f"[LLM] 流处理异常: {e}")

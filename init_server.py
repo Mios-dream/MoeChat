@@ -8,6 +8,7 @@ from my_utils.log import logger
 import os
 from my_utils.logo import print_moechat_logo
 from my_utils.version import get_project_version
+from my_utils.tool_manager import ToolManager
 from services.assistant_service import AssistantService
 
 assistant_service = AssistantService()
@@ -25,6 +26,7 @@ async def init():
         await create_data_folder()
         await check_and_download_default_assistant()
         await initialize_assistant()
+        await initialize_tools()
 
     except Exception as e:
         _exc_type, _exc_value, exc_traceback = sys.exc_info()
@@ -64,3 +66,26 @@ async def initialize_assistant():
     else:
         logger.warning("未找到可用的助手，请创建一个助手后再使用")
         exit(1)
+
+
+async def initialize_tools():
+    """
+    初始化工具/技能系统
+    扫描 plugins/ 目录并加载所有技能
+    """
+    from my_utils import config_manager as CConfig
+
+    # 检查工具系统是否启用
+    tools_config = CConfig.config.get("Tools", {})
+    if not tools_config.get("enabled", True):
+        logger.info("工具系统已禁用，跳过初始化")
+        return
+
+    logger.info("开始初始化工具/技能系统...")
+
+    # 自动发现并加载插件
+    if tools_config.get("auto_discover", True):
+        loaded_count = ToolManager.load_plugins("plugins")
+        logger.info(f"工具系统初始化完成，共加载 {loaded_count} 个工具")
+    else:
+        logger.info("自动发现已禁用，跳过插件扫描")

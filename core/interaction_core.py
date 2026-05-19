@@ -195,7 +195,7 @@ async def generate_interaction_message_with_motion(params: InteractionMessageReq
 
     try:
         msg_list_for_llm = await _build_interaction_message_list(params)
-        print(json.dumps(msg_list_for_llm, ensure_ascii=False, indent=2))
+        # print(json.dumps(msg_list_for_llm, ensure_ascii=False, indent=2))
     except Exception as e:
         logger.error(f"[交互] 构建消息列表失败: {e}")
         error_response = {

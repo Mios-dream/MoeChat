@@ -1,12 +1,9 @@
 # LOGO 打印功能
-from rich.console import Console
-from rich.text import Text
 import time
+import sys
 
 
 def print_moechat_logo(delay=0.2):
-    console = Console()
-
     ascii_lines = [
         "███╗   ███╗ ██████╗ ███████╗ ██████╗██╗  ██╗ █████╗ ████████╗",
         "████╗ ████║██╔═══██╗██╔════╝██╔════╝██║  ██║██╔══██╗╚══██╔══╝",
@@ -16,38 +13,42 @@ def print_moechat_logo(delay=0.2):
         "╚═╝     ╚═╝ ╚═════╝ ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ",
     ]
 
-    gradient_colors = [
-        "rgb(254,126,169)",
-        "rgb(254,152,185)",
-        "rgb(254,178,201)",
-        "rgb(254,204,217)",
-        "rgb(255,230,233)",
-        "rgb(255,240,245)",
+    gradient_rgbs = [
+        (254, 126, 169),
+        (254, 152, 185),
+        (254, 178, 201),
+        (254, 204, 217),
+        (255, 230, 233),
+        (255, 240, 245),
     ]
     total_lines = len(ascii_lines)
+
+    def colorize(text, r, g, b):
+        """使用ANSI 24位真彩色转义码着色"""
+        return f"\033[38;2;{r};{g};{b}m{text}\033[0m"
+
+    def clear_and_render(rendered_lines):
+        """光标归位 + 清屏 + 重绘"""
+        sys.stdout.write("\033[H\033[J")
+        for line in rendered_lines:
+            sys.stdout.write(line + "\n")
+        sys.stdout.flush()
 
     # 初始化行缓冲为空字符串
     rendered_lines = [""] * total_lines
 
-    def render_and_flush():
-        console.clear()
-        for line in rendered_lines:
-            console.print(line if line else " " * len(ascii_lines[0]))
-
     # Step 1: 打印奇数行（0,2,4...）
     for i in range(0, total_lines, 2):
-        rendered_lines[i] = Text(
-            ascii_lines[i], style=gradient_colors[i % len(gradient_colors)]
-        )
-        render_and_flush()
+        r, g, b = gradient_rgbs[i]
+        rendered_lines[i] = colorize(ascii_lines[i], r, g, b)
+        clear_and_render(rendered_lines)
         time.sleep(delay)
 
     # Step 2: 打印偶数行（1,3,5...）
     for i in range(1, total_lines, 2):
-        rendered_lines[i] = Text(
-            ascii_lines[i], style=gradient_colors[i % len(gradient_colors)]
-        )
-        render_and_flush()
+        r, g, b = gradient_rgbs[i]
+        rendered_lines[i] = colorize(ascii_lines[i], r, g, b)
+        clear_and_render(rendered_lines)
         time.sleep(delay)
 
 
