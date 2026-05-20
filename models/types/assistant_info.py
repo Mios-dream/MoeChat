@@ -5,14 +5,15 @@ import yaml
 class GSVSetting(BaseModel):
     """
     助手语音合成设置模型
+    字段默认为空字符串；为空或文件不存在时，由 AssistantService 回退到默认助手的配置。
     """
 
-    textLang: str = Field(..., description="助手语音合成的语言")
-    gptModelPath: str = Field(..., description="助手语音合成的GPT模型")
-    sovitsModelPath: str = Field(..., description="助手语音合成的SOVITS模型")
-    refAudioPath: str = Field(..., description="助手语音合成的参考音频")
-    promptText: str = Field(..., description="助手语音合成的参考文字")
-    promptLang: str = Field(..., description="助手语音合成的参考文字语言")
+    textLang: str = Field("", description="助手语音合成的语言")
+    gptModelPath: str = Field("", description="助手语音合成的GPT模型")
+    sovitsModelPath: str = Field("", description="助手语音合成的SOVITS模型")
+    refAudioPath: str = Field("", description="助手语音合成的参考音频")
+    promptText: str = Field("", description="助手语音合成的参考文字")
+    promptLang: str = Field("", description="助手语音合成的参考文字语言")
     extraRefAudio: dict = Field({}, description="助手语音合成的额外参考音频")
 
     @staticmethod

@@ -15,7 +15,6 @@ from my_utils.log import logger
 # GitHub 仓库信息（与 update.py 保持一致）
 _GITHUB_OWNER = "Mios-dream"
 _GITHUB_REPO = "MoeChat"
-_DEFAULT_ASSISTANT_NAME = "澪"
 _DOWNLOAD_TIMEOUT = 120
 
 assistant_service = AssistantService()
@@ -27,13 +26,13 @@ async def check_and_download_default_assistant():
     不阻塞启动：下载失败时仅记录警告，允许用户手动配置。
     """
     assistant_info_path = os.path.join(
-        Config.BASE_AGENTS_PATH, _DEFAULT_ASSISTANT_NAME, "info.yaml"
+        Config.BASE_AGENTS_PATH, Config.DEFAULT_ASSISTANT_NAME, "info.yaml"
     )
     if os.path.isfile(assistant_info_path):
         return
 
     logger.info(
-        f"未检测到初始助手 '{_DEFAULT_ASSISTANT_NAME}'，尝试从 GitHub Releases 下载..."
+        f"未检测到初始助手 '{Config.DEFAULT_ASSISTANT_NAME}'，尝试从 GitHub Releases 下载..."
     )
 
     # 从 "assistant" 标签下载固定的 assistant.zip
@@ -131,7 +130,7 @@ async def check_and_download_default_assistant():
     except Exception as e:
         logger.warning(f"解压助手数据包失败: {e}，请手动配置助手。")
         # 清理可能的不完整目录
-        default_dir = os.path.join(agents_dir, _DEFAULT_ASSISTANT_NAME)
+        default_dir = os.path.join(agents_dir, Config.DEFAULT_ASSISTANT_NAME)
         if os.path.isdir(default_dir):
             shutil.rmtree(default_dir, ignore_errors=True)
     finally:

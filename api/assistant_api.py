@@ -3,6 +3,8 @@ import re
 import shutil
 import zipfile
 import io
+import tempfile
+import yaml
 from pathlib import Path
 from models.dto.assistant_request import (
     AddAssistantRequest,
@@ -349,6 +351,108 @@ async def upload_assets(
         raise HTTPException(
             status_code=500, detail=f"Failed to upload assets: {str(e)}"
         )
+
+
+@assistant_api.post("/assistant/import-from-zip")
+async def import_assistant_from_zip(
+    assistant_zip: UploadFile = File(...),
+):
+    """
+    上传完整助手 zip 包并导入为新助手。
+
+    zip 包需要包含 info.yaml 或 info.yml，可位于根目录或单层助手目录中。
+    """
+    try:
+        # 读取上传的zip文件内容
+        zip_content = await assistant_zip.read()
+
+        # 验证文件类型是否为zip
+        if not zip_content.startswith(b"PK"):
+            raise HTTPException(status_code=400, detail="上传文件不是有效的zip文件")
+
+        # 使用临时目录解析zip内容
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # 解压zip文件到临时目录
+            with zipfile.ZipFile(io.BytesIO(zip_content), "r") as zip_ref:
+                zip_ref.extractall(temp_dir)
+
+            # 查找 info.yaml 或 info.yml 文件
+            info_file_path = None
+            assistant_root_dir = None  # 记录助手的根目录（用于复制assets等）
+
+            # 首先在根目录查找
+            root_info_yaml = os.path.join(temp_dir, "info.yaml")
+            root_info_yml = os.path.join(temp_dir, "info.yml")
+
+            if os.path.isfile(root_info_yaml):
+                info_file_path = root_info_yaml
+                assistant_root_dir = temp_dir
+            elif os.path.isfile(root_info_yml):
+                info_file_path = root_info_yml
+                assistant_root_dir = temp_dir
+            else:
+                # 在单层子目录中查找
+                for dirname in os.listdir(temp_dir):
+                    dir_path = os.path.join(temp_dir, dirname)
+                    if not os.path.isdir(dir_path):
+                        continue
+
+                    sub_info_yaml = os.path.join(dir_path, "info.yaml")
+
+                    if os.path.isfile(sub_info_yaml):
+                        info_file_path = sub_info_yaml
+                        assistant_root_dir = dir_path
+                        break
+
+            # 验证是否找到了info文件
+            if not info_file_path:
+                raise HTTPException(
+                    status_code=400,
+                    detail="zip文件中未找到 info.yaml",
+                )
+
+            # 读取并解析 info.yaml
+            with open(info_file_path, "r", encoding="utf-8") as f:
+                assistant_data = yaml.safe_load(f)
+
+            # 获取助手名称
+            assistant_name = assistant_data.get("name")
+            target_assistant_dir = os.path.join(Config.BASE_AGENTS_PATH, assistant_name)
+
+            # 检查助手是否已存在
+            if os.path.exists(target_assistant_dir):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"助手 '{assistant_name}' 已存在",
+                )
+
+            # 复制整个助手目录到目标位置
+            if assistant_root_dir:
+                # 复制整个助手目录
+                shutil.copytree(assistant_root_dir, target_assistant_dir)
+
+            logger.info(
+                f"Successfully imported assistant '{assistant_name}' from zip file"
+            )
+
+            # 获取导入后的助手信息返回给客户端
+            imported_assistant = assistant_service.get_assistant_by_name(assistant_name)
+
+            return {
+                "msg": f"成功导入助手 '{assistant_name}'",
+                "data": imported_assistant,
+            }
+
+    except HTTPException:
+        # 直接抛出已有的HTTPException
+        raise
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="无效的zip文件格式")
+    except yaml.YAMLError as e:
+        raise HTTPException(status_code=400, detail=f"info文件格式错误: {str(e)}")
+    except Exception as e:
+        logger.error(f"导入助手失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"导入助手失败: {str(e)}")
 
 
 @assistant_api.post("/assistant/info/update")

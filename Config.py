@@ -11,6 +11,8 @@ class Config:
 
     # 助手目录基础路径
     BASE_AGENTS_PATH = "data/agents"
+    # 默认助手名称（用作语音配置回退源；同时禁止删除）
+    DEFAULT_ASSISTANT_NAME = "澪"
     # 项目根目录
     PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
     # embedding模型路径

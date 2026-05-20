@@ -36,6 +36,8 @@ class AssistantService:
         self.assistants_cache: dict[str, AssistantInfo] = {}
         # 初始化已加载助手为空字典
         self.loaded_agents: dict[str, Agent] = {}
+        # 默认助手 gsvSetting 缓存（用于语音配置回退），首次访问时加载
+        self._default_gsv_cache: dict | None = None
 
     # ==================== User State Helpers ====================
 
@@ -178,6 +180,10 @@ class AssistantService:
         if self.current_assistant_name == update_request.name:
             self.reload_current_assistant()
 
+        # 默认助手的配置变更时，使 GSV 默认值缓存失效，确保下次回退读到最新值
+        if update_request.name == Config.DEFAULT_ASSISTANT_NAME:
+            self._default_gsv_cache = None
+
         return self._build_response_dict(update_request.name)
 
     def add_assistant(self, add_request: AddAssistantRequest) -> dict:
@@ -232,7 +238,12 @@ class AssistantService:
     def delete_assistant(self, assistant_name: str) -> None:
         """
         删除助手目录及其所有内容（包括 user_state.yaml）
+        默认助手不可删除（同时是语音配置的回退源）
         """
+        # 后端保护：默认助手禁止删除（前端已隐藏入口，此处兜底防止绕过）
+        if assistant_name == Config.DEFAULT_ASSISTANT_NAME:
+            raise ValueError(f"默认助手 '{assistant_name}' 不可删除")
+
         assistants_path = Config.BASE_AGENTS_PATH
         assistant_dir = os.path.join(assistants_path, assistant_name)
 
@@ -338,9 +349,9 @@ class AssistantService:
                 Log.logger.info(f"无法加载上次使用的助手: {last_used}")
 
         try:
-            return await self.set_assistant("澪")
+            return await self.set_assistant(Config.DEFAULT_ASSISTANT_NAME)
         except:
-            Log.logger.info("无法加载默认助手'澪'")
+            Log.logger.info(f"无法加载默认助手'{Config.DEFAULT_ASSISTANT_NAME}'")
         return None
 
     def save_last_used_agent(self) -> None:
@@ -382,51 +393,119 @@ class AssistantService:
         except FileNotFoundError:
             return None
 
+    def _load_default_gsv_setting(self) -> dict:
+        """
+        读取默认助手的 gsvSetting，作为语音配置的回退源。
+        结果缓存在实例上，避免重复读盘；默认助手不存在时返回空字典。
+        """
+        if self._default_gsv_cache is not None:
+            return self._default_gsv_cache
+
+        default_info_path = os.path.join(
+            Config.BASE_AGENTS_PATH, Config.DEFAULT_ASSISTANT_NAME, "info.yaml"
+        )
+        if not os.path.isfile(default_info_path):
+            Log.logger.warning(
+                f"默认助手 '{Config.DEFAULT_ASSISTANT_NAME}' 不存在，无法提供 GSV 默认配置"
+            )
+            self._default_gsv_cache = {}
+            return self._default_gsv_cache
+
+        try:
+            with open(default_info_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            self._default_gsv_cache = data.get("gsvSetting", {}) or {}
+        except Exception as e:
+            Log.logger.error(f"读取默认助手 GSV 配置失败: {e}", exc_info=True)
+            self._default_gsv_cache = {}
+
+        return self._default_gsv_cache  # type: ignore
+
     async def _set_gsv_models(self, agent: Agent) -> None:
         """
-        设置当前助手的语音模型路径
+        设置当前助手的语音模型路径。
+        字段为空或本地资源文件不存在时，回退到默认助手的对应字段与资源。
         """
-        assistant_asset_base_path = (
-            f"{Config.BASE_AGENTS_PATH}/{agent.agent_name}/assets"
-        )
         is_api = CConfig.config["TTS"]["mode"] == "api"
+        gsv = agent.agent_config.gsvSetting
+
+        default_name = Config.DEFAULT_ASSISTANT_NAME
+        default_asset_base = f"{Config.BASE_AGENTS_PATH}/{default_name}/assets"
+        default_gsv = self._load_default_gsv_setting()
+
+        current_asset_base = f"{Config.BASE_AGENTS_PATH}/{agent.agent_name}/assets"
+        is_default_agent = agent.agent_name == default_name
+
+        def resolve_local_file(
+            sub_dir: str, file_name: str, default_file_name: str
+        ) -> tuple[str, bool]:
+            """
+            返回 (最终绝对路径, 是否使用了默认助手资源)
+            - 字段为空 → 使用默认助手资源
+            - 当前助手目录下文件不存在 → 使用默认助手资源
+            - 若当前助手本身就是默认助手，则不再回退（避免循环）
+            """
+            if not file_name:
+                if not default_file_name:
+                    return "", True
+                return (
+                    os.path.join(default_asset_base, sub_dir, default_file_name),
+                    True,
+                )
+
+            candidate = os.path.join(current_asset_base, sub_dir, file_name)
+            if not os.path.isfile(candidate):
+                if is_default_agent or not default_file_name:
+                    return candidate, False
+                Log.logger.warning(
+                    f"助手 [{agent.agent_name}] 资源不存在: {candidate}，回退至默认助手 [{default_name}]"
+                )
+                return (
+                    os.path.join(default_asset_base, sub_dir, default_file_name),
+                    True,
+                )
+            return candidate, False
+
+        if is_api:
+            # API 模式：原样透传，空值由默认助手字段补齐，远端负责解析
+            gpt_model_path = gsv.gptModelPath or default_gsv.get("gptModelPath", "")
+            sovits_model_path = gsv.sovitsModelPath or default_gsv.get(
+                "sovitsModelPath", ""
+            )
+            ref_audio_path = gsv.refAudioPath or default_gsv.get("refAudioPath", "")
+            spk_audio_path = ref_audio_path
+            prompt_text = gsv.promptText or default_gsv.get("promptText", "")
+            language = gsv.textLang or default_gsv.get("textLang", "zh")
+        else:
+            # 本地模式：拼绝对路径，缺失/无效时回退默认助手
+            gpt_model_path, _ = resolve_local_file(
+                "models", gsv.gptModelPath, default_gsv.get("gptModelPath", "")
+            )
+            sovits_model_path, _ = resolve_local_file(
+                "models", gsv.sovitsModelPath, default_gsv.get("sovitsModelPath", "")
+            )
+            ref_audio_path, audio_use_default = resolve_local_file(
+                "audio", gsv.refAudioPath, default_gsv.get("refAudioPath", "")
+            )
+            spk_audio_path = ref_audio_path
+
+            # 参考音频与参考文本/语言必须配对：用默认音频时强制使用默认文本与语言
+            if audio_use_default:
+                prompt_text = default_gsv.get("promptText", "")
+                language = default_gsv.get("textLang", "zh")
+            else:
+                prompt_text = gsv.promptText or default_gsv.get("promptText", "")
+                language = (
+                    gsv.textLang
+                    if gsv.textLang in ("zh", "en", "ja")
+                    else default_gsv.get("textLang", "zh")
+                )
+
         await ttsService.switch_tts_models(
-            gpt_model_path=(
-                agent.agent_config.gsvSetting.sovitsModelPath
-                if is_api
-                else os.path.join(
-                    assistant_asset_base_path,
-                    "models",
-                    agent.agent_config.gsvSetting.sovitsModelPath,
-                )
-            ),
-            sovits_model_path=(
-                agent.agent_config.gsvSetting.gptModelPath
-                if is_api
-                else os.path.join(
-                    assistant_asset_base_path,
-                    "models",
-                    agent.agent_config.gsvSetting.gptModelPath,
-                )
-            ),
-            spk_audio_path=(
-                agent.agent_config.gsvSetting.refAudioPath
-                if is_api
-                else os.path.join(
-                    assistant_asset_base_path,
-                    "audio",
-                    agent.agent_config.gsvSetting.refAudioPath,
-                )
-            ),
-            ref_audio_path=(
-                agent.agent_config.gsvSetting.refAudioPath
-                if is_api
-                else os.path.join(
-                    assistant_asset_base_path,
-                    "audio",
-                    agent.agent_config.gsvSetting.refAudioPath,
-                )
-            ),
-            prompt_text=agent.agent_config.gsvSetting.promptText,
-            language=agent.agent_config.gsvSetting.textLang,
+            gpt_model_path=gpt_model_path,
+            sovits_model_path=sovits_model_path,
+            spk_audio_path=spk_audio_path,
+            ref_audio_path=ref_audio_path,
+            prompt_text=prompt_text,
+            language=language,
         )

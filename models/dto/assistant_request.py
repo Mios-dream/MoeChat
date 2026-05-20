@@ -50,6 +50,7 @@ class AddAssistantRequest(BaseModel):
     """
 
     name: str = Field(..., description="助手名称")
+    alias: str = Field(default="", description="助手别称")
     avatar: str = Field(..., description="助手头像")
     birthday: str = Field(..., description="助手生日")
     height: int | str = Field(..., description="助手身高")
