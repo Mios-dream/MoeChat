@@ -55,6 +55,7 @@ class InteractionContext(BaseModel):
     batteryStatus: BatteryStatus | None = None
     taskEventStatus: TaskEventStatus | None = None
     systemEventStatus: SystemEventStatus | None = None
+    isSleepMode: bool | None = None  # 睡眠模式标识
 
 
 class InteractionMessageRequest(BaseModel):

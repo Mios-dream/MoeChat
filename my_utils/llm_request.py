@@ -142,5 +142,5 @@ async def llm_request_with_tools(
         kwargs["tool_choice"] = "auto"
 
     response = await client.chat.completions.create(**kwargs)
-    print(f"LLM 请求完成，response: {response}")
+    # print(f"LLM 请求完成，response: {response}")
     return response

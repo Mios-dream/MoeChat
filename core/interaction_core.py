@@ -33,6 +33,7 @@ async def _build_interaction_message_list(
     2. 对话历史放在中间，半静态
     3. 事件描述放在末尾，仅包含语义信息，剥离时间戳和 null 字段
     4. 随机注入风格提示以增加回复多样性
+    5. 睡眠模式下追加疲倦语调提示
     """
     agent = assistant_service.get_current_assistant()
     if not agent:
@@ -54,6 +55,13 @@ async def _build_interaction_message_list(
         message_example=message_example,
         extra_setting=extra_setting,
     )
+
+    # 睡眠模式下追加疲倦语调提示
+    is_sleep_mode = params.context.isSleepMode if params.context else False
+    if is_sleep_mode:
+        sleep_prompt = prompt_templates.sleep_mode_prompt.format(char=char)
+        system_prompt += "\n\n" + sleep_prompt
+
     # 构建角色设定、性格特质、说话风格等核心信息，具有较强的缓存价值。
     msg_list: list[dict[str, str]] = [
         {"role": "system", "content": system_prompt},
@@ -80,6 +88,15 @@ async def _build_interaction_message_list(
         f"【场景】{params.scene}",
         f"【当前时间】{datetime.now().strftime('%Y-%m-%d %H:%M')}",
     ]
+
+    # 梦话事件使用专用场景描述
+    if params.event_type == "sleep.talk":
+        dream_prompt = prompt_templates.dream_talk_prompt.format(char=char)
+        user_message_lines = [
+            f"【事件类型】{params.event_type}",
+            f"【场景】{dream_prompt}",
+            f"【当前时间】{datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        ]
 
     user_message = "\n".join(user_message_lines)
     msg_list.append({"role": "user", "content": user_message})
