@@ -65,9 +65,12 @@ class Memory:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp_sec INTEGER NOT NULL,
                 role TEXT NOT NULL,
-                content TEXT NOT NULL
+                content TEXT NOT NULL,
+                vec_blob BLOB
             )
             """)
+
+
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS diary_days (
@@ -114,20 +117,26 @@ class Memory:
             turn_ts: 该轮对话的时间戳（秒级）
         """
         rows = []
+        text_list = []
         for item in turn_data:
             role = item.get("role", "")
             content = item.get("content", "")
             if role in {"user", "assistant"} and content:
                 rows.append((turn_ts, role, content))
+                text_list.append(f"{role}: {content}")
 
         if not rows:
             return
 
+        # 批量计算向量并转换为 blob 存储
+        vectors = embedding.t2vect(text_list)
+        vec_blobs = [self._vector_to_blob(v) for v in vectors]
+
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.executemany(
-            "INSERT INTO chat_turns (timestamp_sec, role, content) VALUES (?, ?, ?)",
-            rows,
+            "INSERT INTO chat_turns (timestamp_sec, role, content, vec_blob) VALUES (?, ?, ?, ?)",
+            [(ts, role, content, vec_blob) for (ts, role, content), vec_blob in zip(rows, vec_blobs)],
         )
         conn.commit()
         conn.close()
@@ -456,7 +465,7 @@ class Memory:
             low = max(low, last_diary_ts + 1)
             cursor.execute(
                 """
-                SELECT timestamp_sec, role, content
+                SELECT timestamp_sec, role, content, vec_blob
                 FROM chat_turns
                 WHERE timestamp_sec >= ? AND timestamp_sec <= ?
                 ORDER BY id ASC
@@ -466,7 +475,7 @@ class Memory:
         else:
             cursor.execute(
                 """
-                SELECT timestamp_sec, role, content
+                SELECT timestamp_sec, role, content, vec_blob
                 FROM chat_turns
                 WHERE timestamp_sec > ?
                 ORDER BY id ASC
@@ -488,18 +497,14 @@ class Memory:
         if q_norm > 0:
             q_v = q_v / q_norm
 
-        text_list = [f"{r[1]}: {r[2]}" for r in rows]
-        v_list = embedding.t2vect(text_list).astype(np.float32)
-        norms = np.linalg.norm(v_list, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        v_list = v_list / norms
-        scores = np.dot(v_list, q_v)
-
         scored_rows: list[tuple[int, str, str, float]] = []
-        for idx, row in enumerate(rows):
-            score = float(scores[idx])
+        for ts, role, content, vec_blob in rows:
+            if not vec_blob:
+                continue
+            d_v = self._blob_to_vector(vec_blob)
+            score = float(np.dot(d_v, q_v))
             if score >= self.thresholds:
-                scored_rows.append((int(row[0]), row[1], row[2], score))
+                scored_rows.append((int(ts), role, content, score))
 
         if not scored_rows:
             # 保底返回最近几条当日未归档消息。
@@ -592,12 +597,18 @@ class Memory:
         - 历史日记摘要（长期归档）
         - 未归档对话片段（当日或尚未跨天归档）
         """
+        start_time = time.time()
         # 根据语义提取时间范围，若解析失败则返回 None，由后续检索走兜底语义路径。
         time_range = self._extract_time_range(msg)
+        print(f"[提取时间范围耗时]：{time.time() - start_time}")
+        start_time = time.time()
         # 先检索日记表，获取相关日记摘要；再检索 chat_turns，获取相关的未归档对话片段。
         diary_hits = self._search_diary_rows(msg, time_range)
+        print(f"[检索日记耗时]：{time.time() - start_time}")
+        start_time = time.time()
         # 检索尚未归档的对话消息，也就是今天内的消息
         pending_hits = self._search_pending_turns(msg, time_range)
+        print(f"[检索未归档对话耗时]：{time.time() - start_time}")
 
         blocks = []
 
