@@ -497,12 +497,13 @@ class Agent:
             f"助手 {self.agent_name} 好感度更新: 变化 {change}, 当前 {self.user_state.love}"
         )
 
-    async def get_msg_data(self, msg: str) -> list[dict]:
+    async def get_msg_data(self, msg: str, is_sleep_mode: bool = False) -> list[dict]:
         """
         获取发送到大模型的上下文
 
         Parameters:
             msg: 客户端发送的消息
+            is_sleep_mode: 是否处于睡眠模式
 
         Returns:
             发送到大模型的上下文
@@ -565,6 +566,10 @@ class Agent:
         # 添加情绪信息
         if emotion_info:
             context_extras.append(emotion_info)
+        # 添加睡眠模式提示词
+        if is_sleep_mode:
+            sleep_prompt = prompt.sleep_mode_prompt.format(char=self.char)
+            context_extras.append(sleep_prompt)
 
         # # 添加工具描述提示词
         # tools = ToolManager.get_openai_tools()

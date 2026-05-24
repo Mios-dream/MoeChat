@@ -11,18 +11,23 @@ chat_api = APIRouter()
 async def tts_api_get(
     text: str = Query(..., description="用户输入的文本"),
     generation_motion: bool = False,
+    is_sleep_mode: bool = Query(False, description="是否处于睡眠模式"),
 ):
     if not text:
         raise ValueError("消息内容不能为空")
     message_list = [{"role": "user", "content": text}]
     if generation_motion:
         return StreamingResponse(
-            chat_core.llm_chat_with_tts_and_motion(chat_data(msg=message_list)),
+            chat_core.llm_chat_with_tts_and_motion(
+                chat_data(msg=message_list, is_sleep_mode=is_sleep_mode)
+            ),
             media_type="text/event-stream",
         )
     else:
         return StreamingResponse(
-            chat_core.llm_chat_with_tts(chat_data(msg=message_list)),
+            chat_core.llm_chat_with_tts(
+                chat_data(msg=message_list, is_sleep_mode=is_sleep_mode)
+            ),
             media_type="text/event-stream",
         )
 

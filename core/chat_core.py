@@ -796,7 +796,9 @@ async def _get_agent_and_msg_list(params: chat_data):
     if not agent:
         logger.error("[错误] 当前没有加载助手")
         return None, None
-    msg_list_for_llm = await agent.get_msg_data(params.msg[-1]["content"])
+    msg_list_for_llm = await agent.get_msg_data(
+        params.msg[-1]["content"], params.is_sleep_mode
+    )
     return agent, msg_list_for_llm
 
 
