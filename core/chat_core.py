@@ -443,7 +443,7 @@ async def motion_wrapper(
                 speech_text=sentence_text,
                 context=context,
                 speech_duration_ms=duration_time,  # 粗略估计每个字100ms
-                timeout_seconds=5,
+                timeout_seconds=10,
                 previous_action=previous_action,  # 传入前一个动作状态
             )
             motion_event["duration"] = duration_time
