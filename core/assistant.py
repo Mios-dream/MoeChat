@@ -30,8 +30,8 @@ class Assistant:
     LOVE_LEVELS = {
         0: {
             "name": "疏远",
-            "description": "与用户保持距离，关系比较陌生",
-            "suggestion": "回复应该保持礼貌但疏远，避免过于亲密的表达",
+            "description": "与用户保持距离，关系比较陌生，内心有戒备感",
+            "suggestion": "语气保持礼貌但有距离感，使用正式称谓，避免肢体接触描述，回复简洁不主动展开话题",
             "value": -50,
         },
         1: {
@@ -49,13 +49,13 @@ class Assistant:
         3: {
             "name": "亲密",
             "description": "与用户关系非常亲密，如同好友或家人",
-            "suggestion": "回复应该非常亲昵，使用温暖贴心的语气和词汇",
+            "suggestion": "语气温柔体贴，可以亲密称呼，表达关心和想念，有轻微的占有欲表现",
             "value": 2000,
         },
         4: {
             "name": "挚爱",
             "description": "与用户关系非常亲密，如同好友或家人或恋人",
-            "suggestion": "回复应该非常亲昵，使用温暖贴心的语气和词汇",
+            "suggestion": "语气温柔体贴，使用亲密称呼，表达关心和想念，有较强的占有欲表现",
             "value": 5000,
         },
     }
@@ -518,14 +518,14 @@ class Assistant:
             self._async_search_knowledge(msg),
             self._async_search_memory(msg),
             self._async_search_core_mem(msg),
-            self._async_process_emotion(msg),
+            # self._async_process_emotion(msg),
         ]
         results = await asyncio.gather(*tasks)
         # 解包结果和耗时
         db_info, db_time = results[0]
         mem_info, mem_time = results[1]
         core_info, core_time = results[2]
-        emotion_info, emotion_time = results[3]
+        # emotion_info, emotion_time = results[3]
 
         # # 打印或记录耗时
         # print(f"Knowledge search time: {db_time:.4f}s")
@@ -563,18 +563,12 @@ class Assistant:
         # 添加好感度提示词
         context_extras.append(self._get_love_prompt())
         # 添加情绪信息
-        if emotion_info:
-            context_extras.append(emotion_info)
+        # if emotion_info:
+        #     context_extras.append(emotion_info)
         # 添加睡眠模式提示词
         if is_sleep_mode:
             sleep_prompt = prompt.sleep_mode_prompt.format(char=self.char)
             context_extras.append(sleep_prompt)
-
-        # # 添加工具描述提示词
-        # tools = ToolManager.get_openai_tools()
-        # if tools:
-        #     tool_prompt = self._build_tool_prompt(tools)
-        #     context_extras.append(tool_prompt)
 
         # 合并上下文、世界书、记忆信息, 并添加情绪指令
         final_content = "\n".join(context_extras)
@@ -650,53 +644,6 @@ class Assistant:
         """
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, func, *args)
-
-    def _build_tool_prompt(self, tools: list[dict]) -> str:
-        """
-        构建工具描述提示词，注入到 system prompt 中让 LLM 知道可用工具
-
-        Parameters:
-            tools: OpenAI tools 格式的工具定义列表
-
-        Returns:
-            str: 工具描述提示词
-        """
-        if not tools:
-            return ""
-
-        tool_descriptions = []
-        for tool in tools:
-            func = tool.get("function", {})
-            name = func.get("name", "")
-            desc = func.get("description", "")
-            params = func.get("parameters", {})
-            props = params.get("properties", {})
-            required = params.get("required", [])
-
-            # 构建参数说明
-            param_lines = []
-            for param_name, param_info in props.items():
-                param_type = param_info.get("type", "string")
-                param_desc = param_info.get("description", "")
-                is_required = "必填" if param_name in required else "可选"
-                param_lines.append(
-                    f"    - {param_name} ({param_type}, {is_required}): {param_desc}"
-                )
-
-            params_text = "\n".join(param_lines) if param_lines else "    无参数"
-
-            tool_descriptions.append(f"【{name}】: {desc}\n  参数:\n{params_text}")
-
-        return (
-            "\n---【可用工具说明】---\n"
-            "当你需要执行以下操作时，必须使用对应的工具函数：\n\n"
-            + "\n\n".join(tool_descriptions)
-            + "\n\n注意：\n"
-            "1. 只有缺少必要的信息时才调用某个工具\n"
-            "2. 工具调用的结果会自动返回给你，请基于结果回复用户\n"
-            "3. 不要在回复中手动构造工具调用格式，系统会自动处理\n"
-            "---【工具说明结束】---\n"
-        )
 
     def _get_love_level(self, love_value: int) -> int:
         """

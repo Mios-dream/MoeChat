@@ -70,8 +70,6 @@ class Memory:
             )
             """)
 
-
-
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS diary_days (
                 day TEXT PRIMARY KEY,
@@ -136,7 +134,10 @@ class Memory:
         cursor = conn.cursor()
         cursor.executemany(
             "INSERT INTO chat_turns (timestamp_sec, role, content, vec_blob) VALUES (?, ?, ?, ?)",
-            [(ts, role, content, vec_blob) for (ts, role, content), vec_blob in zip(rows, vec_blobs)],
+            [
+                (ts, role, content, vec_blob)
+                for (ts, role, content), vec_blob in zip(rows, vec_blobs)
+            ],
         )
         conn.commit()
         conn.close()
@@ -325,9 +326,10 @@ class Memory:
         3.允许适度加入内心独白。
         4.不要逐字复述对话，要真实日记那样有个人感受和小情绪。
         5.日记在描述"{self.user}"时，不要增加"{self.user}"在对话中没说过的事情。
-        7.日记内容不要太长，字数100字到500字之间)
+        6.直接输出日记正文，不需要记录今天的日期或以日记开头等标准日记信息。
+        7.日记内容不要太长，字数100字到500字之间
         """
-        diary_user_prompt = f"今天是你和{self.user}认识的的第{self.firstMeetTime//(60*60*24)}天，以下是今日互动摘要:{summary}。\n请写日记："
+        diary_user_prompt = f"今天是{time.strftime('%Y-%m-%d', time.localtime())}，是和{self.user}认识的的第{int((time.time() - self.firstMeetTime) // (60 * 60 * 24))}天，以下是今日互动摘要:{summary}。\n请写日记："
 
         diary_text = ""
         try:
