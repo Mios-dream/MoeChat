@@ -11,9 +11,7 @@ from Config import Config
 from models.dto.chat_request import chat_data
 from services.tts_service import ttsService
 from my_utils import config_manager as CConfig
-from core.expression_generator.live2d_parameter_load import load_live2d_parameters
 from my_utils.log import logger
-from my_utils.tool_manager import ToolManager
 from my_utils.llm_tooling import stream_chat_with_tools
 from services.assistant_service import AssistantService
 from core.expression_generator.expression_generator_service_v2 import (
@@ -881,8 +879,7 @@ async def _get_agent_expression_generator(agent_name: str) -> ExpressionGenerato
     """获取助手对应的动作生成器实例（V2 版本），避免重复创建"""
     if agent_name not in agent_expression_generators_v2:
         expression_generator = ExpressionGeneratorV2()
-        parameters = await load_live2d_parameters(agent_name)
-        await expression_generator.initialize(agent_name, parameters)
+        await expression_generator.initialize(agent_name)
         agent_expression_generators_v2[agent_name] = expression_generator
 
     return agent_expression_generators_v2[agent_name]

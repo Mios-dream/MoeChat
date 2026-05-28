@@ -13,11 +13,10 @@ from models.types.user_state import UserStateInfo
 from core.emotion.emotion_engine import EmotionEngine
 from concurrent.futures import ThreadPoolExecutor
 from my_utils.llm_request import llm_request, parse_llm_json_response
-from my_utils.tool_manager import ToolManager
 from services import core_mem, data_base, long_mem
 
 
-class Agent:
+class Assistant:
     # 情绪系统实例
     emotionEngine: EmotionEngine
     # 角色记忆实例

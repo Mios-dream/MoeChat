@@ -8,7 +8,7 @@ from services.tts_service import ttsService
 from models.dto.assistant_request import AddAssistantRequest, UpdateAssistantRequest
 from models.types.assistant_info import AssistantInfo
 from models.types.user_state import UserStateInfo
-from services.agent import Agent
+from core.assistant import Assistant
 from my_utils.file_utils import get_latest_modification_time
 import my_utils.log as Log
 
@@ -20,7 +20,7 @@ class AssistantService:
 
     _instance = None
 
-    current_assistant: Agent | None = None
+    current_assistant: Assistant | None = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -29,13 +29,13 @@ class AssistantService:
 
     def __init__(self):
         # 初始化当前助手为None
-        self.current_assistant: Agent | None = None
+        self.current_assistant: Assistant | None = None
         # 初始化当前助手名称为None
         self.current_assistant_name: str | None = None
         # 初始化助手信息缓存为空字典
         self.assistants_cache: dict[str, AssistantInfo] = {}
         # 初始化已加载助手为空字典
-        self.loaded_agents: dict[str, Agent] = {}
+        self.loaded_agents: dict[str, Assistant] = {}
         # 默认助手 gsvSetting 缓存（用于语音配置回退），首次访问时加载
         self._default_gsv_cache: dict | None = None
 
@@ -261,7 +261,7 @@ class AssistantService:
 
         shutil.rmtree(assistant_dir)
 
-    async def set_assistant(self, assistant_name: str) -> Agent:
+    async def set_assistant(self, assistant_name: str) -> Assistant:
         """
         设置当前助手
         """
@@ -285,7 +285,7 @@ class AssistantService:
             return self.current_assistant
 
         try:
-            agent = Agent(assistant_name)
+            agent = Assistant(assistant_name)
             try:
                 await self._set_gsv_models(agent)
             except Exception:
@@ -304,7 +304,7 @@ class AssistantService:
             )
             raise RuntimeError(f"加载助手 '{assistant_name}' 失败: {str(e)}")
 
-    def get_current_assistant(self) -> Agent | None:
+    def get_current_assistant(self) -> Assistant | None:
         return self.current_assistant
 
     def get_current_assistant_name(self) -> str | None:
@@ -316,7 +316,7 @@ class AssistantService:
         """
         if self.current_assistant_name:
             try:
-                agent = Agent(self.current_assistant_name)
+                agent = Assistant(self.current_assistant_name)
                 self.current_assistant = agent
                 self.loaded_agents[self.current_assistant_name] = agent
                 Log.logger.info(f"已重新加载助手: {self.current_assistant_name}")
@@ -328,7 +328,7 @@ class AssistantService:
                     f"重新加载助手 '{self.current_assistant_name}' 失败: {str(e)}"
                 )
 
-    async def initialize_default_assistant(self) -> Agent | None:
+    async def initialize_default_assistant(self) -> Assistant | None:
         """
         初始化默认助手
         """
@@ -421,7 +421,7 @@ class AssistantService:
 
         return self._default_gsv_cache  # type: ignore
 
-    async def _set_gsv_models(self, agent: Agent) -> None:
+    async def _set_gsv_models(self, agent: Assistant) -> None:
         """
         设置当前助手的语音模型路径。
         字段为空或本地资源文件不存在时，回退到默认助手的对应字段与资源。

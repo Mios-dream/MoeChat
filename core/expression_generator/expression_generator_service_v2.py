@@ -180,10 +180,6 @@ class ExpressionGeneratorV2:
         """初始化生成器"""
         # 配置信息
         self.config = CConfig.config
-
-        # 当前模型可用参数信息 {param_id: {name, min, max, default}}
-        self.available_parameters: dict[str, dict] = {}
-
         # 模型表情列表
         self.expressions: list[ExpressionInfo] = []
         # 表情名 -> ExpressionInfo 映射
@@ -198,7 +194,6 @@ class ExpressionGeneratorV2:
     async def initialize(
         self,
         assistant_name: str,
-        parameters: dict[str, dict],
         use_expression_cache: bool = True,
     ) -> None:
         """
@@ -214,8 +209,6 @@ class ExpressionGeneratorV2:
         - parameters: 可用参数字典 {param_id: {name, min, max, default}}
         - use_expression_cache: 是否使用表情描述缓存
         """
-        # 更新参数
-        self.update_parameters(parameters)
 
         # 加载表情
         self.expressions = await load_expressions(
@@ -225,26 +218,7 @@ class ExpressionGeneratorV2:
         # 构建表情映射
         self.expression_map = {expr.name: expr for expr in self.expressions}
 
-        Log.info(
-            f"[V2表情生成器] 初始化完成: "
-            f"{len(self.available_parameters)} 个参数, "
-            f"{len(self.expressions)} 个表情"
-        )
-
-    def update_parameters(self, parameters: dict[str, dict]) -> None:
-        """
-        更新当前模型可用参数清单
-
-        参数结构通常包含：
-        - name: 参数显示名
-        - min / max: 取值范围
-        - default: 默认值
-
-        参数：
-        - parameters: 参数字典
-        """
-        self.available_parameters = parameters
-        Log.info(f"[V2表情生成器] 参数已更新: {len(parameters)} 个参数")
+        Log.info(f"[V2表情生成器] 初始化完成: {len(self.expressions)} 个表情")
 
     # ============================================================
     # 提示词构建
@@ -267,9 +241,6 @@ class ExpressionGeneratorV2:
         返回：
         - 完整的系统提示词
         """
-        if not self.available_parameters:
-            return "模型参数尚未加载，请稍后再试。"
-
         # 表情描述（固定）
         expr_desc = build_expression_descriptions(self.expressions)
 
@@ -471,16 +442,8 @@ class ExpressionGeneratorV2:
         # 解析参数（别名 -> 完整ID）
         raw_params = raw_result.get("params", {})
         parameters = _convert_aliases_to_params(raw_params)
-
-        # 参数范围裁剪
-        parameters = self._clamp_parameters(parameters)
-
         # 解析表情（可选）
         expression = raw_result.get("expr", [])
-        if expression and not all(expr in self.expression_map for expr in expression):
-            # 表情名无效，忽略
-            Log.warning(f"[V2表情生成] 无效表情名: {expression}")
-            expression = []
 
         frame = MotionFrame(
             duration=duration,
@@ -490,57 +453,6 @@ class ExpressionGeneratorV2:
         frames.append(frame)
 
         return frames
-
-    def _clamp_parameters(
-        self,
-        parameters: dict[str, float],
-    ) -> dict[str, float]:
-        """
-        裁剪参数到合法范围
-
-        处理流程：
-        1. 丢弃模型未声明的参数
-        2. 读取并兜底 min/max/default
-        3. 按 [min, max] 裁剪
-
-        参数：
-        - parameters: 原始参数字典
-
-        返回：
-        - 裁剪后的参数字典
-        """
-        validated = {}
-
-        for param_id, value in parameters.items():
-            # 丢弃未知参数
-            if param_id not in self.available_parameters:
-                continue
-
-            info = self.available_parameters[param_id]
-
-            # 获取范围
-            try:
-                min_v = float(info.get("min", -30))
-            except (TypeError, ValueError):
-                min_v = -30.0
-
-            try:
-                max_v = float(info.get("max", 30))
-            except (TypeError, ValueError):
-                max_v = 30.0
-
-            if min_v > max_v:
-                min_v, max_v = max_v, min_v
-
-            # 转换并裁剪
-            try:
-                num = float(value)
-            except (TypeError, ValueError):
-                continue
-
-            validated[param_id] = max(min_v, min(max_v, num))
-
-        return validated
 
     # ============================================================
     # 公开接口
@@ -572,9 +484,6 @@ class ExpressionGeneratorV2:
         - MotionFrame 列表
         - 失败时返回空列表
         """
-        if not self.available_parameters:
-            Log.error("[V2表情生成] 模型参数尚未加载")
-            return []
 
         # 使用前一个动作参数
         effective_previous = previous_params or self._last_action_params
@@ -626,7 +535,7 @@ class ExpressionGeneratorV2:
             return []
 
         Log.info(f"{log_prefix} 生成 {len(frames)} 个动作帧")
-        Log.info(f"生成动作{frames}")
+        # Log.info(f"生成动作{frames}")
 
         # 更新连贯性状态：存储最后一帧的原始参数
         if frames:
