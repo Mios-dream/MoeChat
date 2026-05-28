@@ -266,6 +266,8 @@ async def generate_interaction_message_with_motion(params: InteractionMessageReq
                 motion_semaphore=motion_semaphore,
                 sentence_id=sentence_id,
                 sentence_text=sentence_text,
+                user_message="",
+                assistant_message=processor.full_msg,
                 motion_generator=motion_generator,
                 motion_history=processor.motion_history,
             )

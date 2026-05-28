@@ -11,12 +11,14 @@ from Config import Config
 from models.dto.chat_request import chat_data
 from services.tts_service import ttsService
 from my_utils import config_manager as CConfig
-from my_utils.live2d_parameter_load import load_live2d_parameters
+from core.expression_generator.live2d_parameter_load import load_live2d_parameters
 from my_utils.log import logger
 from my_utils.llm_request import chat_llm_request_stream
 from my_utils.tool_manager import ToolManager
 from services.assistant_service import AssistantService
-from services.expression_generator_service import ExpressionGenerator
+from core.expression_generator.expression_generator_service_v2 import (
+    ExpressionGeneratorV2,
+)
 from pydantic import BaseModel
 
 assistant_service = AssistantService()
@@ -24,7 +26,7 @@ assistant_service = AssistantService()
 SENTENCE_END_PATTERNS = ("。", "！", "？", "……\n", "……", "...\n", "...")
 MIN_SENTENCE_LENGTH = 6
 
-agent_expression_generators = {}  # 全局缓存助手对应的动作生成器实例，避免重复创建
+agent_expression_generators_v2 = {}  # 全局缓存助手对应的 V2 动作生成器实例
 
 
 class TTSData(BaseModel):
@@ -56,6 +58,11 @@ class StreamProcessor:
         self,
         emotion_processed: bool = False,
     ):
+        # 初始化流处理器的所有状态变量与缓存
+        # 设计目标：支持跨片段的括号处理、按句触发回调（TTS/动作规划）、句子ID跟踪与历史记录
+        # 用户输入的原始消息
+        self.user_msg = ""
+
         # 全部消息，ai可能回复多条语句
         self.full_msg: list[str] = []
 
@@ -75,50 +82,67 @@ class StreamProcessor:
 
         # 句子跟踪
         self.sentence_count = 1  # 当前句子计数
-        self.sentence_complete_callbacks: list[Callable[[int, str, str], Any]] = (
-            []
-        )  # 句子完成时的回调函数
+        # 句子完成时的回调函数列表
+        # 每个回调签名为 callback(sentence_id:int, cleaned_text:str, tts_text:str)
+        # cleaned 为去掉空白的文本，用于存储/显示，tts_text 为去除括号等供 TTS 使用的文本
+        self.sentence_complete_callbacks: list[Callable[[int, str, str], Any]] = []
 
-        # 时间戳与性能监控
-        self.first_token_recorded = False
-        # 新增：动作历史状态管理
+        # 动作历史状态管理
         self.motion_history: dict[int, str] = {}  # 句子ID -> 动作描述
-        # TTS 专用：跨流式片段跟踪括号作用域，保证括号内容可跨句过滤
+        # 跨流式片段跟踪括号作用域，保证括号内容可跨句过滤
         self.tts_bracket_stack: list[str] = []
 
     @staticmethod
     def _is_sentence_end_at(text: str, idx: int) -> int:
-        """若 idx 处命中句尾模式，返回命中长度；否则返回 0。"""
+        """
+        若 idx 处命中句尾模式，返回命中长度；否则返回 0。
+        Parameters:
+            text: 待检测文本
+            idx: 检测位置索引
+        """
+        # 按长度逆序匹配，优先匹配长的句尾模式（例如 "……\n" 优于 "..."）
         for pattern in sorted(SENTENCE_END_PATTERNS, key=len, reverse=True):
             if text.startswith(pattern, idx):
+                # 命中返回模式长度，外部根据返回值判断是否为句尾
                 return len(pattern)
         return 0
 
     def _extract_plain_segments(self, force_flush: bool = False) -> list[str]:
-        """从普通文本缓存中提取可输出片段：句尾命中且长度达标。"""
+        """
+        从普通文本缓存中提取可输出片段：句尾命中且长度达标。
+        Parameters:
+            force_flush: 是否强制提取剩余文本（即使不满足句尾条件），用于处理流结束时的残留文本
+        """
         ready: list[str] = []
 
+        # 循环扫描 sentence_buffer，寻找第一个合法的句尾（达到最小长度阈值）
+        # 找到后将该片段截断并放入 ready 列表，继续扫描剩余内容
         while True:
             boundary_end = -1
             i = 0
             while i < len(self.sentence_buffer):
+                # 检查当前位置是否为句尾
                 hit_len = self._is_sentence_end_at(self.sentence_buffer, i)
                 if hit_len > 0:
                     boundary_end = i + hit_len
                     candidate = self.sentence_buffer[:boundary_end]
+                    # cleaned 用于判断实际字符长度（去掉空白），避免短句触发
                     cleaned = "".join(candidate.split())
                     if len(cleaned) >= MIN_SENTENCE_LENGTH:
+                        # 确认这是一个有效句子，跳出内层循环
                         break
 
-                    # 该句尾过短，继续查找后续句尾，避免阻断整个缓冲区的切分
+                    # 该句尾因为内容过短而被忽略，继续在后面寻找下一个句尾
                     i = boundary_end
                     boundary_end = -1
                     continue
                 i += 1
 
+            # 未找到合法句尾，退出
             if boundary_end < 0:
                 break
 
+            # 提取并移除已输出的片段
             candidate = self.sentence_buffer[:boundary_end]
             ready.append(candidate)
             self.sentence_buffer = self.sentence_buffer[boundary_end:]
@@ -129,25 +153,27 @@ class StreamProcessor:
 
         return ready
 
-    @staticmethod
-    def _bracket_pairs() -> dict[str, str]:
-        return {
-            "(": ")",
-            "（": "）",
-            "[": "]",
-            "【": "】",
-            "{": "}",
-        }
-
     async def _emit_segment(self, message_chunk: str):
-        """统一输出一个片段并触发回调。"""
+        """
+        统一输出一个片段并触发回调。
+        Parameters:
+            message_chunk: 待输出的完整单句文本片段
+        """
+        # 统一处理并分发一个完整句子片段：
+        # - 存入 full_msg（用于最终汇总保存）
+        # - 生成 cleaned 与 tts_cleaned 两种文本供不同用途
+        # - 并发触发所有注册的回调（通常会创建 TTS / 动作规划 等任务）
         if not message_chunk:
             return
 
-        self.full_msg.append(message_chunk)
+        # cleaned 为去掉空白的文本，用于存储或动作生成的简洁输入
         cleaned = "".join(message_chunk.split())
+        # 累积完整文本，供最终保存或上下文使用
+        self.full_msg.append(cleaned)
+        # tts_cleaned 为去掉括号及其内部内容后的文本，供 TTS 使用
         tts_cleaned = "".join(self._filter_tts_text(message_chunk).split())
 
+        # 并发执行所有回调，允许回调内部创建异步任务并返回
         await asyncio.gather(
             *[
                 callback(self.sentence_count, cleaned, tts_cleaned)
@@ -155,6 +181,7 @@ class StreamProcessor:
             ]
         )
 
+        # 句子计数递增，保证每次触发的句子ID唯一且递增
         self.sentence_count += 1
 
     def _filter_tts_text(self, text: str) -> str:
@@ -167,17 +194,20 @@ class StreamProcessor:
             "{": "}",
         }
         opening = set(bracket_pairs.keys())
-
+        # 利用栈跟踪跨片段的括号作用域：当处于括号内部时，跳过括号与内部字符
         filtered_chars: list[str] = []
         for ch in text:
             if self.tts_bracket_stack:
-                # 在括号作用域内：支持嵌套与闭合
+                # 处于括号作用域内：遇到嵌套左括号则压入对应右括号
                 if ch in opening:
                     self.tts_bracket_stack.append(bracket_pairs[ch])
+                # 遇到当前期望的右括号就出栈
                 elif ch == self.tts_bracket_stack[-1]:
                     self.tts_bracket_stack.pop()
+                # 在括号作用域中不输出任何字符
                 continue
 
+            # 尚未进入括号作用域：遇到左括号则记录期待的右括号并进入作用域
             if ch in opening:
                 self.tts_bracket_stack.append(bracket_pairs[ch])
                 continue
@@ -209,31 +239,44 @@ class StreamProcessor:
         3. 检测到句尾符号时，立即触发回调（TTS+动作规划）
         """
 
-        bracket_pairs = self._bracket_pairs()
+        bracket_pairs = {
+            "(": ")",
+            "（": "）",
+            "[": "]",
+            "【": "】",
+            "{": "}",
+        }
         opening_brackets = set(bracket_pairs.keys())
 
+        # 按字符逐个处理输入 chunk，支持括号段优先完整输出与普通句子按结尾分段
         for ch in chunk:
             if self.segment_bracket_stack:
-                # 括号作用域内：无视句尾规则，直到括号完整闭合再输出
+                # 当前处于跨片段的括号缓存中：直接追加到 bracket_buffer
+                # 在括号内不判断句尾，直到括号完全闭合才输出整个括号段
                 self.bracket_buffer += ch
                 if ch in opening_brackets:
+                    # 遇到嵌套左括号，压入对应右括号
                     self.segment_bracket_stack.append(bracket_pairs[ch])
                 elif ch == self.segment_bracket_stack[-1]:
+                    # 遇到预期右括号，出栈
                     self.segment_bracket_stack.pop()
                     if not self.segment_bracket_stack:
+                        # 括号段闭合，作为完整片段输出并清理缓存
                         await self._emit_segment(self.bracket_buffer)
                         self.bracket_buffer = ""
                 continue
 
             if ch in opening_brackets:
-                # 进入括号前先尝试释放已满足条件的普通句段
+                # 在进入括号前，先把普通缓冲区中已满句尾的片段释放
                 for plain_segment in self._extract_plain_segments(force_flush=False):
                     await self._emit_segment(plain_segment)
 
+                # 开始新的括号缓存，并记录期待的闭合符
                 self.segment_bracket_stack.append(bracket_pairs[ch])
                 self.bracket_buffer = ch
                 continue
 
+            # 普通字符追加到 sentence_buffer，并尝试提取已完成句子片段
             self.sentence_buffer += ch
             for plain_segment in self._extract_plain_segments(force_flush=False):
                 await self._emit_segment(plain_segment)
@@ -242,28 +285,36 @@ class StreamProcessor:
         """
         处理缓存的剩余文本（即没有结尾符号的情况）
         """
-        # 先释放普通文本中已命中句尾的片段
+        # 在流结束或中断时，释放所有缓冲区中的残余内容，保证内容不丢失
+        # 1) 先输出已命中的普通句尾片段
         for plain_segment in self._extract_plain_segments(force_flush=False):
             await self._emit_segment(plain_segment)
 
-        # 再强制释放普通文本尾部残留
+        # 2) 强制输出普通缓冲区中剩余的不可达句尾的残余文本
         for plain_segment in self._extract_plain_segments(force_flush=True):
             await self._emit_segment(plain_segment)
 
-        # 最后处理未闭合或尾部括号片段，避免内容丢失
+        # 3) 如果有未闭合或尾部的括号缓冲，也将其作为一个片段输出，避免丢失
         if self.bracket_buffer.strip():
             await self._emit_segment(self.bracket_buffer)
             self.bracket_buffer = ""
             self.segment_bracket_stack = []
 
-        # 如果LLM已经完成，标记所有任务完成，且当前回调任务也完成也算完成
+        # 若 LLM 已完成，则标记所有后台任务（如 TTS/动作等）也视为完成条件的一部分
         if self.llm_done:
             self.tasks_done = True
 
     def register_sentence_complete_callback(
         self, callback: Callable[[int, str, str], Any]
     ):
-        """注册句子完成时的回调函数 (用于触发TTS和动作规划)"""
+        """
+        注册句子完成时的回调函数 (用于触发TTS和动作规划)
+        Parameters:
+            callback: 一个函数，接受三个参数 (sentence_id:int, cleaned_text:str, tts_text:str)
+                - sentence_id: 当前句子的唯一ID
+                - cleaned_text: 去掉空白的文本，供存储或动作生成使用
+                - tts_text: 去掉括号内等不需要的内容供 TTS 使用的文本
+        """
         self.sentence_complete_callbacks.append(callback)
 
 
@@ -390,17 +441,40 @@ async def tts_wrapper(
         return audio_event
 
 
-# 动作规划任务封装，使用信号量控制并发，失败时返回空动作事件
+# 动作规划任务封装，使用 V2 单次请求生成动作，减少 token 消耗
 async def motion_wrapper(
     motion_semaphore: asyncio.Semaphore,
     sentence_id: int,
     sentence_text: str,
-    motion_generator: ExpressionGenerator | None,
-    motion_history: dict | None = None,  # 新增：历史动作状态
+    motion_generator: ExpressionGeneratorV2 | None,
+    user_message: str,
+    assistant_message: list[str],
+    motion_history: dict | None = None,
 ) -> dict[str, Any]:
-    logger.info(f"准备生成动作，句子ID: {sentence_id}, 内容: {sentence_text}")
+    """
+    V2 版本动作规划任务封装
+
+    改进点：
+    1. 单次请求生成完整动作序列（不再分离规划和生成）
+    2. 使用参数别名减少 token 消耗
+    3. 支持表情按需使用
+
+    参数：
+    - motion_semaphore: 并发控制信号量
+    - sentence_id: 句子 ID
+    - sentence_text: 句子文本
+    - motion_generator: V2 动作生成器实例
+    - motion_history: 历史动作状态字典
+
+    返回：
+    - 动作事件字典
+    """
+    logger.info(
+        f"[动作生成] 准备生成动作，句子ID: {sentence_id}, 内容: {sentence_text}"
+    )
 
     current_time_ms = time.time() * 1000
+    # 预构建动作事件结构，确保即使生成失败也能返回一致格式
     motion_event: dict[str, Any] = {
         "type": "motion_frame",
         "sentence_id": sentence_id,
@@ -415,51 +489,64 @@ async def motion_wrapper(
         try:
             if motion_generator is None:
                 logger.warning(
-                    f"[动作规划] 动作生成器不可用，发送空动作事件，sentence_id: {sentence_id}"
+                    f"[动作生成] 动作生成器不可用，发送空动作事件，sentence_id: {sentence_id}"
                 )
                 return motion_event
 
-            # 构建上下文信息，包含历史动作状态
-            context = ""
-            previous_action = ""
+            # 获取前一个动作参数（用于连贯性）
+            previous_params = None
             if motion_history and sentence_id > 0:
-                prev_actions = []
-                for i in range(max(0, sentence_id - 3), sentence_id):  # 查看前3句的动作
-                    if i in motion_history:
-                        prev_actions.append(f"第{i+1}句动作: {motion_history[i]}")
-                if prev_actions:
-                    context = "历史动作序列:\n" + "\n".join(prev_actions) + "\n"
-                    context += "要求: 新动作要与历史动作保持连贯性，避免突兀的跳跃变化"
-
-                # 获取前一个动作状态
                 if sentence_id - 1 in motion_history:
-                    previous_action = motion_history[sentence_id - 1]
+                    previous_params = motion_history[sentence_id - 1]
 
-            sentence_text_clean = sentence_text.replace(" ", "").replace("\n", "")
-
-            duration_time = len(sentence_text_clean) * 100  # 粗略估计每个字100ms
-
-            frame_plans = await motion_generator.generate_motion_plan(
-                speech_text=sentence_text,
-                context=context,
-                speech_duration_ms=duration_time,  # 粗略估计每个字100ms
-                timeout_seconds=10,
-                previous_action=previous_action,  # 传入前一个动作状态
+            # 构建对话上下文信息
+            context = (
+                "用户："
+                + user_message
+                + "\n。助手的上文回复（已经生成完成动作的回复）："
+                + "".join(assistant_message[:-1])
+                + "\n。当前需要生成动作的回复："
+                + sentence_text
             )
+            # 清理文本
+            sentence_text_clean = sentence_text.replace(" ", "").replace("\n", "")
+            duration_time = len(sentence_text_clean) * 100  # 粗略估计每个字 100ms
+
+            # 使用 V2 生成器单次生成动作
+            frames = await motion_generator.generate_tts_motion(
+                speech_text=sentence_text,
+                speech_duration_ms=duration_time,
+                previous_params=previous_params,
+                context=context,
+                timeout_seconds=10.0,
+            )
+
             motion_event["duration"] = duration_time
 
-            logger.info(f"生成的动作帧: {frame_plans}")
+            # 转换帧格式为前端可用的格式
+            motions = []
+            for frame in frames:
+                motion_data = {
+                    "duration": frame.duration,
+                    "parameters": frame.parameters,
+                }
+                if frame.expression:
+                    motion_data["expression"] = frame.expression
+                motions.append(motion_data)
 
-            frame = await motion_generator.generate_tts_motion_frame_with_plan(
-                frame_plans
+            motion_event["motions"] = motions
+
+            # 记录动作参数到历史（用于连贯性）
+            if motion_history is not None and frames:
+                last_frame = frames[-1]
+                motion_history[sentence_id] = last_frame.parameters.copy()
+
+            logger.info(
+                f"[动作生成] 生成 {len(motions)} 个动作帧，句子ID: {sentence_id}"
             )
-            # 记录动作到历史状态
-            if motion_history is not None and frame_plans:
-                motion_history[sentence_id] = frame_plans[0].get("action", "自然动作")
 
-            motion_event["motions"] = frame or []
         except Exception as e:
-            logger.warning(f"[动作规划] 第{sentence_id + 1}句动作生成失败: {e}")
+            logger.warning(f"[动作生成] 第{sentence_id + 1}句动作生成失败: {e}")
         return motion_event
 
 
@@ -678,6 +765,8 @@ async def llm_chat_with_tts_and_motion(params: chat_data):
     # 创建流处理器实例，规划任务
     processor = StreamProcessor()
 
+    processor.user_msg = params.msg[-1]["content"]
+
     sentence_events: dict[int, dict[str, dict[str, Any]]] = {}
     expected_sentence_id = 1
     event_order = ("text", "audio", "motion_frame")
@@ -690,8 +779,8 @@ async def llm_chat_with_tts_and_motion(params: chat_data):
         pending_tasks.add(task)
         task.add_done_callback(pending_tasks.discard)
 
-    # 为当前助手创建动作生成器
-    motion_generator: ExpressionGenerator | None = (
+    # 为当前助手创建动作生成器（V2 版本）
+    motion_generator: ExpressionGeneratorV2 | None = (
         await _get_agent_expression_generator(agent.agent_name)
     )
 
@@ -729,6 +818,8 @@ async def llm_chat_with_tts_and_motion(params: chat_data):
                 sentence_id=sentence_id,
                 sentence_text=sentence_text,
                 motion_generator=motion_generator,
+                user_message=processor.user_msg,
+                assistant_message=processor.full_msg,
                 motion_history=processor.motion_history,
             )
             _store_sentence_event(sentence_events, sentence_id, "motion_frame", payload)
@@ -802,15 +893,12 @@ async def _get_agent_and_msg_list(params: chat_data):
     return agent, msg_list_for_llm
 
 
-async def _get_agent_expression_generator(agent_name: str) -> ExpressionGenerator:
-    """获取助手对应的动作生成器实例，避免重复创建"""
-    if agent_name not in agent_expression_generators:
-        expression_generator = ExpressionGenerator(
-            eye_open_binary=True,
-            joint_motion_boost=1.25,
-            tts_motion_keep_lip_sync=True,
-        )
-        expression_generator.update_parameters(await load_live2d_parameters(agent_name))
-        agent_expression_generators[agent_name] = expression_generator
+async def _get_agent_expression_generator(agent_name: str) -> ExpressionGeneratorV2:
+    """获取助手对应的动作生成器实例（V2 版本），避免重复创建"""
+    if agent_name not in agent_expression_generators_v2:
+        expression_generator = ExpressionGeneratorV2()
+        parameters = await load_live2d_parameters(agent_name)
+        await expression_generator.initialize(agent_name, parameters)
+        agent_expression_generators_v2[agent_name] = expression_generator
 
-    return agent_expression_generators[agent_name]
+    return agent_expression_generators_v2[agent_name]

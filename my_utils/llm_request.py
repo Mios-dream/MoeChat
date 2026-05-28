@@ -16,10 +16,14 @@ def parse_llm_json_response(content: str):
     异常：
     - 若未找到 JSON 片段，抛出 `ValueError`。
     """
-    json_match = re.search(r"\{[\s\S]*\}", content)
-    if not json_match:
+    try:
+        json_match = re.search(r"\{[\s\S]*\}", content)
+        if not json_match:
+            raise ValueError("无法解析 LLM 返回的 JSON")
+        return json.loads(json_match.group())
+    except Exception as e:
+        Log.logger.error(f"解析 LLM JSON 响应失败: {content}")
         raise ValueError("无法解析 LLM 返回的 JSON")
-    return json.loads(json_match.group())
 
 
 async def llm_request_stream(msg: list[ChatCompletionMessageParam]):
@@ -51,7 +55,9 @@ async def llm_request_stream(msg: list[ChatCompletionMessageParam]):
             yield content
 
 
-async def llm_request(msg: list[ChatCompletionMessageParam]) -> str | None:
+async def llm_request(
+    msg: list[ChatCompletionMessageParam], extra_body: dict | None = None
+) -> str | None:
     """
     LLM(大参数模型)快速请求，非流式
     :param data: 消息链
@@ -65,7 +71,7 @@ async def llm_request(msg: list[ChatCompletionMessageParam]) -> str | None:
             model=CConfig.config["LLM"]["model"],
             messages=msg,
             stream=False,
-            extra_body=CConfig.config["LLM"].get("extra_config", {}),
+            extra_body=extra_body or CConfig.config["LLM"].get("extra_config", {}),
         )
         content = response.choices[0].message.content
         return content
