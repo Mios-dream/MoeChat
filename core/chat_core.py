@@ -13,8 +13,8 @@ from services.tts_service import ttsService
 from my_utils import config_manager as CConfig
 from core.expression_generator.live2d_parameter_load import load_live2d_parameters
 from my_utils.log import logger
-from my_utils.llm_request import chat_llm_request_stream
 from my_utils.tool_manager import ToolManager
+from my_utils.llm_tooling import stream_chat_with_tools
 from services.assistant_service import AssistantService
 from core.expression_generator.expression_generator_service_v2 import (
     ExpressionGeneratorV2,
@@ -587,7 +587,7 @@ def _drain_ready_sentence_events(
 
 
 # 启动LLM任务，处理流式响应，并在完成时处理剩余文本
-async def start_llm_task(msg, stream_processor: StreamProcessor):
+async def start_llm_task(msg: list, stream_processor: StreamProcessor):
     """
     将消息发送到大语言模型(LLM)并处理返回的流式响应
 
@@ -607,34 +607,18 @@ async def start_llm_task(msg, stream_processor: StreamProcessor):
     # 标记第一次打印时间
     first_print_time_flag = True
 
+    async def stream_with_timing(chunk: str):
+        nonlocal first_print_time_flag
+        if first_print_time_flag:
+            first_print_time_flag = False
+            logger.info(f"[大模型延迟]{time.time() - start_time}")
+        await stream_processor.process_text_chunk(chunk)
+
     try:
-        # 检查是否有可用工具
-        tools = ToolManager.get_openai_tools()
-
-        if tools:
-            # 有工具时，先进行工具调用循环（非流式）
-            logger.info(f"[LLM] 检测到 {len(tools)} 个可用工具，进入工具调用模式")
-            final_content = await ToolManager.chat_with_tools(msg)
-
-            if final_content:
-                # 工具调用完成后，将最终回复以流式方式输出
-                logger.info("[LLM] 工具调用完成，开始流式输出最终回复")
-                # 模拟流式输出：逐字符发送
-                for char in final_content:
-                    await stream_processor.process_text_chunk(char)
-                    await asyncio.sleep(0.01)  # 模拟流式输出的间隔
-        else:
-            # 无工具时，正常流式处理
-            async for chunk in chat_llm_request_stream(msg):
-                if first_print_time_flag:
-                    first_print_time_flag = False
-                    logger.info(f"[大模型延迟]{time.time() - start_time}")
-
-                # 处理每个文本chunk
-                await stream_processor.process_text_chunk(chunk)
-
+        async for chunk in stream_chat_with_tools(msg):
+            await stream_with_timing(chunk)
     except Exception as e:
-        logger.error(f"[LLM] 流处理异常: {e}")
+        logger.error(f"[LLM] 流处理异常: {e}", exc_info=True)
     finally:
         # 无论正常结束还是异常，都在最后处理剩余文本
         await stream_processor.process_remaining_text()

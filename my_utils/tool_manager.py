@@ -6,10 +6,8 @@
 import importlib
 import json
 from pathlib import Path
-
 from my_utils import log as Log
 from my_utils.tool_interface import BaseTool
-from my_utils.llm_request import llm_request_with_tools
 
 
 class ToolManager:
@@ -120,72 +118,6 @@ class ToolManager:
         except Exception as e:
             Log.logger.error(f"工具 {tool_name} 执行失败: {e}", exc_info=True)
             return json.dumps({"error": f"工具执行失败: {str(e)}"}, ensure_ascii=False)
-
-    @classmethod
-    async def chat_with_tools(
-        cls, messages: list[dict], max_rounds: int = 5
-    ) -> str | None:
-        """
-        带工具调用的对话循环
-
-        当 LLM 返回 tool_calls 时，自动执行工具并将结果注入消息链，
-        然后再次请求 LLM 直到获得最终文本回复。
-
-        此方法独立于 Agent，可被任何模块调用。
-
-        Parameters:
-            messages: 初始消息列表
-            max_rounds: 最大工具调用轮次（防止无限循环）
-
-        Returns:
-            str | None: LLM 的最终文本回复
-        """
-        tools = cls.get_openai_tools()
-        last_response = None
-
-        for round_idx in range(max_rounds):
-            response = await llm_request_with_tools(messages, tools)
-            if response is None:
-                continue
-            last_response = response
-            choice = response.choices[0]
-            message = choice.message
-
-            # 没有工具调用，返回文本
-            if not message.tool_calls:
-                return message.content
-
-            # 有工具调用，执行并追加结果
-            Log.logger.info(
-                f"工具调用轮次 {round_idx + 1}: "
-                f"{len(message.tool_calls)} 个工具调用"
-            )
-
-            # 将助手的 tool_calls 消息加入消息链
-            messages.append(message.model_dump())
-
-            # 执行每个工具调用并追加结果
-            for tool_call in message.tool_calls:
-                tool_name = tool_call.function.name  # type: ignore
-                tool_args = json.loads(tool_call.function.arguments)  # type: ignore
-
-                Log.logger.info(f"执行工具: {tool_name}, 参数: {tool_args}")
-                result = await cls.execute(tool_name, tool_args)
-
-                # 将工具结果加入消息链
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": result,
-                    }
-                )
-
-        # 超过最大轮次，返回最后一次的文本内容
-        Log.logger.warning(f"工具调用超过最大轮次 {max_rounds}，强制结束")
-        if last_response and last_response.choices[0].message.content:
-            return last_response.choices[0].message.content
-        return None
 
     @classmethod
     def load_plugins(cls, plugins_dir: str = "plugins") -> int:

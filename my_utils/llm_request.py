@@ -1,7 +1,13 @@
+from typing import AsyncGenerator
+
 from my_utils import config_manager as CConfig
 from my_utils import log as Log
 from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionMessageParam, ChatCompletion
+from openai.types.chat import (
+    ChatCompletionChunk,
+    ChatCompletionMessageParam,
+    ChatCompletion,
+)
 import json
 import re
 
@@ -150,3 +156,34 @@ async def llm_request_with_tools(
     response = await client.chat.completions.create(**kwargs)
     # print(f"LLM 请求完成，response: {response}")
     return response
+
+
+async def llm_request_with_tools_stream(
+    msg: list[ChatCompletionMessageParam],
+    tools: list[dict] | None = None,
+    model_key: str = "ChatLLM",
+) -> AsyncGenerator[ChatCompletionChunk, None]:
+    """
+    带工具调用支持的 LLM 请求（流式）
+
+    用于在流式响应中判断是否触发 tool_calls。
+    调用方需要解析流式增量中的 delta.tool_calls。
+    """
+    config = CConfig.config[model_key]
+    client = AsyncOpenAI(
+        api_key=config["key"],
+        base_url=config["api"],
+    )
+
+    kwargs = {
+        "model": config["model"],
+        "messages": msg,
+        "stream": True,
+        "extra_body": config.get("extra_config", {}),
+    }
+
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+
+    return await client.chat.completions.create(**kwargs)

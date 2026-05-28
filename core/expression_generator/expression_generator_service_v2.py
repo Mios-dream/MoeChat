@@ -604,10 +604,10 @@ class ExpressionGeneratorV2:
         messages.append({"role": "user", "content": input_message})
 
         # 调用 LLM
-        log_prefix = "[V2 TTS生成]" if is_tts else "[V2表情生成]"
+        log_prefix = "[V2表情生成]"
         Log.info(f"{log_prefix} 调用 API ({self.config['LLM']['model']})...")
 
-        print(f"请求上下文：{json.dumps(messages, ensure_ascii=False)}")
+        # print(f"请求上下文：{json.dumps(messages, ensure_ascii=False)}")
 
         result = await self._call_llm(
             request_body=messages,
