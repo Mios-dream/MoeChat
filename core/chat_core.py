@@ -841,8 +841,8 @@ async def llm_chat_with_tts_and_motion(params: chat_data):
         }
         yield _to_sse(final_response)
 
-        # 保存到助手上下文
-        await agent.add_msg("".join(processor.full_msg))
+        # 保存到助手上下文,不堵塞运行
+        asyncio.create_task(agent.add_msg("".join(processor.full_msg)))
 
     except Exception as e:
         llm_task.cancel()

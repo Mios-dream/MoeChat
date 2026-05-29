@@ -16,7 +16,6 @@ async def interaction_message(params: InteractionMessageRequest):
 
     响应格式：SSE 流 (text/event-stream)，与 /api/chat 完全一致。
     """
-    # print("Received interaction message request:", params)
     if params.generation_motion:
         return StreamingResponse(
             generate_interaction_message_with_motion(params),
