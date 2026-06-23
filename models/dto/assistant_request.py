@@ -17,6 +17,10 @@ class AssistantAssetsDownloadRequest(BaseModel):
     """
 
     name: str = Field(..., description="助手名称")
+    assetTypes: list[str] = Field(
+        default_factory=list,
+        description="需要下载的资源类型（子目录名），为空则下载全部",
+    )
 
 
 class UpdateAssistantRequest(BaseModel):

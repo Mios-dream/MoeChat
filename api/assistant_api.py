@@ -16,7 +16,7 @@ from models.dto.assistant_request import (
 )
 
 from services.assistant_service import AssistantService
-from my_utils.file_utils import get_latest_modification_time
+from my_utils.file_utils import get_latest_modification_time, get_subdirectory_mtimes
 from fastapi import (
     APIRouter,
     File,
@@ -146,7 +146,7 @@ async def check_assets_update(
         last_modified: 客户端保存的最后修改时间戳
 
     Returns:
-        包含是否需要更新的信息
+        包含是否需要更新的信息，以及各子目录的修改时间
     """
     # 构建助手目录路径
     assistant_dir = os.path.join(Config.BASE_AGENTS_PATH, assistant_assets_check.name)
@@ -165,10 +165,14 @@ async def check_assets_update(
             "msg": "Assets directory not found",
             "needsUpdate": False,
             "assetsLastModified": 0,
+            "assetTypes": {},
         }
 
     # 获取最新的修改时间
     latest_mtime = get_latest_modification_time(assets_dir)
+
+    # 获取各子目录的修改时间
+    subdirectory_mtimes = get_subdirectory_mtimes(assets_dir)
 
     # 比较修改时间，判断是否需要更新
     needs_update = latest_mtime > assistant_assets_check.lastModified
@@ -177,6 +181,7 @@ async def check_assets_update(
         "msg": "Check update success",
         "needsUpdate": needs_update,
         "assetsLastModified": latest_mtime,
+        "assetTypes": subdirectory_mtimes,
     }
 
 
@@ -185,8 +190,12 @@ async def download_assets(assistant_assets_download: AssistantAssetsDownloadRequ
     """
     下载助手资源文件（assets目录），打包为zip文件
 
+    支持增量下载：通过 assetTypes 参数指定需要下载的资源类型（子目录名），
+    只打包指定子目录下的文件。为空则下载全部资源。
+
     Args:
         assistant_name: 助手名称
+        assetTypes: 需要下载的资源类型列表（子目录名），为空则下载全部
 
     Returns:
         zip格式的资源文件
@@ -211,6 +220,11 @@ async def download_assets(assistant_assets_download: AssistantAssetsDownloadRequ
             detail=f"Assets directory not found for assistant '{ assistant_assets_download.name}'",
         )
 
+    # 获取需要下载的资源类型
+    asset_types = assistant_assets_download.assetTypes
+    # 是否为增量模式（指定了资源类型且不为空）
+    is_incremental = len(asset_types) > 0
+
     # 创建内存中的zip文件
     zip_buffer = io.BytesIO()
 
@@ -224,8 +238,39 @@ async def download_assets(assistant_assets_download: AssistantAssetsDownloadRequ
                 status_code=404,
                 detail=f"Assets is empty for assistant '{ assistant_assets_download.name}'",
             )
+
+        if is_incremental:
+            # 增量模式：只打包指定子目录的文件
+            for asset_type in asset_types:
+                # 安全检查：防止路径遍历
+                if "/" in asset_type or "\\" in asset_type or ".." in asset_type:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid asset type: {asset_type}",
+                    )
+
+                type_dir = os.path.join(assets_dir, asset_type)
+                if os.path.isdir(type_dir):
+                    # 子目录存在，打包该目录下的所有文件
+                    for root, _, files in os.walk(type_dir):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            # 计算相对于assets父目录的路径，保持目录结构
+                            rel_path = os.path.relpath(
+                                file_path, os.path.dirname(assets_dir)
+                            )
+                            zip_file.write(file_path, rel_path)
+                elif asset_type == "other":
+                    # "other" 表示根目录下直接存放的文件
+                    for entry in os.listdir(assets_dir):
+                        entry_path = os.path.join(assets_dir, entry)
+                        if os.path.isfile(entry_path):
+                            rel_path = os.path.relpath(
+                                entry_path, os.path.dirname(assets_dir)
+                            )
+                            zip_file.write(entry_path, rel_path)
         else:
-            # 添加所有文件
+            # 全量模式：添加所有文件
             for root, _, files in os.walk(assets_dir):
                 for file in files:
                     file_path = os.path.join(root, file)
@@ -247,13 +292,18 @@ async def download_assets(assistant_assets_download: AssistantAssetsDownloadRequ
 @assistant_api.post("/assistant/assets/upload")
 async def upload_assets(
     name: str = Form(...),
+    asset_types: str = Form(default=""),
     assets_zip: UploadFile = File(...),
 ):
     """
-    上传助手资源文件（assets目录），覆盖原文件
+    上传助手资源文件（assets目录）
+
+    支持增量上传：通过 asset_types 参数指定需要上传的资源类型（子目录名，逗号分隔），
+    只更新指定子目录下的文件，保留其他目录不变。为空则全量覆盖。
 
     Args:
-        assistant_name: 助手名称
+        name: 助手名称
+        asset_types: 需要上传的资源类型（子目录名，逗号分隔），为空则全量覆盖
         assets_zip: 包含assets目录的zip文件
 
     Returns:
@@ -267,6 +317,7 @@ async def upload_assets(
     safe_name = os.path.basename(name)
     if safe_name != name:
         raise HTTPException(status_code=400, detail="Invalid assistant name")
+
     # 构建助手目录路径
     assistant_dir = os.path.join(Config.BASE_AGENTS_PATH, safe_name)
 
@@ -280,6 +331,11 @@ async def upload_assets(
     # 构建assets目录路径
     assets_dir = os.path.join(assistant_dir, "assets")
 
+    # 解析 asset_types 参数：逗号分隔的字符串转为列表
+    asset_types_list = [t.strip() for t in asset_types.split(",") if t.strip()] if asset_types else []
+    # 是否为增量模式（指定了资源类型且不为空）
+    is_incremental = len(asset_types_list) > 0
+
     # 读取上传的文件内容
     try:
         # 读取zip文件内容
@@ -291,43 +347,53 @@ async def upload_assets(
                 status_code=400, detail="Uploaded file is not a valid zip file"
             )
 
-        # 如果原assets目录存在，先删除
-        if os.path.exists(assets_dir):
-            shutil.rmtree(assets_dir)
+        if is_incremental:
+            # 增量模式：只更新指定的子目录，保留其他目录
+            # 验证 asset_types 中的路径安全性
+            for asset_type in asset_types_list:
+                if "/" in asset_type or "\\" in asset_type or ".." in asset_type:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid asset type: {asset_type}",
+                    )
 
-        # 创建新的assets目录
-        os.makedirs(assets_dir, exist_ok=True)
+            # 确保assets目录存在
+            os.makedirs(assets_dir, exist_ok=True)
 
-        # 直接从zip文件中提取assets目录内容
-        with zipfile.ZipFile(io.BytesIO(zip_content), "r") as zip_ref:
-            # 获取zip文件中的所有文件列表
-            zip_contents = zip_ref.namelist()
+            # 直接从zip文件中提取指定子目录的内容
+            with zipfile.ZipFile(io.BytesIO(zip_content), "r") as zip_ref:
+                zip_contents = zip_ref.namelist()
 
-            # 检查是否包含assets目录
-            has_assets_dir = any(item.startswith("assets/") for item in zip_contents)
+                # 检查是否包含assets目录前缀
+                has_assets_dir = any(item.startswith("assets/") for item in zip_contents)
 
-            # 提取文件到目标目录
-            for item in zip_contents:
-                # 跳过目录项
-                if item.endswith("/"):
-                    continue
+                # 提取文件到目标目录
+                for item in zip_contents:
+                    # 跳过目录项
+                    if item.endswith("/"):
+                        continue
 
-                if has_assets_dir:
-                    # 如果zip中包含assets目录，需要去掉这个前缀
-                    if item.startswith("assets/"):
-                        # 去掉assets/前缀，保留剩余路径
-                        target_path = os.path.join(assets_dir, item[7:])
-                        # 确保目标文件的目录存在
-                        os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                        # 提取文件
-                        with (
-                            zip_ref.open(item) as source,
-                            open(target_path, "wb") as target,
-                        ):
-                            target.write(source.read())
-                else:
-                    # 如果zip中不包含assets目录，直接提取到assets目录
-                    target_path = os.path.join(assets_dir, item)
+                    # 获取相对于assets目录的路径
+                    if has_assets_dir:
+                        if not item.startswith("assets/"):
+                            continue
+                        relative_path = item[7:]  # 去掉 assets/ 前缀
+                    else:
+                        relative_path = item
+
+                    # 检查该文件是否属于指定的资源类型
+                    path_parts = relative_path.split("/", 1)
+                    if len(path_parts) < 2:
+                        # 文件直接在assets根目录下，检查是否有 "other" 类型
+                        if "other" not in asset_types_list:
+                            continue
+                    else:
+                        # 文件在子目录中，检查子目录名是否在指定类型中
+                        if path_parts[0] not in asset_types_list:
+                            continue
+
+                    # 构建目标路径
+                    target_path = os.path.join(assets_dir, relative_path)
                     # 确保目标文件的目录存在
                     os.makedirs(os.path.dirname(target_path), exist_ok=True)
                     # 提取文件
@@ -336,6 +402,52 @@ async def upload_assets(
                         open(target_path, "wb") as target,
                     ):
                         target.write(source.read())
+        else:
+            # 全量模式：删除原assets目录后重新创建
+            if os.path.exists(assets_dir):
+                shutil.rmtree(assets_dir)
+
+            # 创建新的assets目录
+            os.makedirs(assets_dir, exist_ok=True)
+
+            # 直接从zip文件中提取assets目录内容
+            with zipfile.ZipFile(io.BytesIO(zip_content), "r") as zip_ref:
+                # 获取zip文件中的所有文件列表
+                zip_contents = zip_ref.namelist()
+
+                # 检查是否包含assets目录
+                has_assets_dir = any(item.startswith("assets/") for item in zip_contents)
+
+                # 提取文件到目标目录
+                for item in zip_contents:
+                    # 跳过目录项
+                    if item.endswith("/"):
+                        continue
+
+                    if has_assets_dir:
+                        # 如果zip中包含assets目录，需要去掉这个前缀
+                        if item.startswith("assets/"):
+                            # 去掉assets/前缀，保留剩余路径
+                            target_path = os.path.join(assets_dir, item[7:])
+                            # 确保目标文件的目录存在
+                            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                            # 提取文件
+                            with (
+                                zip_ref.open(item) as source,
+                                open(target_path, "wb") as target,
+                            ):
+                                target.write(source.read())
+                    else:
+                        # 如果zip中不包含assets目录，直接提取到assets目录
+                        target_path = os.path.join(assets_dir, item)
+                        # 确保目标文件的目录存在
+                        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                        # 提取文件
+                        with (
+                            zip_ref.open(item) as source,
+                            open(target_path, "wb") as target,
+                        ):
+                            target.write(source.read())
 
         logger.info(f"Successfully uploaded assets for assistant: {safe_name}")
 
