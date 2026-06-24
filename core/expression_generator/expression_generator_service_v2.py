@@ -18,7 +18,8 @@ from dataclasses import dataclass, field
 import json
 from my_utils.log import logger as Log
 from my_utils import config_manager as CConfig
-from my_utils.llm_request import llm_request, parse_llm_json_response
+from core.llm.llm_client import LLMClient
+from core.llm.response_parser import parse_llm_json_response
 from core.expression_generator.live2d_expression_loader import (
     ExpressionInfo,
     load_expressions,
@@ -190,6 +191,8 @@ class ExpressionGeneratorV2:
 
         # TTS 连贯性状态：存储上一个动作的原始参数
         self._last_action_params: dict[str, float] = {}
+        # LLM 客户端实例
+        self._llm_client = LLMClient(model_key="LLM")
 
     async def initialize(
         self,
@@ -385,7 +388,7 @@ class ExpressionGeneratorV2:
 
         try:
             content = await asyncio.wait_for(
-                llm_request(
+                self._llm_client.request(
                     request_body,
                     extra_body={
                         "thinking": {"type": "disabled"},

@@ -56,3 +56,12 @@ Tools:
   timeout: 30
   # 工具调用最大轮次（防止无限循环）
   max_rounds: 5
+
+MotionGenerator:
+  # 动作生成器版本: v2 | v3 | v4
+  # v2: 单次请求生成完整动作序列（默认）
+  # v3: 流式 Batch 架构（延迟更低）
+  # v4: 信息调度中心（推荐，可扩展）
+  version: v4
+  # 输出曲线帧率（仅对 v3/v4 的曲线输出有效）
+  fps: 30

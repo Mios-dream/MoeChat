@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+
 from fastapi.responses import StreamingResponse
 
 from models.dto.interaction_request import InteractionMessageRequest

@@ -16,9 +16,13 @@ Live2D 表情加载器
 from pathlib import Path
 from dataclasses import dataclass, field
 from my_utils.log import logger as Log
-from my_utils.llm_request import llm_request, parse_llm_json_response
+from core.llm.llm_client import LLMClient
+from core.llm.response_parser import parse_llm_json_response
 import json
 import time
+
+# 模块级 LLM 客户端实例
+_llm_client = LLMClient(model_key="LLM")
 
 
 # ============================================================
@@ -324,7 +328,7 @@ async def _generate_expression_descriptions(
 
     try:
         Log.info(f"[表情加载] 调用 LLM 生成 {len(expressions)} 个表情描述...")
-        content = await llm_request([{"role": "user", "content": prompt}])
+        content = await _llm_client.request([{"role": "user", "content": prompt}])
 
         if not content:
             Log.warning("[表情加载] LLM 返回内容为空")

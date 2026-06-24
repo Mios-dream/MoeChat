@@ -1,6 +1,7 @@
 from my_utils.log import logger as Log
 from my_utils import config_manager as CConfig
-from my_utils.llm_request import llm_request, parse_llm_json_response
+from core.llm.llm_client import LLMClient
+from core.llm.response_parser import parse_llm_json_response
 import asyncio
 import time
 
@@ -66,6 +67,8 @@ class ExpressionGenerator:
         self.tts_motion_keep_lip_sync = tts_motion_keep_lip_sync
         # 模型专属 prompt
         self.custom_prompt: str = ""
+        # LLM 客户端实例
+        self._llm_client = LLMClient(model_key="LLM")
 
         # 新增：缓存机制（LRU风格）
         self._motion_plan_cache: dict[str, list] = {}  # text -> frames
@@ -346,7 +349,7 @@ ParamBodyAngleX, ParamBodyAngleY, ParamBodyAngleZ
         """统一封装 LLM HTTP 调用与响应解析。"""
 
         start_time = time.time()
-        content = await llm_request(request_body)
+        content = await self._llm_client.request(request_body)
         elapsed = (time.time() - start_time) * 1000
         Log.info(f"{log_prefix} 完成 ⏱️ {elapsed:.0f}ms")
         if not content:

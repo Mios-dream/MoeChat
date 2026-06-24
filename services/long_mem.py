@@ -3,7 +3,7 @@
 
 设计目标：
 1. 聊天历史与长期日记统一存储在同一个 SQLite 文件中，减少系统复杂度。
-2. 日记按“天”归档，仅在跨天时生成，避免每轮都调用 LLM。
+2. 日记按"天"归档，仅在跨天时生成，避免每轮都调用 LLM。
 3. 检索时同时返回：历史日记 + 今日未归档对话，保证信息不遗漏。
 4. 兼容现有调用方式：保留 get_memories(...) 与 add_memory(...)
 """
@@ -18,7 +18,7 @@ import numpy as np
 from models.types.assistant_info import AssistantInfo
 from my_utils import embedding
 from my_utils import log as Log
-from my_utils.llm_request import llm_request
+from core.llm.llm_client import LLMClient
 
 
 class Memory:
@@ -40,6 +40,8 @@ class Memory:
         self.enable_search_enhance = agent_config.settings.enableLongMemorySearchEnhance
         # 每日对话记录阈值：仅当日记录数 > 5 时才生成日记。
         self.min_daily_records_for_diary = 6
+        # LLM 客户端实例
+        self._llm_client = LLMClient(model_key="LLM")
 
         self.data_dir = f"./data/agents/{self.agent_id}/memory"
         self.db_path = os.path.join(self.data_dir, "memory.db")
@@ -293,7 +295,7 @@ class Memory:
         """
         try:
             summary = (
-                await llm_request(
+                await self._llm_client.request(
                     [{"role": "system", "content": prompt}],
                 )
                 or ""
@@ -334,7 +336,7 @@ class Memory:
         diary_text = ""
         try:
             diary_text = (
-                await llm_request(
+                await self._llm_client.request(
                     [
                         {"role": "system", "content": diary_system_prompt},
                         {"role": "user", "content": diary_user_prompt},

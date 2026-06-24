@@ -12,7 +12,8 @@ from models.types.assistant_info import AssistantInfo
 from models.types.user_state import UserStateInfo
 from core.emotion.emotion_engine import EmotionEngine
 from concurrent.futures import ThreadPoolExecutor
-from my_utils.llm_request import llm_request, parse_llm_json_response
+from core.llm.llm_client import LLMClient
+from core.llm.response_parser import parse_llm_json_response
 from services import core_mem, data_base, long_mem
 
 
@@ -64,13 +65,15 @@ class Assistant:
         # 助手名称
         self.agent_name = agent_name
         # 聊天记录
-        self.msg_data = []
+        self.chat_history = []
         # 当前正在处理的消息记录
         self.msg_data_tmp = []
         # 线程池执行器，用于处理同步的 CPU 密集任务
         self._executor = ThreadPoolExecutor(max_workers=4)
         # 用户私有状态（好感度、首次相遇时间等）
         self.user_state: UserStateInfo = UserStateInfo()
+        # LLM 客户端实例
+        self._llm_client = LLMClient(model_key="LLM")
 
         self.load_config()
         self._init_history()
@@ -78,18 +81,18 @@ class Assistant:
     def _init_history(self):
         """初始化历史记录（从 SQLite 读取最近上下文）"""
         try:
-            self.msg_data = self.memoryEngine.get_recent_chat_turns(
+            self.chat_history = self.memoryEngine.get_recent_chat_turns(
                 self.agent_config.settings.contextLength
             )
-            Log.logger.info(f"当前上下文长度：{len(self.msg_data)}")
+            Log.logger.info(f"当前上下文长度：{len(self.chat_history)}")
         except Exception as e:
             Log.logger.error(f"加载上下文失败：{self.agent_name}, 错误: {e}")
 
         # 添加起始对话
-        if self.agent_config.startWith and not self.msg_data:
+        if self.agent_config.startWith and not self.chat_history:
             for i, content in enumerate(self.agent_config.startWith):
                 role = "user" if i % 2 == 0 else "assistant"
-                self.msg_data_tmp.append({"role": role, "content": content})
+                self.chat_history.append({"role": role, "content": content})
 
     def _load_config(self):
         """加载配置文件"""
@@ -194,7 +197,7 @@ class Assistant:
         )
 
         try:
-            content = await llm_request(
+            content = await self._llm_client.request(
                 [
                     {"role": "user", "content": emotion_analysis_prompt},
                 ]
@@ -335,11 +338,11 @@ class Assistant:
         elapsed_time = end_time - start_time
         return result, elapsed_time
 
-    async def _task_add_long_memory(self, turn_data):
+    async def _task_add_long_memory(self, turn_data: list[dict]) -> None:
         """
         后台任务：添加长期记忆
         Parameters:
-            turn_data: 对话数据
+            turn_data: 一轮对话数据
         """
         self.current_time = int(time.time())
         await self.memoryEngine.add_memory(turn_data, self.current_time)
@@ -444,7 +447,7 @@ class Assistant:
         """
 
         # 检查上下文最后一条是否是助手回复，不是则不插入核心记忆
-        if self.msg_data[-1]["role"] != "assistant":
+        if self.chat_history[-1]["role"] != "assistant":
             return
         re_msg = (
             "对话内容：助手："
@@ -457,7 +460,7 @@ class Assistant:
 
         try:
 
-            res_msg = await llm_request(
+            res_msg = await self._llm_client.request(
                 [
                     {"role": "system", "content": prompt.get_core_mem},
                     {"role": "user", "content": re_msg},
@@ -496,9 +499,9 @@ class Assistant:
             f"助手 {self.agent_name} 好感度更新: 变化 {change}, 当前 {self.user_state.love}"
         )
 
-    async def get_msg_data(self, msg: str, is_sleep_mode: bool = False) -> list[dict]:
+    async def get_context(self, msg: str, is_sleep_mode: bool = False) -> str:
         """
-        获取发送到大模型的上下文
+        获取当前上下文的消息数据，包含知识库、长期记忆、核心记忆、情绪信息等
 
         Parameters:
             msg: 客户端发送的消息
@@ -508,11 +511,6 @@ class Assistant:
             发送到大模型的上下文
         """
 
-        self.current_time = int(time.time())
-        # 格式化时间
-        format_time = time.strftime(
-            "%Y-%m-%d %H:%M:%S", time.localtime(self.current_time)
-        )
         # 使用 asyncio.gather 同时启动所有任务
         tasks = [
             self._async_search_knowledge(msg),
@@ -532,11 +530,6 @@ class Assistant:
         # print(f"Memory search time: {mem_time:.4f}s")
         # print(f"Core memory search time: {core_time:.4f}s")
         # print(f"Emotion processing time: {emotion_time:.4f}s")
-
-        # 返回消息列表
-        res_msg = []
-        # 添加系统提示词
-        res_msg.append({"role": "system", "content": self.prompt})
 
         context_extras = []
         # 添加知识库信息
@@ -570,22 +563,18 @@ class Assistant:
             sleep_prompt = prompt.sleep_mode_prompt.format(char=self.char)
             context_extras.append(sleep_prompt)
 
-        # 合并上下文、世界书、记忆信息, 并添加情绪指令
         final_content = "\n".join(context_extras)
-        # 系统 Prompt + 历史记录 + 当前构建的 Context
-        system_msg: list[dict] = [
-            {"role": "system", "content": self.prompt},
-            {"role": "user", "content": final_content},
-        ]
 
-        self.msg_data_tmp = [
-            {
-                "role": "user",
-                "content": f"\n当前时间:{format_time}\n用户对话内容或动作:\n{msg}\n",
-            }
-        ]
+        return final_content
 
-        return system_msg + self.msg_data + self.msg_data_tmp
+    def get_history(self) -> list[dict]:
+        """
+        获取当前上下文的历史记录
+
+        Returns:
+            当前上下文的历史记录
+        """
+        return self.chat_history.copy()
 
     async def add_msg(self, assistant_msg: str) -> None:
         """
@@ -594,16 +583,18 @@ class Assistant:
         Parameters:
             assistant_msg: 助手回复的消息
         """
-        # 添加助手回复到上下文
-        self.msg_data_tmp.append({"role": "assistant", "content": assistant_msg})
+        self.chat_history.append({"role": "assistant", "content": assistant_msg})
 
         # 获取用于分析的内容
-        user_msg_content = self.msg_data_tmp[-2]["content"]  # 刚刚的用户输入
-        previous_assistant_msg = self.msg_data[-1]["content"] if self.msg_data else ""
+        user_msg_content = self.chat_history[-2]["content"]  # 刚刚的用户输入
 
-        current_turn = self.msg_data_tmp.copy()
-        self.msg_data += current_turn
-        self.msg_data = self.msg_data[-self.agent_config.settings.contextLength :]
+        previous_assistant_msg = (
+            self.chat_history[-3]["content"] if self.chat_history else ""
+        )
+
+        self.chat_history = self.chat_history[
+            -self.agent_config.settings.contextLength :
+        ]
         # 清空临时消息列表
         self.msg_data_tmp = []
 
@@ -612,7 +603,7 @@ class Assistant:
                 user_msg_content, assistant_msg, previous_assistant_msg
             ),
             self.update_love_level(user_msg_content, assistant_msg),
-            self._task_add_long_memory(current_turn),
+            self._task_add_long_memory(self.chat_history[-2:]),
         )
 
     async def add_interaction_msg(self, msg: str) -> None:
@@ -622,11 +613,9 @@ class Assistant:
             msg: 交互事件消息
         """
         # 添加交互事件消息到上下文
-        self.msg_data_tmp.append({"role": "assistant", "content": msg})
+        self.chat_history.append({"role": "assistant", "content": msg})
 
-        current_turn = self.msg_data_tmp.copy()
-        self.msg_data += current_turn
-        self.msg_data = self.msg_data[-self.agent_config.settings.contextLength :]
+        current_turn = self.chat_history[-2:]  # 只取最新的两条消息
         # 清空临时消息列表
         self.msg_data_tmp = []
 

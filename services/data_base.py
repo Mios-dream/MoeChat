@@ -17,7 +17,8 @@ from models.types.assistant_info import AssistantInfo
 from my_utils import config_manager as CConfig
 from my_utils import embedding
 from my_utils import log as Log
-from my_utils.llm_request import llm_request, parse_llm_json_response
+from core.llm.llm_client import LLMClient
+from core.llm.response_parser import parse_llm_json_response
 
 
 RAW_SUFFIXES = {".txt", ".md"}
@@ -265,6 +266,8 @@ class DataBase:
         self._last_health_check_ts = 0
         # 上次重建摘要用于快速判断重建结果是否有实质性变化，避免频繁无效重建
         self._last_rebuild_summary: dict[str, Any] = {}
+        # LLM 客户端实例
+        self._llm_client = LLMClient(model_key="LLM")
         # 初始化目录和数据库连接
         self._ensure_directories()
         # search/rebuild 会在 run_in_executor 线程中执行，需允许跨线程访问同一连接。
@@ -737,7 +740,7 @@ class DataBase:
 
         try:
             content = _sync_run_coroutine(
-                llm_request([{"role": "user", "content": prompt}]), timeout=120
+                self._llm_client.request([{"role": "user", "content": prompt}]), timeout=120
             )
             if not content:
                 return self._fallback_extract(raw_rel_path, cleaned_text)

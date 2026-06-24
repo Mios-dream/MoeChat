@@ -3,7 +3,7 @@ import json
 from fastapi import (
     APIRouter,
 )
-from core.chat_core import tts_task, TTSData
+from core.chat.base import tts_task, TTSData
 from pydantic import BaseModel
 import re
 

@@ -8,16 +8,19 @@ from my_utils import prompt as prompt_templates
 from my_utils.log import logger
 from services.assistant_service import AssistantService
 
-from core.chat_core import (
+from core.chat.base import (
     StreamProcessor,
     text_wrapper,
     tts_wrapper,
-    motion_wrapper,
-    _to_sse,
-    _store_sentence_event,
-    _drain_ready_sentence_events,
+    to_sse,
+    store_sentence_event,
+    drain_ready_sentence_events,
     start_llm_task,
-    _get_agent_expression_generator,
+)
+from core.chat.v4_motion import (
+    V4ChatContext,
+    create_scheduler,
+    _handle_result,
 )
 
 assistant_service = AssistantService()
@@ -121,7 +124,7 @@ async def generate_interaction_message(params: InteractionMessageRequest):
             "data": str(e),
             "done": True,
         }
-        yield _to_sse(error_response)
+        yield to_sse(error_response)
         return
 
     processor = StreamProcessor()
@@ -144,7 +147,7 @@ async def generate_interaction_message(params: InteractionMessageRequest):
                 sentence_id=sentence_id,
                 sentence_text=sentence_text,
             )
-            _store_sentence_event(sentence_events, sentence_id, "text", payload)
+            store_sentence_event(sentence_events, sentence_id, "text", payload)
 
         async def create_audio_event():
             payload = await tts_wrapper(
@@ -154,7 +157,7 @@ async def generate_interaction_message(params: InteractionMessageRequest):
                 tts_text=tts_text,
                 processor=processor,
             )
-            _store_sentence_event(sentence_events, sentence_id, "audio", payload)
+            store_sentence_event(sentence_events, sentence_id, "audio", payload)
 
         track_task(asyncio.create_task(create_text_event()))
         track_task(asyncio.create_task(create_audio_event()))
@@ -165,13 +168,13 @@ async def generate_interaction_message(params: InteractionMessageRequest):
 
     try:
         while True:
-            expected_sentence_id, ready_payloads = _drain_ready_sentence_events(
+            expected_sentence_id, ready_payloads = drain_ready_sentence_events(
                 sentence_events=sentence_events,
                 expected_sentence_id=expected_sentence_id,
                 event_order=event_order,
             )
             for payload in ready_payloads:
-                yield _to_sse(payload)
+                yield to_sse(payload)
 
             if llm_task.done() and not pending_tasks and not sentence_events:
                 break
@@ -185,7 +188,7 @@ async def generate_interaction_message(params: InteractionMessageRequest):
             "full_text": ("".join(processor.full_msg) if processor.full_msg else ""),
             "done": True,
         }
-        yield _to_sse(final_response)
+        yield to_sse(final_response)
 
         await agent.add_interaction_msg("".join(processor.full_msg))
 
@@ -200,11 +203,11 @@ async def generate_interaction_message(params: InteractionMessageRequest):
             "data": str(e),
             "done": True,
         }
-        yield _to_sse(error_response)
+        yield to_sse(error_response)
 
 
 async def generate_interaction_message_with_motion(params: InteractionMessageRequest):
-    """交互消息生成（文本 + 语音 + 动作帧）。"""
+    """交互消息生成（文本 + 语音 + 动作帧）- 使用V4方案。"""
     agent = assistant_service.get_current_assistant()
     if not agent:
         logger.error("[交互] 当前没有加载助手")
@@ -212,7 +215,6 @@ async def generate_interaction_message_with_motion(params: InteractionMessageReq
 
     try:
         msg_list_for_llm = await _build_interaction_message_list(params)
-        # print(json.dumps(msg_list_for_llm, ensure_ascii=False, indent=2))
     except Exception as e:
         logger.error(f"[交互] 构建消息列表失败: {e}")
         error_response = {
@@ -221,96 +223,62 @@ async def generate_interaction_message_with_motion(params: InteractionMessageReq
             "data": str(e),
             "done": True,
         }
-        yield _to_sse(error_response)
+        yield to_sse(error_response)
         return
 
-    processor = StreamProcessor()
+    # 创建调度器
+    scheduler = create_scheduler()
 
-    sentence_events: dict[int, dict[str, dict[str, Any]]] = {}
-    expected_sentence_id = 1
-    event_order = ("text", "audio", "motion_frame")
+    # 创建管道
+    pipeline = scheduler.create_pipeline(
+        system_context=agent.prompt,
+        history_messages=msg_list_for_llm[:-1],  # 除最后一条用户消息外的历史
+        user_message=msg_list_for_llm[-1]["content"] if msg_list_for_llm else "",
+    )
 
-    pending_tasks: set[asyncio.Task[Any]] = set()
-
-    def track_task(task: asyncio.Task[Any]):
-        pending_tasks.add(task)
-        task.add_done_callback(pending_tasks.discard)
-
-    motion_generator = await _get_agent_expression_generator(agent.agent_name)
-    if motion_generator is None:
-        logger.warning("[交互] 未找到可用 Live2D 参数，将输出空动作事件")
-
-    tts_semaphore = asyncio.Semaphore(1)
-    motion_semaphore = asyncio.Semaphore(4)
-
-    async def on_sentence_complete(sentence_id: int, sentence_text: str, tts_text: str):
-        async def create_text_event():
-            payload = await text_wrapper(
-                sentence_id=sentence_id,
-                sentence_text=sentence_text,
-            )
-            _store_sentence_event(sentence_events, sentence_id, "text", payload)
-
-        async def create_audio_event():
-            payload = await tts_wrapper(
-                tts_semaphore=tts_semaphore,
-                sentence_id=sentence_id,
-                sentence_text=sentence_text,
-                tts_text=tts_text,
-                processor=processor,
-            )
-            _store_sentence_event(sentence_events, sentence_id, "audio", payload)
-
-        async def create_motion_event():
-            payload = await motion_wrapper(
-                motion_semaphore=motion_semaphore,
-                sentence_id=sentence_id,
-                sentence_text=sentence_text,
-                user_message="",
-                assistant_message=processor.full_msg,
-                motion_generator=motion_generator,
-                motion_history=processor.motion_history,
-            )
-            _store_sentence_event(sentence_events, sentence_id, "motion_frame", payload)
-
-        track_task(asyncio.create_task(create_text_event()))
-        track_task(asyncio.create_task(create_audio_event()))
-        track_task(asyncio.create_task(create_motion_event()))
-
-    processor.register_sentence_complete_callback(on_sentence_complete)
-
-    llm_task = asyncio.create_task(start_llm_task(msg_list_for_llm, processor))
+    # 初始化V4上下文
+    chat_context = V4ChatContext()
 
     try:
-        while True:
-            expected_sentence_id, ready_payloads = _drain_ready_sentence_events(
-                sentence_events=sentence_events,
-                expected_sentence_id=expected_sentence_id,
-                event_order=event_order,
-            )
-            for payload in ready_payloads:
-                yield _to_sse(payload)
+        # 流式执行管道
+        async for result in pipeline.execute():
+            # 捕获结果并触发事件
+            await _handle_result(chat_context, result)
+            # 输出就绪的句子事件
+            for payload in chat_context.drain_ready_events():
+                yield to_sse(payload)
 
-            if llm_task.done() and not pending_tasks and not sentence_events:
-                break
+        # 等待所有异步任务完成（语音合成）
+        while chat_context.pending_tasks:
+            await asyncio.sleep(0.1)
 
-            await asyncio.sleep(0.01)
+        # 输出剩余事件
+        for payload in chat_context.drain_ready_events():
+            yield to_sse(payload)
 
-        final_response = {
-            "type": "done",
-            "timestamp_ms": time.time() * 1000,
-            "total_sentences": max(0, processor.sentence_count - 1),
-            "full_text": ("".join(processor.full_msg) if processor.full_msg else ""),
-            "done": True,
-        }
-        yield _to_sse(final_response)
+        # 输出完成信号
+        full_text = "".join(
+            chat_context.text_cache.get(i, "")
+            for i in sorted(chat_context.text_cache.keys())
+        )
+        yield to_sse(
+            {
+                "type": "done",
+                "timestamp_ms": time.time() * 1000,
+                "total_sentences": len(chat_context.text_cache),
+                "full_text": full_text,
+                "done": True,
+            }
+        )
 
-        await agent.add_interaction_msg("".join(processor.full_msg))
+        # 保存到助手上下文
+        await agent.add_interaction_msg(full_text)
 
     except Exception as e:
-        llm_task.cancel()
-        for task in list(pending_tasks):
+        # 取消所有待处理的任务
+        for task in list(chat_context.pending_tasks):
             task.cancel()
+
         logger.error(f"[交互] 处理数据时出错: {e}", exc_info=True)
         error_response = {
             "type": "error",
@@ -318,4 +286,4 @@ async def generate_interaction_message_with_motion(params: InteractionMessageReq
             "data": str(e),
             "done": True,
         }
-        yield _to_sse(error_response)
+        yield to_sse(error_response)

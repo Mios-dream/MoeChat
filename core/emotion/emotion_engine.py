@@ -17,7 +17,7 @@ from core.emotion.create_mood_instruction import create_mood_instruction
 from core.emotion.hormone_cycle import HormoneCycle
 from models.types.assistant_info import AssistantInfo
 from Config import Config
-from my_utils.llm_request import llm_request
+from core.llm.llm_client import LLMClient
 
 
 class EmotionState(Enum):
@@ -57,6 +57,8 @@ class EmotionEngine:
         self.TIME_SCALING_FACTOR = agent_config.emotionSetting.get(
             "TIME_SCALING_FACTOR", 5.0
         )
+        # LLM 客户端实例
+        self._llm_client = LLMClient(model_key="LLM")
 
         # 设置默认情绪状态
         self.valence = 0.0
@@ -222,7 +224,7 @@ class EmotionEngine:
 
         try:
 
-            response = await llm_request(messages_for_sentiment)
+            response = await self._llm_client.request(messages_for_sentiment)
             if not response:
                 print("[情绪引擎] 警告: LLM未返回任何内容，无法更新情绪状态。")
                 return self.valence, self.arousal, "neutral", 0.0

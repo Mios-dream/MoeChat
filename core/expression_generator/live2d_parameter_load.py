@@ -1,4 +1,5 @@
-from my_utils.llm_request import llm_request, parse_llm_json_response
+from core.llm.llm_client import LLMClient
+from core.llm.response_parser import parse_llm_json_response
 from my_utils.log import logger
 from pathlib import Path
 import json
@@ -9,6 +10,9 @@ import time
 # 2) 读取并整合参数来源（cdi3/vtube）
 # 3) 通过 LLM + 启发式筛选动作规划参数
 # 4) 通过缓存避免重复筛选，并在 moc3 更新时自动失效
+
+# 模块级 LLM 客户端实例
+_llm_client = LLMClient(model_key="LLM")
 
 # 基本动作参数 ID，必须保留的参数
 ESSENTIAL_MOTION_PARAMETER_IDS = {
@@ -315,7 +319,7 @@ async def _filter_parameters_with_llm(
 ```"""
 
     try:
-        response = await llm_request(
+        response = await _llm_client.request(
             [
                 {"role": "user", "content": prompt},
             ]

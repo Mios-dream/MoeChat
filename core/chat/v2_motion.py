@@ -1,0 +1,338 @@
+"""
+V2+动作版本聊天模块
+
+在 V2 基础上增加动作生成（使用 V2 生成器）。
+
+核心特性：
+1. 流式文本处理，逐句播放
+2. TTS 并行合成
+3. V2 动作生成器生成动作
+4. 事件按句子 ID 聚合输出
+
+架构流程：
+┌─────────────────────────────────────────────────────────────────┐
+│  1. 创建流处理器和动作生成器                                        │
+│     processor = StreamProcessor()                                │
+│     motion_generator = ExpressionGeneratorV2()                   │
+├─────────────────────────────────────────────────────────────────┤
+│  2. 句子完成时触发 TTS + 动作生成                                   │
+│     on_complete → text_event + audio_event + motion_event        │
+├─────────────────────────────────────────────────────────────────┤
+│  3. 事件循环：按序输出就绪事件                                       │
+└─────────────────────────────────────────────────────────────────┘
+
+SSE 事件格式：
+data: {"type": "text", "sentence_id": 1, "message": "你好呀~", ...}
+data: {"type": "audio", "sentence_id": 1, "file": "base64...", ...}
+data: {"type": "motion_frame", "sentence_id": 1, "motions": [...], ...}
+"""
+
+import time
+import asyncio
+from typing import Any
+
+from models.dto.chat_request import chat_data
+from my_utils.log import logger
+from core.chat.base import (
+    StreamProcessor,
+    text_wrapper,
+    tts_wrapper,
+    motion_wrapper,
+    start_llm_task,
+    store_sentence_event,
+    drain_ready_sentence_events,
+    to_sse,
+    build_chat_messages,
+    get_motion_system_prompt,
+)
+from core.expression_generator.expression_generator_service_v2 import (
+    ExpressionGeneratorV2,
+)
+from services.assistant_service import AssistantService
+
+assistant_service = AssistantService()
+
+# ============================================================
+# V2Motion 上下文
+# ============================================================
+
+
+class V2MotionChatContext:
+    """
+    V2Motion 聊天上下文
+
+    封装聊天过程中的所有状态，避免函数嵌套。
+
+    属性：
+    - processor: 流处理器实例
+    - motion_generator: V2 动作生成器实例
+    - sentence_events: 按句子 ID 聚合的事件存储
+    - expected_sentence_id: 预期的下一个句子 ID
+    - pending_tasks: 异步任务跟踪集合
+    - tts_semaphore: TTS 并发控制信号量
+    - motion_semaphore: 动作生成并发控制信号量
+    """
+
+    def __init__(
+        self,
+        processor: StreamProcessor,
+        motion_generator: ExpressionGeneratorV2 | None,
+    ):
+        """
+        初始化 V2Motion 聊天上下文
+
+        参数：
+        - processor: 流处理器实例
+        - motion_generator: V2 动作生成器实例
+        """
+        self.processor = processor
+        self.motion_generator = motion_generator
+        self.sentence_events: dict[int, dict[str, dict[str, Any]]] = {}
+        self.expected_sentence_id: int = 1
+        self.pending_tasks: set[asyncio.Task[Any]] = set()
+        self.tts_semaphore: asyncio.Semaphore = asyncio.Semaphore(1)
+        self.motion_semaphore: asyncio.Semaphore = asyncio.Semaphore(4)
+
+        # 事件类型顺序
+        self.event_order: tuple[str, ...] = ("text", "audio", "motion_frame")
+
+    def track_task(self, task: asyncio.Task[Any]):
+        """
+        跟踪异步任务
+
+        参数：
+        - task: 要跟踪的异步任务
+        """
+        self.pending_tasks.add(task)
+        task.add_done_callback(self.pending_tasks.discard)
+
+    def drain_ready_events(self) -> list[dict[str, Any]]:
+        """
+        排出所有就绪的句子事件
+
+        返回：
+        - 就绪的事件载荷列表
+        """
+        self.expected_sentence_id, ready_payloads = drain_ready_sentence_events(
+            sentence_events=self.sentence_events,
+            expected_sentence_id=self.expected_sentence_id,
+            event_order=self.event_order,
+        )
+        return ready_payloads
+
+
+# ============================================================
+# 事件处理函数
+# ============================================================
+
+
+async def _create_text_event(
+    ctx: V2MotionChatContext, sentence_id: int, sentence_text: str
+):
+    """
+    创建文本事件
+
+    参数：
+    - ctx: V2Motion 聊天上下文
+    - sentence_id: 句子 ID
+    - sentence_text: 句子文本
+    """
+    payload = await text_wrapper(
+        sentence_id=sentence_id,
+        sentence_text=sentence_text,
+    )
+    store_sentence_event(ctx.sentence_events, sentence_id, "text", payload)
+
+
+async def _create_audio_event(
+    ctx: V2MotionChatContext,
+    sentence_id: int,
+    sentence_text: str,
+    tts_text: str,
+):
+    """
+    创建音频事件
+
+    参数：
+    - ctx: V2Motion 聊天上下文
+    - sentence_id: 句子 ID
+    - sentence_text: 句子文本
+    - tts_text: 用于 TTS 的文本
+    """
+    payload = await tts_wrapper(
+        tts_semaphore=ctx.tts_semaphore,
+        sentence_id=sentence_id,
+        sentence_text=sentence_text,
+        tts_text=tts_text,
+        processor=ctx.processor,
+    )
+    store_sentence_event(ctx.sentence_events, sentence_id, "audio", payload)
+
+
+async def _create_motion_event(
+    ctx: V2MotionChatContext,
+    sentence_id: int,
+    sentence_text: str,
+):
+    """
+    创建动作事件
+
+    参数：
+    - ctx: V2Motion 聊天上下文
+    - sentence_id: 句子 ID
+    - sentence_text: 句子文本
+    """
+    payload = await motion_wrapper(
+        motion_semaphore=ctx.motion_semaphore,
+        sentence_id=sentence_id,
+        sentence_text=sentence_text,
+        motion_generator=ctx.motion_generator,
+        user_message=ctx.processor.user_msg,
+        assistant_message=ctx.processor.full_msg,
+        motion_history=ctx.processor.motion_history,
+    )
+    store_sentence_event(ctx.sentence_events, sentence_id, "motion_frame", payload)
+
+
+async def _on_sentence_complete(
+    ctx: V2MotionChatContext,
+    sentence_id: int,
+    sentence_text: str,
+    tts_text: str,
+):
+    """
+    句子完成时的回调
+
+    参数：
+    - ctx: V2Motion 聊天上下文
+    - sentence_id: 句子 ID
+    - sentence_text: 句子文本
+    - tts_text: 用于 TTS 的文本
+    """
+    ctx.track_task(
+        asyncio.create_task(_create_text_event(ctx, sentence_id, sentence_text))
+    )
+    ctx.track_task(
+        asyncio.create_task(
+            _create_audio_event(ctx, sentence_id, sentence_text, tts_text)
+        )
+    )
+    ctx.track_task(
+        asyncio.create_task(_create_motion_event(ctx, sentence_id, sentence_text))
+    )
+
+
+# ============================================================
+# V2Motion 主函数
+# ============================================================
+
+
+async def llm_chat_with_tts_and_motion_v2(params: chat_data):
+    """
+    V2Motion 版本聊天流式输出
+
+    并行文字/语音/动作，极低延迟同步。
+
+    流程概述：
+    1. 创建流处理器和动作生成器
+    2. 注册句子完成回调（触发 TTS + 动作生成）
+    3. 启动 LLM 流式任务
+    4. 事件循环：按序输出就绪事件
+
+    参数：
+    - params: 聊天请求参数
+
+    产出：
+    - SSE 格式的事件流
+    """
+    # ============================================================
+    # 第一步：获取助手实例
+    # ============================================================
+    agent = assistant_service.get_current_assistant()
+
+    if not agent:
+        logger.error("[V2Motion] 当前没有加载助手")
+        return
+
+    # ============================================================
+    # 第二步：构建消息列表（使用统一函数，包含动作提示词）
+    # ============================================================
+    motion_prompt = get_motion_system_prompt()
+    agent, history_messages, user_message = await build_chat_messages(
+        agent, params, system_prompt_extra=motion_prompt
+    )
+
+    # ============================================================
+    # 第三步：获取动作生成器
+    # ============================================================
+    motion_generator: ExpressionGeneratorV2 | None = None
+    try:
+        motion_generator = ExpressionGeneratorV2()
+        await motion_generator.initialize(agent.agent_name)
+    except Exception as e:
+        logger.warning(f"[V2Motion] 获取动作生成器失败: {e}")
+
+    if motion_generator is None:
+        logger.warning("[动作规划] 未找到可用 Live2D 参数，将输出空动作事件")
+
+    # ============================================================
+    # 第四步：初始化上下文
+    # ============================================================
+    processor = StreamProcessor()
+    processor.user_msg = user_message
+    ctx = V2MotionChatContext(processor, motion_generator)
+
+    # 注册句子完成回调
+    processor.register_sentence_complete_callback(
+        lambda sid, text, tts: _on_sentence_complete(ctx, sid, text, tts)
+    )
+
+    # ============================================================
+    # 第五步：启动 LLM 任务
+    # ============================================================
+    llm_task = asyncio.create_task(start_llm_task(history_messages, processor))
+
+    try:
+        # ============================================================
+        # 第六步：事件循环
+        # ============================================================
+        while True:
+            # 输出就绪的句子事件
+            for payload in ctx.drain_ready_events():
+                yield to_sse(payload)
+
+            # 检查是否完成
+            if llm_task.done() and not ctx.pending_tasks and not ctx.sentence_events:
+                break
+
+            await asyncio.sleep(0.01)
+
+        # 输出完成信号
+        final_response = {
+            "type": "done",
+            "timestamp_ms": time.time() * 1000,
+            "total_sentences": max(0, processor.sentence_count - 1),
+            "full_text": "".join(processor.full_msg) if processor.full_msg else "",
+            "done": True,
+        }
+        yield to_sse(final_response)
+
+        # 保存到助手上下文（需要先添加用户消息到临时列表）
+        agent.msg_data_tmp.append({"role": "user", "content": ctx.processor.user_msg})
+        asyncio.create_task(agent.add_msg("".join(processor.full_msg)))
+
+    except Exception as e:
+        # 取消所有任务
+        llm_task.cancel()
+        for task in list(ctx.pending_tasks):
+            task.cancel()
+
+        logger.error(f"处理数据时出错: {e}", exc_info=True)
+        yield to_sse(
+            {
+                "type": "error",
+                "timestamp_ms": time.time() * 1000,
+                "data": str(e),
+                "done": True,
+            }
+        )
