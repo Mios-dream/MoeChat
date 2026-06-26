@@ -293,6 +293,9 @@ async def llm_chat_with_tts_and_motion_v3(params: chat_data):
     产出：
     - SSE 格式的事件流
     """
+    start_time = time.time()
+    delay_flag = False
+
     # 第一步：获取助手实例
     agent = assistant_service.get_current_assistant()
 
@@ -336,6 +339,11 @@ async def llm_chat_with_tts_and_motion_v3(params: chat_data):
         async for result in pipeline.execute():
             await ctx.handle_result(result)
             for payload in ctx.drain_ready_events():
+                if not delay_flag:
+                    logger.info(
+                        f"[V3] 首条回复已生成，耗时 {(time.time() - start_time):.2f} 秒"
+                    )
+                    delay_flag = True
                 yield to_sse(payload)
 
         # 等待所有异步任务完成

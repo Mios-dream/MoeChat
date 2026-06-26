@@ -203,3 +203,8 @@ class MultiParser:
     def sentence_count(self) -> int:
         """已处理的句子数量"""
         return self._sentence_counter
+
+    @property
+    def registered_task_types(self) -> set[str]:
+        """获取已注册的任务类型集合"""
+        return set(self._tasks.keys())
