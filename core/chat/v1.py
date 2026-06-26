@@ -1,5 +1,5 @@
 """
-V2 版本聊天模块
+V1 版本聊天模块
 
 基础版本：文本 + TTS，不包含动作生成。
 
@@ -10,18 +10,17 @@ V2 版本聊天模块
 
 架构流程：
 ┌─────────────────────────────────────────────────────────────────┐
-│  1. 创建流处理器，注册回调                                          │
-│     processor = StreamProcessor()                                │
-│     processor.register_sentence_complete_callback(on_complete)   │
+│  1. 创建调度器和纯文本管道                                         │
+│     scheduler = TaskScheduler()                                  │
+│     pipeline = scheduler.create_text_pipeline(messages)          │
 ├─────────────────────────────────────────────────────────────────┤
-│  2. 启动 LLM 流式任务                                              │
-│     llm_task = asyncio.create_task(start_llm_task(msg, proc))   │
+│  2. 流式执行管道，处理文本结果                                      │
+│     async for result in pipeline.execute():                      │
+│         ctx.handle_text_result(result)                           │
 ├─────────────────────────────────────────────────────────────────┤
-│  3. 句子完成时触发 TTS                                              │
-│     on_complete → create_text_event + create_audio_event         │
-├─────────────────────────────────────────────────────────────────┤
-│  4. 事件循环：按序输出就绪事件                                       │
-│     while True: drain_ready → yield SSE                          │
+│  3. 事件循环：按序输出就绪事件                                      │
+│     for payload in ctx.drain_ready_events():                     │
+│         yield to_sse(payload)                                    │
 └─────────────────────────────────────────────────────────────────┘
 
 SSE 事件格式：
@@ -32,53 +31,60 @@ data: {"type": "audio", "sentence_id": 1, "file": "base64...", ...}
 import time
 import asyncio
 from typing import Any
-
 from models.dto.chat_request import chat_data
 from my_utils.log import logger
 from core.chat.base import (
-    StreamProcessor,
+    to_sse,
     text_wrapper,
     tts_wrapper,
-    start_llm_task,
     store_sentence_event,
     drain_ready_sentence_events,
-    to_sse,
-    build_chat_messages,
 )
+from core.scheduler import TaskResult
+from core.scheduler import TaskScheduler
 from services.assistant_service import AssistantService
 
 assistant_service = AssistantService()
 
 
-class V1ChatContext:
+class BaseChatContext:
     """
-    V1 聊天上下文
+    基础聊天上下文
 
-    封装聊天过程中的所有状态，避免函数嵌套。
+    封装聊天过程中的公共状态和事件处理逻辑。
 
     属性：
-    - processor: 流处理器实例
     - sentence_events: 按句子 ID 聚合的事件存储
     - expected_sentence_id: 预期的下一个句子 ID
     - pending_tasks: 异步任务跟踪集合
     - tts_semaphore: TTS 并发控制信号量
+    - event_order: 事件类型顺序
+    - full_text_list: 收集完整文本
+    - user_message: 用户消息
     """
 
-    def __init__(self, processor: StreamProcessor):
+    def __init__(
+        self,
+        event_order: tuple[str, ...] = ("text", "audio"),
+        tts_concurrency: int = 1,
+    ):
         """
-        初始化 V2 聊天上下文
+        初始化基础聊天上下文
 
         参数：
-        - processor: 流处理器实例
+        - event_order: 事件类型顺序
+        - tts_concurrency: TTS 并发数
         """
-        self.processor = processor
         self.sentence_events: dict[int, dict[str, dict[str, Any]]] = {}
         self.expected_sentence_id: int = 1
         self.pending_tasks: set[asyncio.Task[Any]] = set()
-        self.tts_semaphore: asyncio.Semaphore = asyncio.Semaphore(1)
+        self.tts_semaphore: asyncio.Semaphore = asyncio.Semaphore(tts_concurrency)
+        self.event_order: tuple[str, ...] = event_order
 
-        # 事件类型顺序
-        self.event_order: tuple[str, ...] = ("text", "audio")
+        # 收集完整文本
+        self.full_text_list: list[str] = []
+        # 用户消息
+        self.user_message: str = ""
 
     def track_task(self, task: asyncio.Task[Any]):
         """
@@ -104,81 +110,71 @@ class V1ChatContext:
         )
         return ready_payloads
 
+    async def create_text_event(self, sentence_id: int, sentence_text: str):
+        """
+        创建文本事件
 
-# ============================================================
-# 事件处理函数
-# ============================================================
-
-
-async def _create_text_event(ctx: V1ChatContext, sentence_id: int, sentence_text: str):
-    """
-    创建文本事件
-
-    参数：
-    - ctx: V2 聊天上下文
-    - sentence_id: 句子 ID
-    - sentence_text: 句子文本
-    """
-    payload = await text_wrapper(
-        sentence_id=sentence_id,
-        sentence_text=sentence_text,
-    )
-    store_sentence_event(ctx.sentence_events, sentence_id, "text", payload)
-
-
-async def _create_audio_event(
-    ctx: V1ChatContext,
-    sentence_id: int,
-    sentence_text: str,
-    tts_text: str,
-):
-    """
-    创建音频事件
-
-    参数：
-    - ctx: V2 聊天上下文
-    - sentence_id: 句子 ID
-    - sentence_text: 句子文本
-    - tts_text: 用于 TTS 的文本
-    """
-    payload = await tts_wrapper(
-        tts_semaphore=ctx.tts_semaphore,
-        sentence_id=sentence_id,
-        sentence_text=sentence_text,
-        tts_text=tts_text,
-        processor=ctx.processor,
-    )
-    store_sentence_event(ctx.sentence_events, sentence_id, "audio", payload)
-
-
-async def _on_sentence_complete(
-    ctx: V1ChatContext,
-    sentence_id: int,
-    sentence_text: str,
-    tts_text: str,
-):
-    """
-    句子完成时的回调
-
-    参数：
-    - ctx: V2 聊天上下文
-    - sentence_id: 句子 ID
-    - sentence_text: 句子文本
-    - tts_text: 用于 TTS 的文本
-    """
-    ctx.track_task(
-        asyncio.create_task(_create_text_event(ctx, sentence_id, sentence_text))
-    )
-    ctx.track_task(
-        asyncio.create_task(
-            _create_audio_event(ctx, sentence_id, sentence_text, tts_text)
+        参数：
+        - sentence_id: 句子 ID
+        - sentence_text: 句子文本
+        """
+        payload = await text_wrapper(
+            sentence_id=sentence_id,
+            sentence_text=sentence_text,
         )
-    )
+        store_sentence_event(self.sentence_events, sentence_id, "text", payload)
 
+    async def create_audio_event(
+        self, sentence_id: int, sentence_text: str, tts_text: str
+    ):
+        """
+        创建音频事件（使用 tts_wrapper，包含情感检测）
 
-# ============================================================
-# V2 主函数
-# ============================================================
+        参数：
+        - sentence_id: 句子 ID
+        - sentence_text: 句子文本
+        - tts_text: 用于 TTS 的文本
+        """
+        payload = await tts_wrapper(
+            tts_semaphore=self.tts_semaphore,
+            sentence_id=sentence_id,
+            sentence_text=sentence_text,
+            tts_text=tts_text,
+        )
+        store_sentence_event(self.sentence_events, sentence_id, "audio", payload)
+
+    async def handle_text_result(self, result: TaskResult):
+        """
+        处理文本结果（V1 模式：使用 create_text_pipeline）
+
+        参数：
+        - result: 文本任务结果，data 格式为 {"text": ..., "tts_text": ...}
+        """
+        sentence_id = result.sentence_id
+        sentence_text = result.data["text"]
+        tts_text = result.data["tts_text"]
+
+        # 收集完整文本
+        self.full_text_list.append(sentence_text)
+
+        # 创建文本和音频事件
+        self.track_task(
+            asyncio.create_task(self.create_text_event(sentence_id, sentence_text))
+        )
+        self.track_task(
+            asyncio.create_task(
+                self.create_audio_event(sentence_id, sentence_text, tts_text)
+            )
+        )
+
+    def get_full_text(self) -> str:
+        """获取完整文本"""
+        return "".join(self.full_text_list)
+
+    async def wait_for_completion(self):
+        """等待所有异步任务完成"""
+        while self.pending_tasks:
+            await asyncio.sleep(0.01)
 
 
 async def llm_chat_with_tts(params: chat_data):
@@ -188,9 +184,9 @@ async def llm_chat_with_tts(params: chat_data):
     并行文字/语音，极低延迟同步。
 
     流程概述：
-    1. 创建流处理器，注册句子完成回调
-    2. 启动 LLM 流式任务
-    3. 句子完成时触发 TTS 合成
+    1. 构建消息列表
+    2. 创建调度器和纯文本管道
+    3. 流式执行管道，处理文本结果
     4. 事件循环：按序输出就绪事件
 
     参数：
@@ -206,52 +202,67 @@ async def llm_chat_with_tts(params: chat_data):
         logger.error("当前没有加载助手")
         return
 
-    # 第二步：构建消息列表（使用统一函数）
-    agent, history_messages, user_message = await build_chat_messages(agent, params)
+    # 第三步：初始化上下文（使用 chat_context.BaseChatContext）
+    ctx = BaseChatContext()
+    ctx.user_message = params.msg[-1]["content"] if params.msg else ""
 
-    # 第三步：初始化上下文
-    processor = StreamProcessor()
-    ctx = V1ChatContext(processor)
+    # print(ctx.user_message, params.is_sleep_mode)
 
-    # 注册句子完成回调
-    processor.register_sentence_complete_callback(
-        lambda sid, text, tts: _on_sentence_complete(ctx, sid, text, tts)
+    # 获取历史消息（包含上下文）
+    history_messages = [
+        *agent.get_history(),
+        {
+            "role": "user",
+            "content": await agent.get_context(
+                msg=ctx.user_message, is_sleep_mode=params.is_sleep_mode
+            ),
+        },
+    ]
+
+    # 第四步：创建调度器和纯文本管道
+    scheduler = TaskScheduler()
+    pipeline = scheduler.create_text_pipeline(
+        system_context=agent.prompt,
+        history_messages=history_messages,
+        user_message=ctx.user_message,
     )
 
-    # 第四步：启动 LLM 任务
-    llm_task = asyncio.create_task(start_llm_task(history_messages, processor))
-
     try:
-        # 第五步：事件循环
-        while True:
-            # 输出就绪的句子事件
+        # 第五步：流式执行管道
+        async for result in pipeline.execute():
+            await ctx.handle_text_result(result)
+
+            # drain_ready_events 内部调用 base.drain_ready_sentence_events
             for payload in ctx.drain_ready_events():
                 yield to_sse(payload)
 
-            # 检查是否完成
-            if llm_task.done() and not ctx.pending_tasks and not ctx.sentence_events:
-                break
+        # 等待所有异步任务完成
+        await ctx.wait_for_completion()
 
-            await asyncio.sleep(0.01)
+        # 输出剩余事件
+        for payload in ctx.drain_ready_events():
+            yield to_sse(payload)
 
         # 输出完成信号
         final_response = {
             "type": "done",
             "timestamp_ms": time.time() * 1000,
-            "total_sentences": max(0, processor.sentence_count - 1),
-            "full_text": "".join(processor.full_msg) if processor.full_msg else "",
+            "total_sentences": pipeline.sentence_count,
+            "full_text": ctx.get_full_text(),
             "done": True,
         }
         yield to_sse(final_response)
 
-        # 保存到助手上下文（需要先添加用户消息到临时列表）
-        user_message = params.msg[-1]["content"]
-        agent.msg_data_tmp.append({"role": "user", "content": user_message})
-        await agent.add_msg("".join(processor.full_msg))
+        # 保存到助手上下文
+        asyncio.create_task(
+            agent.add_msg(
+                user_msg=ctx.user_message,
+                assistant_msg=ctx.get_full_text(),
+            )
+        )
 
     except Exception as e:
         # 取消所有任务
-        llm_task.cancel()
         for task in list(ctx.pending_tasks):
             task.cancel()
 

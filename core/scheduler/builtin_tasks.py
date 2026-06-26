@@ -56,6 +56,8 @@ def create_text_task(
         parse_fn=lambda data: data.get("text", ""),
         field_name="text",
         priority=priority,
+        example='{"text": "你好呀~"}',
+        rules=["每行必须包含 text 字段"],
     )
 
 
@@ -92,4 +94,6 @@ def create_motion_task(
         parse_fn=lambda data: data.get("actions", []),
         field_name="actions",
         priority=priority,
+        example='{"text": "你好呀~", "actions": ["smile", "nod"]}',
+        rules=["动作标签必须从【可用动作列表】中选择，不要自创动作名"],
     )

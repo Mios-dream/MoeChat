@@ -45,6 +45,10 @@ class AtomicAction:
     - duration: 基础时长（秒）
     - keyframes: 关键帧数据 {参数ID: [(时间偏移, 目标值), ...]}
     - tags: 标签列表（用于分类和搜索）
+    - stage: 时序编排层级（emotion/accent/gaze），决定自动编排时的时序行为
+        - emotion: 贯穿全句的情感基调，句首触发，持续整句
+        - accent:  配合语气的短时强调动作，自动错开排列
+        - gaze:    视线方向/微表情，中等持留
     """
 
     name: str
@@ -53,6 +57,7 @@ class AtomicAction:
     duration: float
     keyframes: dict[str, list[tuple[float, float]]] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
+    stage: str = "accent"
 
 
 # ============================================================
@@ -66,6 +71,7 @@ EYE_CLOSE = AtomicAction(
     category="eye",
     description="闭眼",
     duration=2.0,
+    stage="gaze",
     keyframes={
         "ParamEyeLOpen": [(0.0, 1.0), (0.3, 0.0), (2.0, 0.0)],
         "ParamEyeROpen": [(0.0, 1.0), (0.3, 0.0), (2.0, 0.0)],
@@ -78,6 +84,7 @@ EYE_OPEN = AtomicAction(
     category="eye",
     description="睁眼",
     duration=1.0,
+    stage="gaze",
     keyframes={
         "ParamEyeLOpen": [(0.0, 0.0), (0.3, 1.0), (1.0, 1.0)],
         "ParamEyeROpen": [(0.0, 0.0), (0.3, 1.0), (1.0, 1.0)],
@@ -90,6 +97,7 @@ WINK_LEFT = AtomicAction(
     category="eye",
     description="左眼眨一下（wink）",
     duration=0.8,
+    stage="accent",
     keyframes={
         "ParamEyeLOpen": [(0.0, 1.0), (0.15, 0.0), (0.3, 1.0), (0.8, 1.0)],
     },
@@ -101,6 +109,7 @@ WINK_RIGHT = AtomicAction(
     category="eye",
     description="右眼眨一下（wink）",
     duration=0.8,
+    stage="accent",
     keyframes={
         "ParamEyeROpen": [(0.0, 1.0), (0.15, 0.0), (0.3, 1.0), (0.8, 1.0)],
     },
@@ -112,6 +121,7 @@ EYE_SQUINT = AtomicAction(
     category="eye",
     description="眯眼（怀疑、思考）",
     duration=1.5,
+    stage="gaze",
     keyframes={
         "ParamEyeLOpen": [(0.0, 1.0), (0.3, 0.4), (1.5, 0.4)],
         "ParamEyeROpen": [(0.0, 1.0), (0.3, 0.4), (1.5, 0.4)],
@@ -124,6 +134,7 @@ EYE_WIDE = AtomicAction(
     category="eye",
     description="睁大眼睛（惊讶）",
     duration=1.0,
+    stage="gaze",
     keyframes={
         "ParamEyeLOpen": [(0.0, 1.0), (0.2, 1.3), (1.0, 1.0)],
         "ParamEyeROpen": [(0.0, 1.0), (0.2, 1.3), (1.0, 1.0)],
@@ -136,6 +147,7 @@ PEEK = AtomicAction(
     category="eye",
     description="偷看（小心翼翼地看）",
     duration=0.6,
+    stage="gaze",
     keyframes={
         "ParamEyeLOpen": [(0.0, 0.0), (0.1, 0.5), (0.4, 0.5), (0.6, 0.0)],
         "ParamEyeROpen": [(0.0, 0.0), (0.1, 0.5), (0.4, 0.5), (0.6, 0.0)],
@@ -149,6 +161,7 @@ EYE_SMILE = AtomicAction(
     category="eye",
     description="眼睛微笑（眯眼笑）",
     duration=1.5,
+    stage="gaze",
     keyframes={
         "ParamEyeLSmile": [(0.0, 0.0), (0.3, 1.0), (1.5, 1.0)],
         "ParamEyeRSmile": [(0.0, 0.0), (0.3, 1.0), (1.5, 1.0)],
@@ -163,6 +176,7 @@ LOOK_LEFT = AtomicAction(
     category="look",
     description="向左看",
     duration=1.0,
+    stage="gaze",
     keyframes={
         "ParamEyeBallX": [(0.0, 0.0), (0.3, -1.0), (1.0, -1.0)],
     },
@@ -174,6 +188,7 @@ LOOK_RIGHT = AtomicAction(
     category="look",
     description="向右看",
     duration=1.0,
+    stage="gaze",
     keyframes={
         "ParamEyeBallX": [(0.0, 0.0), (0.3, 1.0), (1.0, 1.0)],
     },
@@ -185,6 +200,7 @@ LOOK_UP = AtomicAction(
     category="look",
     description="向上看",
     duration=1.0,
+    stage="gaze",
     keyframes={
         "ParamEyeBallY": [(0.0, 0.0), (0.3, 1.0), (1.0, 1.0)],
     },
@@ -196,6 +212,7 @@ LOOK_DOWN = AtomicAction(
     category="look",
     description="向下看",
     duration=1.0,
+    stage="gaze",
     keyframes={
         "ParamEyeBallY": [(0.0, 0.0), (0.3, -1.0), (1.0, -1.0)],
     },
@@ -207,6 +224,7 @@ LOOK_AWAY = AtomicAction(
     category="look",
     description="看向别处（不自然、害羞）",
     duration=1.5,
+    stage="gaze",
     keyframes={
         "ParamEyeBallX": [(0.0, 0.0), (0.3, 0.8), (0.5, 0.8), (1.0, 0.0)],
         "ParamAngleY": [(0.0, 0.0), (0.3, -5.0), (0.5, -5.0), (1.0, 0.0)],
@@ -219,6 +237,7 @@ LOOK_AT = AtomicAction(
     category="look",
     description="看向对方（注视）",
     duration=1.0,
+    stage="gaze",
     keyframes={
         "ParamEyeBallX": [(0.0, 0.0), (0.3, 0.0)],
         "ParamEyeBallY": [(0.0, 0.0), (0.3, 0.0)],
@@ -233,6 +252,7 @@ NOD = AtomicAction(
     category="head",
     description="点头（同意、理解）",
     duration=1.2,
+    stage="accent",
     keyframes={
         "ParamAngleY": [(0.0, 0.0), (0.2, -10.0), (0.5, -10.0), (0.8, 0.0), (1.2, 0.0)],
     },
@@ -244,6 +264,7 @@ SHAKE_HEAD = AtomicAction(
     category="head",
     description="摇头（否定、不同意）",
     duration=1.5,
+    stage="accent",
     keyframes={
         "ParamAngleX": [(0.0, 0.0), (0.2, -10.0), (0.5, 10.0), (0.8, -5.0), (1.2, 0.0)],
     },
@@ -255,6 +276,7 @@ TILT_LEFT = AtomicAction(
     category="head",
     description="头向左倾斜（疑惑、可爱）",
     duration=1.0,
+    stage="gaze",
     keyframes={
         "ParamAngleZ": [(0.0, 0.0), (0.3, -10.0), (1.0, -10.0)],
     },
@@ -266,6 +288,7 @@ TILT_RIGHT = AtomicAction(
     category="head",
     description="头向右倾斜（疑惑、可爱）",
     duration=1.0,
+    stage="gaze",
     keyframes={
         "ParamAngleZ": [(0.0, 0.0), (0.3, 10.0), (1.0, 10.0)],
     },
@@ -277,6 +300,7 @@ HEAD_DOWN = AtomicAction(
     category="head",
     description="低头（害羞、悲伤、思考）",
     duration=1.5,
+    stage="gaze",
     keyframes={
         "ParamAngleY": [(0.0, 0.0), (0.4, -15.0), (1.5, -15.0)],
     },
@@ -288,6 +312,7 @@ HEAD_UP = AtomicAction(
     category="head",
     description="抬头（自信、惊讶）",
     duration=1.0,
+    stage="gaze",
     keyframes={
         "ParamAngleY": [(0.0, 0.0), (0.3, 10.0), (1.0, 10.0)],
     },
@@ -301,6 +326,7 @@ SMILE = AtomicAction(
     category="mouth",
     description="微笑",
     duration=1.5,
+    stage="emotion",
     keyframes={
         "ParamMouthForm": [(0.0, 0.0), (0.3, 0.8), (1.5, 0.8)],
     },
@@ -312,6 +338,7 @@ BIG_SMILE = AtomicAction(
     category="mouth",
     description="大笑（开心）",
     duration=2.0,
+    stage="emotion",
     keyframes={
         "ParamMouthForm": [(0.0, 0.0), (0.3, 1.0), (2.0, 1.0)],
         "ParamMouthOpenY": [(0.0, 0.0), (0.3, 0.5), (2.0, 0.5)],
@@ -326,6 +353,7 @@ FROWN = AtomicAction(
     category="mouth",
     description="皱眉（不满、悲伤）",
     duration=1.5,
+    stage="emotion",
     keyframes={
         "ParamMouthForm": [(0.0, 0.0), (0.3, -0.6), (1.5, -0.6)],
         "ParamBrowLForm": [(0.0, 0.0), (0.3, -0.5), (1.5, -0.5)],
@@ -339,6 +367,7 @@ POUT = AtomicAction(
     category="mouth",
     description="撅嘴（撒娇、不满）",
     duration=1.5,
+    stage="emotion",
     keyframes={
         "ParamMouthForm": [(0.0, 0.0), (0.3, -0.3), (1.5, -0.3)],
         "ParamMouthOpenY": [(0.0, 0.0), (0.3, 0.2), (1.5, 0.2)],
@@ -351,6 +380,7 @@ MOUTH_OPEN = AtomicAction(
     category="mouth",
     description="张嘴（惊讶、说话）",
     duration=1.0,
+    stage="accent",
     keyframes={
         "ParamMouthOpenY": [(0.0, 0.0), (0.2, 0.8), (1.0, 0.8)],
     },
@@ -362,6 +392,7 @@ TALK = AtomicAction(
     category="mouth",
     description="说话（嘴巴张合）",
     duration=2.0,
+    stage="accent",
     keyframes={
         "ParamMouthOpenY": [
             (0.0, 0.0),
@@ -382,6 +413,7 @@ LEAN_FORWARD = AtomicAction(
     category="body",
     description="身体前倾（好奇、亲近）",
     duration=1.5,
+    stage="accent",
     keyframes={
         "ParamBodyAngleY": [(0.0, 0.0), (0.4, -10.0), (1.5, -10.0)],
     },
@@ -393,6 +425,7 @@ LEAN_BACK = AtomicAction(
     category="body",
     description="身体后仰（惊讶、躲避）",
     duration=1.0,
+    stage="accent",
     keyframes={
         "ParamBodyAngleY": [(0.0, 0.0), (0.3, 10.0), (1.0, 10.0)],
     },
@@ -404,6 +437,7 @@ SHRUG = AtomicAction(
     category="body",
     description="耸肩（无奈、不知道）",
     duration=1.5,
+    stage="accent",
     keyframes={
         "ParamBodyAngleY": [(0.0, 0.0), (0.3, 5.0), (0.6, 5.0), (1.0, 0.0)],
     },
@@ -415,6 +449,7 @@ BODY_LEAN_LEFT = AtomicAction(
     category="body",
     description="身体向左倾斜",
     duration=1.0,
+    stage="accent",
     keyframes={
         "ParamBodyAngleZ": [(0.0, 0.0), (0.3, -8.0), (1.0, -8.0)],
     },
@@ -426,6 +461,7 @@ BODY_LEAN_RIGHT = AtomicAction(
     category="body",
     description="身体向右倾斜",
     duration=1.0,
+    stage="accent",
     keyframes={
         "ParamBodyAngleZ": [(0.0, 0.0), (0.3, 8.0), (1.0, 8.0)],
     },
@@ -439,6 +475,7 @@ BLUSH = AtomicAction(
     category="emotion",
     description="脸红（害羞、尴尬）",
     duration=2.0,
+    stage="emotion",
     keyframes={
         "ParamCheek": [(0.0, 0.0), (0.5, 0.8), (2.0, 0.8)],
     },
@@ -450,6 +487,7 @@ ANGRY = AtomicAction(
     category="emotion",
     description="生气",
     duration=2.0,
+    stage="emotion",
     keyframes={
         "ParamBrowLForm": [(0.0, 0.0), (0.3, -0.8), (2.0, -0.8)],
         "ParamBrowRForm": [(0.0, 0.0), (0.3, -0.8), (2.0, -0.8)],
@@ -463,6 +501,7 @@ SURPRISE = AtomicAction(
     category="emotion",
     description="惊讶",
     duration=1.5,
+    stage="emotion",
     keyframes={
         "ParamEyeLOpen": [(0.0, 1.0), (0.2, 1.3), (1.5, 1.0)],
         "ParamEyeROpen": [(0.0, 1.0), (0.2, 1.3), (1.5, 1.0)],
@@ -478,6 +517,7 @@ SAD = AtomicAction(
     category="emotion",
     description="悲伤",
     duration=2.0,
+    stage="emotion",
     keyframes={
         "ParamMouthForm": [(0.0, 0.0), (0.4, -0.7), (2.0, -0.7)],
         "ParamEyeBallY": [(0.0, 0.0), (0.4, -0.5), (2.0, -0.5)],
@@ -491,6 +531,7 @@ SHY = AtomicAction(
     category="emotion",
     description="害羞",
     duration=2.0,
+    stage="emotion",
     keyframes={
         "ParamCheek": [(0.0, 0.0), (0.4, 0.6), (2.0, 0.6)],
         "ParamEyeBallX": [(0.0, 0.0), (0.3, 0.5), (2.0, 0.5)],
@@ -504,6 +545,7 @@ EXCITED = AtomicAction(
     category="emotion",
     description="兴奋、激动",
     duration=2.0,
+    stage="emotion",
     keyframes={
         "ParamMouthForm": [(0.0, 0.0), (0.3, 0.9), (2.0, 0.9)],
         "ParamEyeLSmile": [(0.0, 0.0), (0.3, 0.8), (2.0, 0.8)],
@@ -525,6 +567,7 @@ THINKING = AtomicAction(
     category="emotion",
     description="思考",
     duration=2.0,
+    stage="emotion",
     keyframes={
         "ParamEyeBallX": [(0.0, 0.0), (0.3, 0.6), (1.5, 0.6), (2.0, 0.0)],
         "ParamEyeBallY": [(0.0, 0.0), (0.3, 0.4), (1.5, 0.4), (2.0, 0.0)],
@@ -538,6 +581,7 @@ EMBARRASSED = AtomicAction(
     category="emotion",
     description="尴尬",
     duration=2.0,
+    stage="emotion",
     keyframes={
         "ParamCheek": [(0.0, 0.0), (0.4, 0.5), (2.0, 0.5)],
         "ParamMouthForm": [(0.0, 0.0), (0.3, -0.3), (1.0, 0.2), (2.0, -0.2)],
@@ -606,6 +650,133 @@ for action in ALL_ACTIONS.values():
     if action.category not in ACTIONS_BY_CATEGORY:
         ACTIONS_BY_CATEGORY[action.category] = []
     ACTIONS_BY_CATEGORY[action.category].append(action)
+
+
+# ============================================================
+# 互斥组定义
+# ============================================================
+
+# 互斥组：同一组内的动作不能同时触发
+MUTEX_GROUPS: list[list[str]] = [
+    # 眼睛开合组
+    ["eye_close", "eye_open", "eye_squint", "eye_wide", "peek"],
+    # 水平视线组
+    ["look_left", "look_right"],
+    # 垂直视线组
+    ["look_up", "look_down"],
+    # 头部点头组
+    ["nod", "head_down", "head_up"],
+    # 头部倾斜组
+    ["tilt_left", "tilt_right"],
+    # 嘴型正向组（微笑）
+    ["smile", "big_smile"],
+    # 嘴型负向组（皱眉/撅嘴）
+    ["frown", "pout"],
+    # 身体前倾组
+    ["lean_forward", "lean_back"],
+    # 身体侧倾组
+    ["body_lean_left", "body_lean_right"],
+]
+
+# 动作到互斥组的映射
+ACTION_MUTEX_MAP: dict[str, list[int]] = {}
+for i, group in enumerate(MUTEX_GROUPS):
+    for action_name in group:
+        if action_name not in ACTION_MUTEX_MAP:
+            ACTION_MUTEX_MAP[action_name] = []
+        ACTION_MUTEX_MAP[action_name].append(i)
+
+
+def check_mutex_conflict(action_names: list[str]) -> list[list[str]]:
+    """
+    检测动作列表中的互斥冲突
+
+    参数：
+    - action_names: 动作名称列表
+
+    返回：
+    - 冲突组列表，每组包含冲突的动作名称
+    """
+    conflicts: list[list[str]] = []
+    seen_groups: set[int] = set()
+
+    for name in action_names:
+        if name in ACTION_MUTEX_MAP:
+            for group_idx in ACTION_MUTEX_MAP[name]:
+                if group_idx in seen_groups:
+                    # 找到冲突，提取该组中在action_names里的动作
+                    group = MUTEX_GROUPS[group_idx]
+                    conflicting = [a for a in action_names if a in group]
+                    if len(conflicting) > 1:
+                        conflicts.append(conflicting)
+                else:
+                    seen_groups.add(group_idx)
+
+    # 去重
+    unique_conflicts = []
+    seen_sets: set[frozenset[str]] = set()
+    for conflict in conflicts:
+        conflict_set = frozenset(conflict)
+        if conflict_set not in seen_sets:
+            seen_sets.add(conflict_set)
+            unique_conflicts.append(list(conflict))
+
+    return unique_conflicts
+
+
+def resolve_mutex_conflict(action_names: list[str]) -> list[str]:
+    """
+    解决互斥冲突，保留优先级最高的动作
+
+    优先级规则：
+    1. 复合动作（emotion类）优先级最高
+    2. 单一动作按字母顺序
+
+    参数：
+    - action_names: 动作名称列表
+
+    返回：
+    - 解决冲突后的动作名称列表
+    """
+    if not action_names:
+        return []
+
+    # 按互斥组分组
+    grouped: dict[int, list[str]] = {}
+    ungrouped: list[str] = []
+
+    for name in action_names:
+        if name in ACTION_MUTEX_MAP:
+            for group_idx in ACTION_MUTEX_MAP[name]:
+                if group_idx not in grouped:
+                    grouped[group_idx] = []
+                grouped[group_idx].append(name)
+        else:
+            ungrouped.append(name)
+
+    # 从每组中选择一个动作
+    selected: list[str] = list(ungrouped)
+
+    for group_idx, actions in grouped.items():
+        # 去重
+        unique_actions = list(set(actions))
+        if len(unique_actions) <= 1:
+            selected.extend(unique_actions)
+            continue
+
+        # 选择优先级最高的
+        # 优先级：emotion > 其他，同级按字母顺序
+        def priority_key(name: str) -> tuple[int, str]:
+            action = get_action(name)
+            if action and action.category == "emotion":
+                return (0, name)
+            return (1, name)
+
+        unique_actions.sort(key=priority_key)
+        best = unique_actions[0]
+        selected.append(best)
+
+    return list(set(selected))
 
 
 # ============================================================

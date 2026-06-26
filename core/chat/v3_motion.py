@@ -1,25 +1,39 @@
 """
 V3 版本聊天模块
 
-使用 V3 生成器的动作生成版本。
+使用信息调度中心（TaskScheduler）实现的聊天版本。
 
 核心特性：
-1. 流式文本处理，逐句播放
-2. TTS 并行合成
-3. V3 动作生成器（流式 Batch 架构）
-4. 事件按句子 ID 聚合输出
+1. 单次 LLM 调用同时生成文本和动作标签
+2. 流式解析，逐句播放
+3. 可扩展的任务系统
 
 架构流程：
 ┌─────────────────────────────────────────────────────────────────┐
-│  1. 创建流处理器和 V3 动作生成器                                    │
-│     processor = StreamProcessor()                                │
-│     motion_generator = MotionGeneratorV3()                       │
+│  1. 创建调度器，注册任务                                          │
+│     scheduler = TaskScheduler()                                  │
+│     scheduler.add_task(create_text_task())                       │
+│     scheduler.add_task(create_motion_task())                     │
 ├─────────────────────────────────────────────────────────────────┤
-│  2. 句子完成时触发 TTS + 动作生成                                   │
-│     on_complete → text_event + audio_event + motion_event        │
+│  2. 调度器自动组合提示词                                           │
+│     system_prompt = 角色设定 + 任务说明 + 输出格式                   │
 ├─────────────────────────────────────────────────────────────────┤
-│  3. 事件循环：按序输出就绪事件                                       │
+│  3. 创建管道，执行 LLM 流式调用                                    │
+│     pipeline = scheduler.create_pipeline(user_message)           │
+│     async for result in pipeline.execute():                      │
+│         handle(result)                                           │
+├─────────────────────────────────────────────────────────────────┤
+│  4. 管道内部：LLM 输出 JSON 行 → 解析器分发 → 产出 TaskResult       │
+│     LLM: {"text": "你好", "actions": ["smile"]}                  │
+│     解析器: text → "你好", actions → ["smile"]                    │
 └─────────────────────────────────────────────────────────────────┘
+
+调用链说明：
+- BaseChatContext: 基础上下文（v1.py）
+  - handle_json_result: 处理文本结果 → text_wrapper + tts_task
+- V3MotionChatContext: 继承基础上下文，添加动作处理
+  - handle_motion_result: 处理动作结果 → _create_motion_event
+  - handle_result: 分发任务结果到对应处理方法
 
 SSE 事件格式：
 data: {"type": "text", "sentence_id": 1, "message": "你好呀~", ...}
@@ -33,291 +47,226 @@ from typing import Any
 
 from models.dto.chat_request import chat_data
 from my_utils.log import logger
-from core.chat.base import (
-    StreamProcessor,
-    text_wrapper,
-    tts_wrapper,
-    start_llm_task,
-    store_sentence_event,
-    drain_ready_sentence_events,
-    to_sse,
-    build_chat_messages,
-    get_motion_system_prompt,
-)
-from core.expression_generator.motion_generator_v3 import (
-    MotionGeneratorV3,
-    create_v3_generator,
-)
+from core.scheduler import TaskScheduler, create_text_task, create_motion_task
+from core.scheduler.task import TaskResult
+from core.chat.base import store_sentence_event, to_sse
+from core.chat.v1 import BaseChatContext
+from core.expression_generator.motion_combiner import MotionCombiner
+from core.expression_generator.action_sequencer import ActionSequencer
+
 from services.assistant_service import AssistantService
 
 assistant_service = AssistantService()
 
+
 # ============================================================
-# V3 上下文
+# 调度器创建
 # ============================================================
 
 
-class V3ChatContext:
+def create_scheduler() -> TaskScheduler:
     """
-    V3 聊天上下文
+    创建 V3 信息调度器
 
-    封装聊天过程中的所有状态，避免函数嵌套。
+    注册所有需要的任务：
+    - text: 文本生成任务（优先级 100）
+    - motion: 动作标签任务（优先级 200）
 
-    属性：
-    - processor: 流处理器实例
-    - motion_generator: V3 动作生成器实例
-    - sentence_events: 按句子 ID 聚合的事件存储
-    - expected_sentence_id: 预期的下一个句子 ID
-    - pending_tasks: 异步任务跟踪集合
-    - tts_semaphore: TTS 并发控制信号量
-    - motion_semaphore: 动作生成并发控制信号量
+    返回：
+    - 配置好的 TaskScheduler 实例
     """
+    scheduler = TaskScheduler()
 
-    def __init__(
-        self,
-        processor: StreamProcessor,
-        motion_generator: MotionGeneratorV3 | None,
-    ):
-        """
-        初始化 V3 聊天上下文
+    # 注册文本任务
+    scheduler.add_task(create_text_task(priority=100))
 
-        参数：
-        - processor: 流处理器实例
-        - motion_generator: V3 动作生成器实例
-        """
-        self.processor = processor
-        self.motion_generator = motion_generator
-        self.sentence_events: dict[int, dict[str, dict[str, Any]]] = {}
-        self.expected_sentence_id: int = 1
-        self.pending_tasks: set[asyncio.Task[Any]] = set()
-        self.tts_semaphore: asyncio.Semaphore = asyncio.Semaphore(1)
-        self.motion_semaphore: asyncio.Semaphore = asyncio.Semaphore(4)
+    # 注册动作任务
+    scheduler.add_task(create_motion_task(priority=200))
 
-        # 事件类型顺序
-        self.event_order: tuple[str, ...] = ("text", "audio", "motion_frame")
-
-    def track_task(self, task: asyncio.Task[Any]):
-        """
-        跟踪异步任务
-
-        参数：
-        - task: 要跟踪的异步任务
-        """
-        self.pending_tasks.add(task)
-        task.add_done_callback(self.pending_tasks.discard)
-
-    def drain_ready_events(self) -> list[dict[str, Any]]:
-        """
-        排出所有就绪的句子事件
-
-        返回：
-        - 就绪的事件载荷列表
-        """
-        self.expected_sentence_id, ready_payloads = drain_ready_sentence_events(
-            sentence_events=self.sentence_events,
-            expected_sentence_id=self.expected_sentence_id,
-            event_order=self.event_order,
-        )
-        return ready_payloads
+    return scheduler
 
 
 # ============================================================
-# V3 动作生成任务
+# 辅助函数
 # ============================================================
 
 
-async def _v3_motion_task(
-    ctx: V3ChatContext,
-    sentence_id: int,
-    sentence_text: str,
-):
+def calc_exit_ms(text: str) -> int:
     """
-    V3 动作生成任务
-
-    使用 V3 生成器的流式生成功能，为每个句子生成动作数据。
+    根据句尾标点计算动作退出恢复时长
 
     参数：
-    - ctx: V3 聊天上下文
-    - sentence_id: 句子 ID
-    - sentence_text: 句子文本
+    - text: 句子文本
+
+    返回：
+    - 退出时长（毫秒）
     """
-    current_time_ms = time.time() * 1000
-    motion_event: dict[str, Any] = {
-        "type": "motion_frame",
-        "sentence_id": sentence_id,
-        "source_text": sentence_text,
-        "motions": [],
-        "duration": 0,
-        "timestamp_ms": current_time_ms,
-        "done": False,
-    }
-
-    async with ctx.motion_semaphore:
-        try:
-            # 获取前一个动作参数
-            previous_params = None
-            if sentence_id > 0 and sentence_id - 1 in ctx.processor.motion_history:
-                previous_params = ctx.processor.motion_history[sentence_id - 1]
-
-            # 构建对话上下文
-            context = (
-                "用户："
-                + ctx.processor.user_msg
-                + "\n。助手的上文回复："
-                + "".join(ctx.processor.full_msg[:-1])
-                + "\n。当前需要生成动作的回复："
-                + sentence_text
-            )
-
-            # 估算时长
-            sentence_text_clean = sentence_text.replace(" ", "").replace("\n", "")
-            duration_time = len(sentence_text_clean) * 100
-
-            # 使用 V3 生成器
-            motions = []
-            if ctx.motion_generator:
-                async for chunk in ctx.motion_generator.stream_generate(
-                    text=sentence_text,
-                    duration_ms=duration_time,
-                    context=context,
-                    previous_params=previous_params,
-                    is_tts=True,
-                    timeout_seconds=10.0,
-                ):
-                    # 转换为前端格式
-                    if chunk.motion:
-                        motion_data = {
-                            "duration": chunk.motion.duration * 1000,
-                            "curves": chunk.motion.curves,
-                        }
-                        motions.append(motion_data)
-
-            motion_event["duration"] = duration_time
-            motion_event["motions"] = motions
-
-            # 记录动作参数到历史
-            if motions:
-                # 使用最后一个动作的参数
-                last_motion = motions[-1]
-                if "curves" in last_motion:
-                    # 从曲线中提取最后的参数值
-                    last_params = {}
-                    for param_id, points in last_motion["curves"].items():
-                        if points:
-                            last_params[param_id] = points[-1][1]
-                    ctx.processor.motion_history[sentence_id] = last_params
-
-            logger.info(
-                f"[V3动作生成] 生成 {len(motions)} 个动作帧，句子ID: {sentence_id}"
-            )
-
-        except Exception as e:
-            logger.warning(f"[V3动作生成] 第{sentence_id + 1}句动作生成失败: {e}")
-
-    store_sentence_event(ctx.sentence_events, sentence_id, "motion_frame", motion_event)
-
-
-# ============================================================
-# 事件处理函数
-# ============================================================
-
-
-async def _create_text_event(ctx: V3ChatContext, sentence_id: int, sentence_text: str):
-    """
-    创建文本事件
-
-    参数：
-    - ctx: V3 聊天上下文
-    - sentence_id: 句子 ID
-    - sentence_text: 句子文本
-    """
-    payload = await text_wrapper(
-        sentence_id=sentence_id,
-        sentence_text=sentence_text,
-    )
-    store_sentence_event(ctx.sentence_events, sentence_id, "text", payload)
-
-
-async def _create_audio_event(
-    ctx: V3ChatContext,
-    sentence_id: int,
-    sentence_text: str,
-    tts_text: str,
-):
-    """
-    创建音频事件
-
-    参数：
-    - ctx: V3 聊天上下文
-    - sentence_id: 句子 ID
-    - sentence_text: 句子文本
-    - tts_text: 用于 TTS 的文本
-    """
-    payload = await tts_wrapper(
-        tts_semaphore=ctx.tts_semaphore,
-        sentence_id=sentence_id,
-        sentence_text=sentence_text,
-        tts_text=tts_text,
-        processor=ctx.processor,
-    )
-    store_sentence_event(ctx.sentence_events, sentence_id, "audio", payload)
+    stripped = text.strip()
+    if "…" in stripped[-3:] or "..." in stripped[-3:]:
+        return 1000
+    elif stripped.endswith("！") or stripped.endswith("？") or stripped.endswith("?"):
+        return 700
+    elif stripped.endswith("。") or stripped.endswith("."):
+        return 500
+    elif stripped.endswith("，") or stripped.endswith(","):
+        return 350
+    else:
+        return 400
 
 
 async def _create_motion_event(
-    ctx: V3ChatContext, sentence_id: int, sentence_text: str
-):
+    sentence_id: int,
+    text: str,
+    actions: list[str],
+) -> dict[str, Any]:
     """
     创建动作事件
 
-    参数：
-    - ctx: V3 聊天上下文
-    - sentence_id: 句子 ID
-    - sentence_text: 句子文本
-    """
-    if ctx.motion_generator:
-        await _v3_motion_task(ctx, sentence_id, sentence_text)
-    else:
-        # 空动作事件
-        motion_event = {
-            "type": "motion_frame",
-            "sentence_id": sentence_id,
-            "source_text": sentence_text,
-            "motions": [],
-            "duration": 0,
-            "timestamp_ms": time.time() * 1000,
-            "done": False,
-        }
-        store_sentence_event(
-            ctx.sentence_events, sentence_id, "motion_frame", motion_event
-        )
-
-
-async def _on_sentence_complete(
-    ctx: V3ChatContext,
-    sentence_id: int,
-    sentence_text: str,
-    tts_text: str,
-):
-    """
-    句子完成时的回调
+    动作阶段关键帧由组合引擎生成，hold/exit 阶段由前端根据音频实际播放时长自行处理。
 
     参数：
-    - ctx: V3 聊天上下文
     - sentence_id: 句子 ID
-    - sentence_text: 句子文本
-    - tts_text: 用于 TTS 的文本
+    - text: 原始文本
+    - actions: LLM 输出的动作标签列表（如 ["smile", "nod"]）
+
+    返回：
+    - 动作事件字典，含 action 阶段关键帧 + exit_ms
     """
-    ctx.track_task(
-        asyncio.create_task(_create_text_event(ctx, sentence_id, sentence_text))
+    combiner = MotionCombiner()
+
+    # 标点感知的时长估算
+    text_duration = combiner.estimate_duration(text)
+
+    # 编排动作时序
+    sequencer = ActionSequencer()
+    action_specs = sequencer.sequence(
+        action_names=actions,
+        text_duration=text_duration,
     )
-    ctx.track_task(
-        asyncio.create_task(
-            _create_audio_event(ctx, sentence_id, sentence_text, tts_text)
+
+    # 退出恢复时长
+    exit_ms = calc_exit_ms(text)
+
+    # 组合动作阶段关键帧
+    motion_keyframes = combiner.combine_keyframes(
+        action_specs=action_specs,
+        text_duration=text_duration,
+    )
+
+    return {
+        "type": "motion_frame",
+        "sentence_id": sentence_id,
+        "source_text": text,
+        "motions": [
+            {
+                "duration": motion_keyframes.duration,
+                "keyframes": {
+                    param: [
+                        {"time": kp.time, "value": kp.value, "ease": kp.ease}
+                        for kp in points
+                    ]
+                    for param, points in motion_keyframes.keyframes.items()
+                },
+                "exit_ms": exit_ms,
+            }
+        ],
+        "duration": motion_keyframes.duration,
+        "timestamp_ms": time.time() * 1000,
+        "done": False,
+    }
+
+
+# ============================================================
+# V3 聊天上下文
+# ============================================================
+
+
+class V3MotionChatContext(BaseChatContext):
+    """
+    V3Motion 聊天上下文
+
+    继承基础上下文，添加 V3 动作处理逻辑。
+
+    调用链：
+    - handle_result: 分发任务结果
+      - text → handle_json_result（继承自 BaseChatContext）
+      - motion → handle_motion_result
+    """
+
+    def __init__(self):
+        """初始化 V3Motion 聊天上下文"""
+        super().__init__(
+            event_order=("text", "audio", "motion_frame"),
+            tts_concurrency=1,
         )
-    )
-    ctx.track_task(
-        asyncio.create_task(_create_motion_event(ctx, sentence_id, sentence_text))
-    )
+        # 文本缓存（V3 模式使用）
+        self.text_cache: dict[int, str] = {}
+        # 动作缓存（V3 模式使用）
+        self.motion_cache: dict[int, list[str]] = {}
+
+    async def handle_json_result(self, result: TaskResult):
+        """
+        处理 JSON 结果
+
+        参数：
+        - result: 文本任务结果，data 格式为纯文本字符串
+        """
+        sentence_id = result.sentence_id
+        text = result.data
+
+        # 缓存文本
+        self.text_cache[sentence_id] = text
+        # 收集完整文本
+        self.full_text_list.append(text)
+
+        # 创建文本和音频事件
+        self.track_task(asyncio.create_task(self.create_text_event(sentence_id, text)))
+        self.track_task(
+            asyncio.create_task(self.create_audio_event(sentence_id, text, text))
+        )
+
+    async def handle_motion_result(self, result: TaskResult):
+        """
+        处理动作结果
+
+        触发事件：
+        1. motion_frame 事件（组合引擎处理后）
+
+        参数：
+        - result: 动作任务结果
+        """
+        sentence_id = result.sentence_id
+        actions = result.data
+
+        # 缓存动作
+        self.motion_cache[sentence_id] = actions
+
+        # 如果已有对应的文本，立即创建动作事件
+        if sentence_id in self.text_cache:
+            motion_event = await _create_motion_event(
+                sentence_id=sentence_id,
+                text=self.text_cache[sentence_id],
+                actions=actions,
+            )
+            store_sentence_event(
+                self.sentence_events, sentence_id, "motion_frame", motion_event
+            )
+
+    async def handle_result(self, result: TaskResult):
+        """
+        处理调度器结果（分发到对应处理方法）
+
+        调用链：
+        - text → handle_json_result → text_wrapper + tts_task
+        - motion → handle_motion_result → _create_motion_event
+
+        参数：
+        - result: 调度器产出的任务结果
+        """
+        if result.task_type == "text":
+            await self.handle_json_result(result)
+        elif result.task_type == "motion":
+            await self.handle_motion_result(result)
 
 
 # ============================================================
@@ -329,18 +278,14 @@ async def llm_chat_with_tts_and_motion_v3(params: chat_data):
     """
     V3 版本聊天流式输出
 
-    使用 V3 生成器的流式 Batch 架构。
-
-    核心改进：
-    1. 使用 V3 生成器，单次 LLM 调用同时生成文本和动作
-    2. 本地组合引擎，毫秒级延迟
-    3. 支持参数曲线输出
+    使用信息调度中心，单次 LLM 调用同时生成文本和动作标签。
 
     流程概述：
-    1. 创建流处理器和 V3 动作生成器
-    2. 注册句子完成回调（触发 TTS + 动作生成）
-    3. 启动 LLM 流式任务
-    4. 事件循环：按序输出就绪事件
+    1. 创建调度器，注册文本和动作任务
+    2. 调度器自动组合提示词
+    3. 创建管道，流式调用 LLM
+    4. 解析器将 LLM 输出分发给对应任务
+    5. 每个任务结果触发对应的事件（文本/音频/动作）
 
     参数：
     - params: 聊天请求参数
@@ -348,89 +293,84 @@ async def llm_chat_with_tts_and_motion_v3(params: chat_data):
     产出：
     - SSE 格式的事件流
     """
-    # ============================================================
     # 第一步：获取助手实例
-    # ============================================================
     agent = assistant_service.get_current_assistant()
 
     if not agent:
-        logger.error("[V3] 当前没有加载助手")
+        logger.error("当前没有加载助手")
         return
 
-    # ============================================================
-    # 第二步：构建消息列表（使用统一函数，包含动作提示词）
-    # ============================================================
-    motion_prompt = get_motion_system_prompt()
-    agent, history_messages, user_message = await build_chat_messages(
-        agent, params, system_prompt_extra=motion_prompt
+    # 第二步：创建调度器和管道
+    scheduler = create_scheduler()
+
+    # 用户消息
+    user_message = params.msg[-1]["content"]
+    # 获取历史消息（包含上下文）
+    history_messages = [
+        *agent.get_history(),
+        {
+            "role": "user",
+            "content": await agent.get_context(
+                msg=user_message, is_sleep_mode=params.is_sleep_mode
+            ),
+        },
+    ]
+
+    # 创建管道
+    pipeline = scheduler.create_pipeline(
+        system_context=agent.prompt,
+        history_messages=history_messages,
+        user_message=user_message,
     )
 
-    # ============================================================
-    # 第三步：获取 V3 动作生成器
-    # ============================================================
-    motion_generator: MotionGeneratorV3 | None = None
-    try:
-        motion_generator = create_v3_generator()
-        await motion_generator.initialize(agent.agent_name)
-    except Exception as e:
-        logger.warning(f"[V3] 获取动作生成器失败: {e}")
+    # 第三步：初始化上下文
+    ctx = V3MotionChatContext()
 
-    if motion_generator is None:
-        logger.warning("[V3动作规划] 未找到可用动作生成器，将输出空动作事件")
-
-    # ============================================================
-    # 第四步：初始化上下文
-    # ============================================================
-    processor = StreamProcessor()
-    processor.user_msg = user_message
-    ctx = V3ChatContext(processor, motion_generator)
-
-    # 注册句子完成回调
-    processor.register_sentence_complete_callback(
-        lambda sid, text, tts: _on_sentence_complete(ctx, sid, text, tts)
-    )
-
-    # ============================================================
-    # 第五步：启动 LLM 任务
-    # ============================================================
-    llm_task = asyncio.create_task(start_llm_task(history_messages, processor))
+    # 第四步：执行管道并输出事件
 
     try:
-        # ============================================================
-        # 第六步：事件循环
-        # ============================================================
-        while True:
-            # 输出就绪的句子事件
+        # 流式执行管道
+        # handle_result 调用链：
+        #   text → handle_json_result → text_wrapper + tts_task
+        #   motion → handle_motion_result → _create_motion_event
+        async for result in pipeline.execute():
+            await ctx.handle_result(result)
             for payload in ctx.drain_ready_events():
                 yield to_sse(payload)
 
-            # 检查是否完成
-            if llm_task.done() and not ctx.pending_tasks and not ctx.sentence_events:
-                break
+        # 等待所有异步任务完成
+        await ctx.wait_for_completion()
 
-            await asyncio.sleep(0.01)
+        # 输出剩余事件
+        for payload in ctx.drain_ready_events():
+            yield to_sse(payload)
 
         # 输出完成信号
-        final_response = {
-            "type": "done",
-            "timestamp_ms": time.time() * 1000,
-            "total_sentences": max(0, processor.sentence_count - 1),
-            "full_text": "".join(processor.full_msg) if processor.full_msg else "",
-            "done": True,
-        }
-        yield to_sse(final_response)
+        full_text = ctx.get_full_text()
+        yield to_sse(
+            {
+                "type": "done",
+                "timestamp_ms": time.time() * 1000,
+                "total_sentences": len(ctx.text_cache),
+                "full_text": full_text,
+                "done": True,
+            }
+        )
 
-        # 保存到助手上下文（需要先添加用户消息到临时列表）
-        agent.msg_data_tmp.append({"role": "user", "content": ctx.processor.user_msg})
-        asyncio.create_task(agent.add_msg("".join(processor.full_msg)))
+        # 保存到助手上下文
+        asyncio.create_task(
+            agent.add_msg(
+                user_msg=user_message,
+                assistant_msg=full_text,
+            )
+        )
 
     except Exception as e:
-        # 取消所有任务
-        llm_task.cancel()
+        # 取消所有待处理的任务
         for task in list(ctx.pending_tasks):
             task.cancel()
 
-        logger.error(f"处理数据时出错: {e}", exc_info=True)
+        logger.error(f"[V3] 处理数据时出错: {e}", exc_info=True)
         yield to_sse(
             {
                 "type": "error",

@@ -36,8 +36,9 @@ from my_utils.log import logger as Log
 from core.llm import LLMClient
 from core.llm.prompt_manager import PromptManager, PromptTemplate
 from core.scheduler.task import Task, TaskResult
-from core.scheduler.multi_parser import MultiParser
-from typing import Any, Literal
+from core.scheduler.parsers.multi_parser import MultiParser
+from core.scheduler.parsers.text_stream_parser import TextStreamParser
+from typing import Any, Literal, Union
 
 # ============================================================
 # 提示词片段定义
@@ -108,27 +109,6 @@ OUTPUT_FORMAT_TEMPLATE = PromptTemplate(
 {output_format}""",
     description="输出格式说明",
     required_vars=["output_format"],
-)
-
-# 输出示例模板
-OUTPUT_EXAMPLE_TEMPLATE = PromptTemplate(
-    name="output_example",
-    template="""【输出示例】
-{{"text": "你好呀~", "actions": ["smile", "nod"]}}
-{{"text": "今天天气真好呢", "actions": ["look_up"]}}
-{{"text": "让我想想...", "actions": ["thinking"]}}""",
-    description="输出示例",
-)
-
-# 规则说明模板
-RULES_TEMPLATE = PromptTemplate(
-    name="rules",
-    template="""【严格规则】
-1. 每行必须是完整的、合法的 JSON 对象
-2. 每行对应一句话，所有字段放在同一个 JSON 对象中
-3. 不要输出 JSON 以外的任何内容（不要输出 markdown 代码块、解释说明等）
-4. 动作标签必须从【可用动作列表】中选择，不要自创动作名""",
-    description="规则说明",
 )
 
 
@@ -306,10 +286,10 @@ class TaskScheduler:
 {action_vocab}
 
 【动作选择指南】
-- 根据句子的情感和内容选择合适的动作
-- 动作可以组合使用（如 ["smile", "nod"] 表示微笑点头）
-- 每个动作都有对应的时长，系统会自动处理动作的执行和过渡
-- 尽量选择与文本内容匹配的动作，避免过度使用单一动作""")
+- 根据句子的情感和内容选择合适的动作，动作可以组合使用
+- 动作的时序编排由系统自动处理，你只需选择合适的动作名称即可
+- 每句话建议 1-4 个动作，优先选择与文本情感最匹配的
+- 示例：{{"text": "你好呀~", "actions": ["smile", "nod"]}}""")
             except ImportError:
                 Log.warning("[调度器] 无法导入动作词汇表，跳过动作详细说明")
 
@@ -360,22 +340,37 @@ class TaskScheduler:
             )
         )
 
-        # 4. 添加输出示例
-        fragments.append(
-            PromptFragment(
-                section=PromptSection.OUTPUT_EXAMPLE.value,
-                priority=100,
-                content=OUTPUT_EXAMPLE_TEMPLATE.render(),
-                source="output_example",
+        # 4. 动态组合输出示例（从任务中收集）
+        examples = []
+        for task in sorted_tasks:
+            if task.example:
+                examples.append(task.example)
+        if examples:
+            examples_text = "\n".join(examples)
+            fragments.append(
+                PromptFragment(
+                    section=PromptSection.OUTPUT_EXAMPLE.value,
+                    priority=100,
+                    content=f"【输出示例】\n{examples_text}",
+                    source="output_example",
+                )
             )
-        )
 
-        # 5. 添加规则说明
+        # 5. 动态组合规则说明（从任务中收集 + 通用规则）
+        rules = [
+            "每行必须是完整的、合法的 JSON 对象",
+            "每行对应一句话，所有字段放在同一个 JSON 对象中",
+            "不要输出 JSON 以外的任何内容（不要输出 markdown 代码块、解释说明等）",
+        ]
+        for task in sorted_tasks:
+            if task.rules:
+                rules.extend(task.rules)
+        rules_text = "\n".join(f"{i+1}. {rule}" for i, rule in enumerate(rules))
         fragments.append(
             PromptFragment(
                 section=PromptSection.RULES.value,
                 priority=100,
-                content=RULES_TEMPLATE.render(),
+                content=f"【严格规则】\n{rules_text}",
                 source="rules",
             )
         )
@@ -425,15 +420,16 @@ class TaskScheduler:
 
     def create_pipeline(
         self,
-        user_message: str,
-        system_context: str,
+        user_message: str | None = None,
+        system_context: str | None = None,
         history_messages: list[dict[str, str]] | None = None,
     ) -> "Pipeline":
         """
-        创建处理管道
+        创建多行json返回处理管道
+        用于让 LLM 输出多行 JSON，每行对应一句话，包含文本和动作等字段，进行多任务输出。
 
         参数：
-        - user_message: 用户消息
+        - user_message: 用户提问消息
         - system_context: 系统上下文（如角色设定，追加到系统提示词）
         - history_messages: 历史消息列表（可选）
 
@@ -457,13 +453,15 @@ class TaskScheduler:
 
         # 格式化时间
         format_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
-        # 添加用户消息
-        messages.append(
-            {
-                "role": "user",
-                "content": f"当前时间:{format_time}\n用户对话内容或动作:\n{user_message}",
-            }
-        )
+
+        if user_message:
+            # 添加用户消息
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"当前时间:{format_time}\n用户对话内容或动作:\n{user_message}",
+                }
+            )
 
         # 创建解析器
         parser = MultiParser()
@@ -471,6 +469,53 @@ class TaskScheduler:
             parser.register_task(task)
 
         # 创建管道
+        return Pipeline(
+            messages=messages,
+            parser=parser,
+        )
+
+    def create_text_pipeline(
+        self,
+        user_message: str | None = None,
+        system_context: str | None = None,
+        history_messages: list[dict[str, str]] | None = None,
+    ) -> "Pipeline":
+        """
+        创建纯文本处理管道,只能处理文本，不能进行多任务
+        用于普通聊天和交互场景，LLM 输出纯文本而非 JSON。
+
+        参数：
+        - user_message: 用户提问消息
+        - system_context: 系统上下文（如角色设定，追加到系统提示词）
+        - history_messages: 历史消息列表（可选）
+
+        返回：
+        - Pipeline 实例（使用 TextStreamParser）
+        """
+        parser = TextStreamParser()
+
+        # 构建消息列表
+        messages = [
+            # 角色的系统提示词
+            {"role": "system", "content": system_context},
+        ]
+
+        # 添加历史消息
+        if history_messages:
+            messages.extend(history_messages)
+
+        # 格式化时间
+        format_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+
+        if user_message:
+            # 添加用户消息
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"当前时间:{format_time}\n用户对话内容或动作:\n{user_message}",
+                }
+            )
+
         return Pipeline(
             messages=messages,
             parser=parser,
@@ -491,9 +536,20 @@ class Pipeline:
     2. 将响应传递给解析器
     3. 产出解析后的结果
 
+    支持的解析器：
+    - MultiParser: JSON 格式解析（用于 V4 带动作帧的聊天）
+    - TextStreamParser: 纯文本格式解析（用于普通聊天和交互）
+
     使用示例：
     ```python
+    # JSON 模式（V4）
+    parser = MultiParser()
+    parser.register_task(create_text_task())
     pipeline = scheduler.create_pipeline("你好呀~")
+
+    # 纯文本模式
+    parser = TextStreamParser()
+    pipeline = Pipeline(messages=messages, parser=parser)
 
     async for result in pipeline.execute():
         print(result.task_type, result.data)
@@ -503,7 +559,7 @@ class Pipeline:
     def __init__(
         self,
         messages: list[dict[str, str]],
-        parser: MultiParser,
+        parser: MultiParser | TextStreamParser,
         model_key: Literal["ChatLLM", "LLM"] = "ChatLLM",
     ):
         """
@@ -511,7 +567,7 @@ class Pipeline:
 
         参数：
         - messages: 消息列表（包含系统提示词和用户消息）
-        - parser: 多任务解析器
+        - parser: 解析器（MultiParser 或 TextStreamParser）
         - model_key: 模型配置键名
         """
         self.messages = messages

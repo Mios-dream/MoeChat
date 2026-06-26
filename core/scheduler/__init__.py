@@ -1,12 +1,11 @@
 """
-信息调度中心模块
-
-V4 版本的核心模块，提供动态任务组合和流式处理功能。
+信息调度中心模块，提供动态任务组合和流式处理功能。
 
 核心组件：
 - TaskScheduler: 信息调度中心，负责组合提示词和创建管道
 - Pipeline: 流式处理管道，负责执行 LLM 调用和解析
 - MultiParser: 多任务解析器，负责分发 JSON 字段
+- TextStreamParser: 纯文本流解析器，负责按句子分割纯文本
 - Task/TaskResult: 任务定义和结果
 
 调用流程：
@@ -31,7 +30,8 @@ async for result in pipeline.execute():
 """
 
 from core.scheduler.task import Task, TaskResult
-from core.scheduler.multi_parser import MultiParser
+from core.scheduler.parsers.multi_parser import MultiParser
+from core.scheduler.parsers.text_stream_parser import TextStreamParser
 from core.scheduler.scheduler import TaskScheduler, Pipeline
 from core.scheduler.builtin_tasks import (
     create_text_task,
@@ -43,6 +43,7 @@ __all__ = [
     "TaskScheduler",
     "Pipeline",
     "MultiParser",
+    "TextStreamParser",
     # 数据结构
     "Task",
     "TaskResult",

@@ -66,8 +66,6 @@ class Assistant:
         self.agent_name = agent_name
         # 聊天记录
         self.chat_history = []
-        # 当前正在处理的消息记录
-        self.msg_data_tmp = []
         # 线程池执行器，用于处理同步的 CPU 密集任务
         self._executor = ThreadPoolExecutor(max_workers=4)
         # 用户私有状态（好感度、首次相遇时间等）
@@ -576,33 +574,28 @@ class Assistant:
         """
         return self.chat_history.copy()
 
-    async def add_msg(self, assistant_msg: str) -> None:
+    async def add_msg(self, user_msg: str, assistant_msg: str) -> None:
         """
         添加助手回复到上下文,保存聊天历史,更新长期记忆,更新好感度
 
         Parameters:
+            user_msg: 用户输入的消息
             assistant_msg: 助手回复的消息
         """
+        self.chat_history.append({"role": "user", "content": user_msg})
         self.chat_history.append({"role": "assistant", "content": assistant_msg})
 
-        # 获取用于分析的内容
-        user_msg_content = self.chat_history[-2]["content"]  # 刚刚的用户输入
-
         previous_assistant_msg = (
-            self.chat_history[-3]["content"] if self.chat_history else ""
+            self.chat_history[-3]["content"] if len(self.chat_history) >= 3 else ""
         )
 
         self.chat_history = self.chat_history[
             -self.agent_config.settings.contextLength :
         ]
-        # 清空临时消息列表
-        self.msg_data_tmp = []
 
         await asyncio.gather(
-            self.insert_core_mem(
-                user_msg_content, assistant_msg, previous_assistant_msg
-            ),
-            self.update_love_level(user_msg_content, assistant_msg),
+            self.insert_core_mem(user_msg, assistant_msg, previous_assistant_msg),
+            self.update_love_level(user_msg, assistant_msg),
             self._task_add_long_memory(self.chat_history[-2:]),
         )
 
@@ -615,9 +608,7 @@ class Assistant:
         # 添加交互事件消息到上下文
         self.chat_history.append({"role": "assistant", "content": msg})
 
-        current_turn = self.chat_history[-2:]  # 只取最新的两条消息
-        # 清空临时消息列表
-        self.msg_data_tmp = []
+        current_turn = self.chat_history[-1:]  # 只取最新的两条消息
 
         await self._task_add_long_memory(current_turn)
 

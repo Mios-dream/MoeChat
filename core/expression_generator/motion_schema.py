@@ -7,7 +7,7 @@
 - MotionChunk: 单个 chunk 数据（文本 + 动作标签）
 - MotionResponse: 完整响应（多个 chunk）
 - AtomicActionSpec: 动作规格
-- MotionCurveData: 参数曲线数据
+- MotionKeyframesData: 关键帧数据
 """
 
 from dataclasses import dataclass, field
@@ -51,30 +51,30 @@ class AtomicActionSpec:
 
 
 @dataclass
-class MotionCurveData:
+class MotionKeyframesData:
     """
-    参数曲线数据
+    关键帧数据
 
     属性：
-    - duration: 总时长（秒）
-    - curves: 参数曲线 {参数ID: [[时间, 值], ...]}
+    - duration: 总时长（毫秒）
+    - keyframes: 关键帧数据 {参数ID: [{"time": 毫秒, "value": 值, "ease": 缓动类型}, ...]}
     """
-    duration: float
-    curves: dict[str, list[list[float]]] = field(default_factory=dict)
+    duration: int
+    keyframes: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
         return {
             "duration": self.duration,
-            "curves": self.curves,
+            "keyframes": self.keyframes,
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "MotionCurveData":
+    def from_dict(cls, data: dict[str, Any]) -> "MotionKeyframesData":
         """从字典创建"""
         return cls(
-            duration=data.get("duration", 0.0),
-            curves=data.get("curves", {}),
+            duration=data.get("duration", 0),
+            keyframes=data.get("keyframes", {}),
         )
 
 
@@ -87,13 +87,13 @@ class MotionChunk:
     - index: chunk 序号
     - text: 该句回复文本
     - actions: 动作标签列表
-    - motion: 动作数据（曲线或单帧）
+    - motion: 动作数据（关键帧）
     - duration: 该 chunk 总时长（秒）
     """
     index: int
     text: str
     actions: list[AtomicActionSpec] = field(default_factory=list)
-    motion: MotionCurveData | None = None
+    motion: MotionKeyframesData | None = None
     duration: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -116,7 +116,7 @@ class MotionChunk:
         ]
         motion = None
         if "motion" in data:
-            motion = MotionCurveData.from_dict(data["motion"])
+            motion = MotionKeyframesData.from_dict(data["motion"])
         return cls(
             index=data.get("index", 0),
             text=data.get("text", ""),

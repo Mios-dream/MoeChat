@@ -33,6 +33,8 @@ class Task:
     - parse_fn: 解析函数（从 JSON 字典中提取数据）
     - field_name: JSON 字段名（如 "text", "actions"）
     - priority: 优先级（数字越小优先级越高，影响提示词顺序）
+    - example: 输出示例片段（如 '{"text": "你好呀~"}'）
+    - rules: 规则列表（如 ["每行必须包含 text 字段"]）
     
     示例：
     ```python
@@ -42,7 +44,9 @@ class Task:
         prompt="生成回复文本",
         parse_fn=lambda data: data.get("text", ""),
         field_name="text",
-        priority=100
+        priority=100,
+        example='{"text": "你好呀~"}',
+        rules=["每行必须包含 text 字段"]
     )
     ```
     """
@@ -52,6 +56,8 @@ class Task:
     parse_fn: Callable[[dict[str, Any]], Any]
     field_name: str = ""
     priority: int = 100
+    example: str = ""
+    rules: list[str] = field(default_factory=list)
     
     def __post_init__(self):
         """验证任务定义"""

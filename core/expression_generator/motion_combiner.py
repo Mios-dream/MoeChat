@@ -1,21 +1,20 @@
 """
 动作组合引擎
 
-将原子动作标签组合为参数曲线，支持单帧和曲线两种输出格式。
+将原子动作标签组合为关键帧数据，支持单帧和关键帧两种输出格式。
 
 核心功能：
 1. 动作标签解析
 2. 时间线构建
 3. 关键帧合并
-4. 参数曲线生成
+4. 关键帧数据生成
 
 算法流程：
 1. 接收动作标签列表 + 文字时长
 2. 按文字时长等比缩放所有动作的时间戳
 3. 收集每个参数的所有关键帧到统一时间线
 4. 按时间排序，去重
-5. 使用 ease-in-out 插值生成平滑曲线
-6. 动作结束后保持 3 秒，再用 1 秒回到默认值
+5. 动作结束后保持 3 秒，再用 1 秒回到默认值
 
 时间线结构：
 ```
@@ -25,23 +24,23 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Any
-import math
+from typing import Any
 
 from my_utils.log import logger as Log
 from core.expression_generator.atomic_actions import (
     AtomicAction,
     get_action,
     get_action_names,
+    check_mutex_conflict,
+    resolve_mutex_conflict,
 )
-
 
 # ============================================================
 # 参数默认值
 # ============================================================
 
 # 参数默认值（与 Live2D 通用参数对应）
-PARAM_DEFAULTS: Dict[str, float] = {
+PARAM_DEFAULTS: dict[str, float] = {
     "ParamAngleX": 0.0,
     "ParamAngleY": 0.0,
     "ParamAngleZ": 0.0,
@@ -72,6 +71,7 @@ PARAM_DEFAULTS: Dict[str, float] = {
 # 数据结构
 # ============================================================
 
+
 @dataclass
 class ActionSpec:
     """
@@ -79,11 +79,14 @@ class ActionSpec:
 
     属性：
     - name: 动作名称
-    - start: 开始时间（秒），相对于 chunk 开始
+    - stage: 编排层级（emotion / accent / gaze）
+    - start: 开始时间（秒），相对于文本起始
     - duration: 持续时间（秒），None 使用模板默认值
-    - scale: 幅度缩放系数（0.0-2.0）
+    - scale: 幅度缩放系数（0.0~2.0）
     """
+
     name: str
+    stage: str = "emotion"
     start: float = 0.0
     duration: float | None = None
     scale: float = 1.0
@@ -98,21 +101,9 @@ class Keyframe:
     - time: 时间点（秒）
     - value: 参数值
     """
+
     time: float
     value: float
-
-
-@dataclass
-class MotionCurve:
-    """
-    参数曲线
-
-    属性：
-    - duration: 总时长（秒）
-    - curves: 参数曲线 {参数ID: [(时间, 值), ...]}
-    """
-    duration: float
-    curves: Dict[str, List[Tuple[float, float]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -124,56 +115,81 @@ class MotionFrame:
     - duration: 持续时间（毫秒）
     - parameters: 参数字典 {参数ID: 值}
     """
+
     duration: float
-    parameters: Dict[str, float] = field(default_factory=dict)
+    parameters: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class KeyframePoint:
+    """
+    关键帧点
+
+    属性：
+    - time: 时间点（毫秒）
+    - value: 参数值
+    - ease: 缓动类型
+        - "in": 动作开始（从当前位置过渡到目标值）
+        - "hold": 动作保持（维持当前值）
+        - "out": 动作结束（从当前值过渡回默认值）
+    """
+
+    time: int
+    value: float
+    ease: str = "in"
+
+
+@dataclass
+class MotionKeyframes:
+    """
+    关键帧动作数据
+
+    属性：
+    - duration: 总时长（毫秒）
+    - keyframes: 关键帧数据 {参数ID: [KeyframePoint, ...]}
+    """
+
+    duration: int
+    keyframes: dict[str, list[KeyframePoint]] = field(default_factory=dict)
 
 
 # ============================================================
 # 组合引擎
 # ============================================================
 
+
+# ============================================================
+# MotionCombiner 类
+# ============================================================
+
+
 class MotionCombiner:
     """
     动作组合引擎
 
-    将原子动作标签组合为参数曲线或单帧数据。
+    将原子动作标签组合为关键帧数据。
 
     使用示例：
     ```python
-    combiner = MotionCombiner(fps=30.0)
+    combiner = MotionCombiner()
 
-    # 输入动作规格
     action_specs = [
         ActionSpec(name="smile", start=0.0, duration=1.5),
         ActionSpec(name="nod", start=0.5, duration=1.0),
     ]
 
-    # 输出参数曲线
-    result = combiner.combine(action_specs, text_duration=3.0)
-    print(result.duration)  # 7.0 (3s动作 + 3s保持 + 1s退出)
-    print(result.curves)    # {"ParamMouthForm": [(0.0, 0.0), ...], ...}
+    result = combiner.combine_keyframes(action_specs, text_duration=3.0)
+    print(result.duration)  # 7000 (毫秒)
+    print(result.keyframes)  # {"ParamMouthForm": [KeyframePoint(...), ...]}
     ```
     """
 
-    # 保持阶段时长（秒）
-    HOLD_DURATION = 3.0
-    # 退出阶段时长（秒）
-    EXIT_DURATION = 1.0
     # 默认动作时长（秒）
     DEFAULT_ACTION_DURATION = 1.0
 
-    def __init__(self, fps: float = 30.0):
-        """
-        初始化组合引擎
-
-        参数：
-        - fps: 输出曲线的帧率（仅对曲线输出有效）
-        """
-        self._fps = fps
-
     def estimate_duration(self, text: str) -> float:
         """
-        根据文本估算时长
+        根据文本估算朗读时长（标点感知）
 
         参数：
         - text: 输入文本
@@ -181,16 +197,26 @@ class MotionCombiner:
         返回：
         - 估算的时长（秒）
         """
-        # 统计中文字符数
-        cn_count = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
-        # 统计其他字符数
+        # 基础朗读速度：中文约 0.35 秒/字
+        cn_count = sum(
+            1
+            for c in text
+            if "\u4e00" <= c <= "\u9fff" or "\u3000" <= c <= "\u303f"
+        )
         other_count = len(text) - cn_count
 
-        # 估算时长：中文约 0.5 秒/字，英文约 0.15 秒/字符
-        duration = cn_count * 0.5 + other_count * 0.15
+        duration = cn_count * 0.35 + other_count * 0.15
 
-        # 限制范围：2-20 秒
-        return max(2.0, min(duration + 1.0, 20.0))
+        # 标点停顿
+        duration += text.count("。") * 0.5
+        duration += text.count("！") * 0.5
+        duration += text.count("？") * 0.5
+        duration += text.count("，") * 0.25
+        duration += text.count("、") * 0.2
+        duration += text.count("…") * 1.0
+        duration += text.count("...") * 1.0
+
+        return max(1.5, min(duration, 30.0))
 
     def _scale_action_duration(
         self,
@@ -229,7 +255,7 @@ class MotionCombiner:
 
     def _interpolate_keyframes(
         self,
-        keyframes: List[Tuple[float, float]],
+        keyframes: list[tuple[float, float]],
         current_time: float,
     ) -> float:
         """
@@ -270,9 +296,9 @@ class MotionCombiner:
 
     def _build_timeline(
         self,
-        action_specs: List[ActionSpec],
+        action_specs: list[ActionSpec],
         text_duration: float,
-    ) -> Dict[str, List[Keyframe]]:
+    ) -> dict[str, list[Keyframe]]:
         """
         构建参数时间线
 
@@ -286,7 +312,7 @@ class MotionCombiner:
         - {参数ID: [Keyframe, ...]} 字典
         """
         # 时间线：{参数ID: [(时间, 值), ...]}
-        timeline: Dict[str, List[Tuple[float, float]]] = {}
+        timeline: dict[str, list[tuple[float, float]]] = {}
 
         for spec in action_specs:
             # 获取动作定义
@@ -301,7 +327,9 @@ class MotionCombiner:
             )
 
             # 计算时间缩放因子
-            scale_factor = action_duration / action.duration if action.duration > 0 else 1.0
+            scale_factor = (
+                action_duration / action.duration if action.duration > 0 else 1.0
+            )
 
             # 添加关键帧到时间线
             for param_id, keyframes in action.keyframes.items():
@@ -316,7 +344,7 @@ class MotionCombiner:
                     timeline[param_id].append((actual_time, actual_value))
 
         # 按时间排序并去重
-        result: Dict[str, List[Keyframe]] = {}
+        result: dict[str, list[Keyframe]] = {}
         for param_id, points in timeline.items():
             points.sort(key=lambda x: x[0])
             # 去重（保留同一时间的最后一个值）
@@ -331,199 +359,87 @@ class MotionCombiner:
 
         return result
 
-    def _add_hold_and_exit(
+    def combine_keyframes(
         self,
-        timeline: Dict[str, List[Keyframe]],
-        text_duration: float,
-    ) -> Dict[str, List[Keyframe]]:
-        """
-        添加保持阶段和退出阶段
-
-        参数：
-        - timeline: 原始时间线
-        - text_duration: 文本时长
-
-        返回：
-        - 添加保持和退出后的时间线
-        """
-        hold_start = text_duration
-        exit_start = hold_start + self.HOLD_DURATION
-        total_duration = exit_start + self.EXIT_DURATION
-
-        result: Dict[str, List[Keyframe]] = {}
-
-        for param_id, keyframes in timeline.items():
-            new_keyframes = list(keyframes)
-
-            # 获取最后的值
-            last_value = keyframes[-1].value if keyframes else PARAM_DEFAULTS.get(param_id, 0.0)
-
-            # 添加保持阶段关键帧
-            new_keyframes.append(Keyframe(time=hold_start, value=last_value))
-            new_keyframes.append(Keyframe(time=exit_start, value=last_value))
-
-            # 添加退出阶段关键帧（回到默认值）
-            default_value = PARAM_DEFAULTS.get(param_id, 0.0)
-            new_keyframes.append(Keyframe(time=total_duration, value=default_value))
-
-            # 按时间排序
-            new_keyframes.sort(key=lambda kf: kf.time)
-            result[param_id] = new_keyframes
-
-        return result
-
-    def _sample_curve(
-        self,
-        timeline: Dict[str, List[Keyframe]],
-        total_duration: float,
-    ) -> Dict[str, List[Tuple[float, float]]]:
-        """
-        对时间线进行采样，生成参数曲线
-
-        参数：
-        - timeline: 时间线
-        - total_duration: 总时长
-
-        返回：
-        - {参数ID: [(时间, 值), ...]} 字典
-        """
-        result: Dict[str, List[Tuple[float, float]]] = {}
-        frame_interval = 1.0 / self._fps
-
-        for param_id, keyframes in timeline.items():
-            curve_points = []
-            current_time = 0.0
-
-            while current_time <= total_duration:
-                # 在关键帧之间插值
-                value = self._interpolate_keyframes(
-                    [(kf.time, kf.value) for kf in keyframes],
-                    current_time,
-                )
-                curve_points.append((round(current_time, 4), round(value, 4)))
-                current_time += frame_interval
-
-            # 确保包含最后一帧
-            if curve_points and curve_points[-1][0] < total_duration:
-                value = self._interpolate_keyframes(
-                    [(kf.time, kf.value) for kf in keyframes],
-                    total_duration,
-                )
-                curve_points.append((round(total_duration, 4), round(value, 4)))
-
-            result[param_id] = curve_points
-
-        return result
-
-    def combine(
-        self,
-        action_specs: List[ActionSpec] | List[Dict[str, Any]],
+        action_specs: list[ActionSpec] | list[dict[str, Any]],
         text_duration: float | None = None,
-        output_format: str = "curve",
-    ) -> MotionCurve | MotionFrame:
+    ) -> MotionKeyframes:
         """
-        组合动作为参数曲线或单帧
+        组合动作为动作阶段关键帧数据
+
+        只输出动作阶段（0 到 text_duration）的关键帧，
+        hold 和 exit 阶段由前端根据音频时长自行处理。
+
+        会自动检测并解决互斥动作冲突。
 
         参数：
         - action_specs: 动作规格列表
-        - text_duration: 文本时长（秒），None 时自动估算
-        - output_format: 输出格式 ("curve" | "frame")
+        - text_duration: 文本估算时长（秒）
 
         返回：
-        - MotionCurve（曲线格式）或 MotionFrame（单帧格式）
+        - MotionKeyframes 实例（duration=动作阶段时长）
         """
         # 转换 ActionSpec
         specs = []
         for spec in action_specs:
             if isinstance(spec, dict):
-                specs.append(ActionSpec(
-                    name=spec.get("act", spec.get("name", "")),
-                    start=spec.get("start", 0.0),
-                    duration=spec.get("dur", spec.get("duration")),
-                    scale=spec.get("scale", 1.0),
-                ))
+                specs.append(
+                    ActionSpec(
+                        name=spec.get("act", spec.get("name", "")),
+                        stage=spec.get("stage", "emotion"),
+                        start=spec.get("start", 0.0),
+                        duration=spec.get("dur", spec.get("duration")),
+                        scale=spec.get("scale", 1.0),
+                    )
+                )
             else:
                 specs.append(spec)
 
+        # 检测并解决互斥冲突
+        action_names = [s.name for s in specs]
+        conflicts = check_mutex_conflict(action_names)
+        if conflicts:
+            Log.warning(f"[组合引擎] 检测到互斥冲突: {conflicts}")
+            resolved_names = resolve_mutex_conflict(action_names)
+            specs = [s for s in specs if s.name in resolved_names]
+            Log.info(f"[组合引擎] 冲突解决后: {[s.name for s in specs]}")
+
         # 估算文本时长
         if text_duration is None:
-            text_duration = 5.0  # 默认 5 秒
+            text_duration = 5.0
 
-        # 构建时间线
+        # 构建动作阶段时间线（0 到 text_duration）
         timeline = self._build_timeline(specs, text_duration)
 
         if not timeline:
             Log.warning("[组合引擎] 未生成有效时间线")
-            if output_format == "curve":
-                return MotionCurve(duration=text_duration + 4.0)
-            else:
-                return MotionFrame(duration=text_duration * 1000)
+            return MotionKeyframes(duration=int(text_duration * 1000))
 
-        # 添加保持和退出阶段
-        full_timeline = self._add_hold_and_exit(timeline, text_duration)
-        total_duration = text_duration + self.HOLD_DURATION + self.EXIT_DURATION
+        # 转换为关键帧输出格式
+        keyframes_output: dict[str, list[KeyframePoint]] = {}
 
-        if output_format == "curve":
-            # 输出参数曲线
-            curves = self._sample_curve(full_timeline, total_duration)
-            return MotionCurve(duration=total_duration, curves=curves)
-        else:
-            # 输出单帧（取第一个时间点的值）
-            parameters = {}
-            for param_id, keyframes in full_timeline.items():
-                if keyframes:
-                    parameters[param_id] = keyframes[0].value
-            return MotionFrame(duration=text_duration * 1000, parameters=parameters)
+        for param_id, kf_list in timeline.items():
+            points: list[KeyframePoint] = []
+            for i, kf in enumerate(kf_list):
+                time_ms = int(round(kf.time * 1000))
+                value = round(kf.value, 4)
 
-    def combine_curve(
-        self,
-        action_specs: List[ActionSpec] | List[Dict[str, Any]],
-        text_duration: float | None = None,
-    ) -> MotionCurve:
-        """
-        组合动作为参数曲线（便捷方法）
+                # 合并连续相同值的关键帧
+                if points and points[-1].value == value:
+                    continue
 
-        参数：
-        - action_specs: 动作规格列表
-        - text_duration: 文本时长（秒）
+                # 避免重复时间点
+                if points and points[-1].time == time_ms:
+                    continue
 
-        返回：
-        - MotionCurve 实例
-        """
-        result = self.combine(action_specs, text_duration, output_format="curve")
-        return result  # type: ignore
+                ease = "in" if i == 0 else "hold"
 
-    def combine_frame(
-        self,
-        action_specs: List[ActionSpec] | List[Dict[str, Any]],
-        text_duration: float | None = None,
-    ) -> MotionFrame:
-        """
-        组合动作为单帧数据（便捷方法）
+                points.append(KeyframePoint(time=time_ms, value=value, ease=ease))
 
-        参数：
-        - action_specs: 动作规格列表
-        - text_duration: 文本时长（秒）
+            if points:
+                keyframes_output[param_id] = points
 
-        返回：
-        - MotionFrame 实例
-        """
-        result = self.combine(action_specs, text_duration, output_format="frame")
-        return result  # type: ignore
-
-
-# ============================================================
-# 公开接口
-# ============================================================
-
-def create_combiner(fps: float = 30.0) -> MotionCombiner:
-    """
-    创建组合引擎实例
-
-    参数：
-    - fps: 输出曲线的帧率
-
-    返回：
-    - MotionCombiner 实例
-    """
-    return MotionCombiner(fps=fps)
+        return MotionKeyframes(
+            duration=int(round(text_duration * 1000)),
+            keyframes=keyframes_output,
+        )

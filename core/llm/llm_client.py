@@ -27,7 +27,6 @@ from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionMessageParam,
     ChatCompletionToolMessageParam,
-    ChatCompletionAssistantMessageParam,
 )
 
 from my_utils import config_manager as CConfig

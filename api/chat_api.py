@@ -6,13 +6,12 @@
 支持的版本：
 - v1: 基础版本（文本 + TTS）
 - v2: 带动作版本（使用 V2 生成器）
-- v3: 带动作版本（使用 V3 生成器）
-- v4: 信息调度中心版本（推荐）
+- v3: 信息调度中心版本（推荐）
 
 通过配置文件选择版本：
 ```yaml
 MotionGenerator:
-  version: v4  # v1 | v2 | v3 | v4
+  version: v3  # v1 | v2 | v3
 ```
 """
 
@@ -27,9 +26,8 @@ from core.chat.base import assistant_service
 # 导入各版本的聊天函数
 from core.chat import (
     llm_chat_with_tts,  # V1 版本
-    llm_chat_with_tts_and_motion_v2,  # V2Motion 版本
+    llm_chat_with_tts_and_motion_v2,  # V2 版本
     llm_chat_with_tts_and_motion_v3,  # V3 版本
-    llm_chat_with_tts_and_motion_v4,  # V4 版本
 )
 
 chat_api = APIRouter()
@@ -40,10 +38,10 @@ def _get_motion_version() -> str:
     获取配置中的动作生成器版本
 
     返回：
-    - "v2", "v3", "v4"
+    - "v2", "v3"
     """
     motion_config = CConfig.config.get("MotionGenerator", {})
-    return motion_config.get("version", "v2")
+    return motion_config.get("version", "v3")
 
 
 @chat_api.get("/chat")
@@ -70,14 +68,8 @@ async def tts_api_get(
         # 根据配置选择版本
         motion_version = _get_motion_version()
 
-        if motion_version == "v4":
-            # V4 版本：信息调度中心
-            return StreamingResponse(
-                llm_chat_with_tts_and_motion_v4(params),
-                media_type="text/event-stream",
-            )
-        elif motion_version == "v3":
-            # V3 版本：流式 Batch 架构
+        if motion_version == "v3":
+            # V3 版本：信息调度中心
             return StreamingResponse(
                 llm_chat_with_tts_and_motion_v3(params),
                 media_type="text/event-stream",
@@ -111,14 +103,8 @@ async def tts_api(params: chat_data):
         # 根据配置选择版本
         motion_version = _get_motion_version()
 
-        if motion_version == "v4":
-            # V4 版本：信息调度中心
-            return StreamingResponse(
-                llm_chat_with_tts_and_motion_v4(params),
-                media_type="text/event-stream",
-            )
-        elif motion_version == "v3":
-            # V3 版本：流式 Batch 架构
+        if motion_version == "v3":
+            # V3 版本：信息调度中心
             return StreamingResponse(
                 llm_chat_with_tts_and_motion_v3(params),
                 media_type="text/event-stream",
