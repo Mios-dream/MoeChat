@@ -68,10 +68,10 @@ SIMPLE_ACTIONS: dict[str, dict[str, list[tuple[float, float]]]] = {
         "ParamEyeROpen": [(1, 0.0)],
     },
     "wink_left": {
-        "ParamEyeLOpen": [(1, 0.0), (2, 1.0)],
+        "ParamEyeLOpen": [(1, 0.0), (1.3, 1.0)],
     },
     "wink_right": {
-        "ParamEyeROpen": [(1, 0.0), (2, 1.0)],
+        "ParamEyeROpen": [(1, 0.0), (1.3, 1.0)],
     },
     "blush": {
         "ParamCheek": [(0.0, 0.8)],
@@ -474,17 +474,20 @@ class ActionOverlay:
         keyframes: list[tuple[float, float]],
         duration: float,
         fps: float = 60.0,
+        default_value: float = 0.0,
     ) -> list[float]:
         """
         从关键帧生成帧级值数组
 
         keyframes 是相对于动作起始时间的偏移序列。
+        在第一个关键帧之前使用 default_value（避免外推到负值）。
         最后一个关键帧的值在整个剩余时长保持。
 
         Args:
             keyframes: [(时间偏移, 值), ...]
             duration: 动作总时长
             fps: 帧率
+            default_value: 第一个关键帧之前的默认值
 
         Returns:
             list[float]: 每帧参数值
@@ -492,10 +495,20 @@ class ActionOverlay:
         num_frames = int(duration * fps) + 1
         dt = 1.0 / fps
         values: list[float] = []
+
+        if not keyframes:
+            return [default_value] * num_frames
+
         kf_idx = 0
 
         for f in range(num_frames):
             t = float(f) * dt
+
+            # 在第一个关键帧之前，使用默认值避免外推到异常范围
+            if t < keyframes[0][0]:
+                values.append(default_value)
+                continue
+
             while kf_idx < len(keyframes) - 1 and keyframes[kf_idx + 1][0] <= t:
                 kf_idx += 1
             if kf_idx >= len(keyframes) - 1:
@@ -540,7 +553,12 @@ class ActionOverlay:
             for param_id, keyframes in action_def.items():
                 if param_id not in EXPRESSION_PARAMS:
                     continue
-                curve = cls._generate_param_curve(keyframes, duration, fps)
+                curve = cls._generate_param_curve(
+                    keyframes,
+                    duration,
+                    fps,
+                    default_value=PARAM_DEFAULTS.get(param_id, 0.0),
+                )
                 overlay[param_id] = curve
 
         return overlay
@@ -700,6 +718,10 @@ class MotionEngineService:
             else:
                 mixed_curves[param_id] = values
 
+        # 添加 overlay 中存在但 base_motion 中不存在的参数
+        for param_id, overlay_curve in overlays.items():
+            if param_id not in mixed_curves:
+                mixed_curves[param_id] = overlay_curve
         # 5. 时长截断
         # effective_duration = base_motion.duration
         # if 0 < max_duration < base_motion.duration:
@@ -719,6 +741,11 @@ class MotionEngineService:
             duration=base_motion.duration,
             fps=base_motion.fps,
         )
+        # return MotionData(
+        #     curves=mixed_curves,
+        #     duration=effective_duration,
+        #     fps=base_motion.fps,
+        # )
 
     def _expression_only(
         self, actions: list[str], duration: float

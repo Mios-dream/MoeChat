@@ -54,6 +54,7 @@ from models.dto.chat_request import chat_data
 from my_utils.log import logger
 from core.scheduler import TaskScheduler, create_text_task, create_motion_task
 from core.scheduler.task import TaskResult
+from core.scheduler.parsers.text_stream_parser import filter_tts_text
 from core.chat.base import store_sentence_event, to_sse
 from core.chat.v1 import BaseChatContext
 from core.expression_generator.motion_engine_v3 import (
@@ -200,6 +201,9 @@ class V3MotionChatContext(BaseChatContext):
         sentence_id = result.sentence_id
         text = result.data
 
+        # 过滤 TTS 文本：移除括号内的描述内容（如（脸红）（小声）等），避免被错误朗读
+        tts_text = filter_tts_text(text)
+
         # 缓存文本
         self.text_cache[sentence_id] = text
         # 收集完整文本
@@ -208,7 +212,7 @@ class V3MotionChatContext(BaseChatContext):
         # 创建文本和音频事件
         self.track_task(asyncio.create_task(self.create_text_event(sentence_id, text)))
         self.track_task(
-            asyncio.create_task(self.create_audio_event(sentence_id, text, text))
+            asyncio.create_task(self.create_audio_event(sentence_id, text, tts_text))
         )
 
     async def handle_motion_result(self, result: TaskResult):

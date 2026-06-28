@@ -56,6 +56,47 @@ BRACKET_PAIRS = {
 OPENING_BRACKETS = set(BRACKET_PAIRS.keys())
 
 
+# ============================================================
+# TTS 文本过滤工具
+# ============================================================
+
+
+def filter_tts_text(text: str) -> str:
+    """
+    过滤供 TTS 使用的文本
+
+    移除括号及其内部内容，支持嵌套括号。
+    无状态版本，适用于单句独立过滤。
+
+    参数：
+    - text: 原始文本
+
+    返回：
+    - 过滤后的文本（无括号及其内容）
+    """
+    result: list[str] = []
+    bracket_stack: list[str] = []
+
+    for ch in text:
+        if bracket_stack:
+            # 处于括号内部，跳过所有字符
+            if ch in OPENING_BRACKETS:
+                bracket_stack.append(BRACKET_PAIRS[ch])
+            elif ch == bracket_stack[-1]:
+                bracket_stack.pop()
+            continue
+
+        if ch in OPENING_BRACKETS:
+            # 进入括号段
+            bracket_stack.append(BRACKET_PAIRS[ch])
+            continue
+
+        # 不在括号内部，保留字符
+        result.append(ch)
+
+    return "".join(result)
+
+
 class TextStreamParser:
     """
     纯文本流解析器
