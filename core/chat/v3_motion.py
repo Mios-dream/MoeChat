@@ -6,7 +6,8 @@ V3 版本聊天模块
 核心特性：
 1. 单次 LLM 调用同时生成文本和动作标签
 2. 流式解析，逐句播放
-3. 可扩展的任务系统
+3. SQLite 动作数据库 + embedding 语义检索
+4. 特殊动作覆盖（面部表情）+ 预录制动作曲线混合
 
 架构流程：
 ┌─────────────────────────────────────────────────────────────────┐
@@ -24,8 +25,11 @@ V3 版本聊天模块
 │         handle(result)                                           │
 ├─────────────────────────────────────────────────────────────────┤
 │  4. 管道内部：LLM 输出 JSON 行 → 解析器分发 → 产出 TaskResult       │
-│     LLM: {"text": "你好", "actions": ["smile"]}                  │
-│     解析器: text → "你好", actions → ["smile"]                    │
+│     LLM: {"text": "你好", "actions": ["blush"]}                  │
+│     解析器: text → "你好", actions → ["blush"]                    │
+├─────────────────────────────────────────────────────────────────┤
+│  5. MotionEngineService 处理动作                                  │
+│     text → 语义检索 → DB 动作曲线 → 特殊动作覆盖 → 混合 → 关键帧     │
 └─────────────────────────────────────────────────────────────────┘
 
 调用链说明：
@@ -34,6 +38,7 @@ V3 版本聊天模块
 - V3MotionChatContext: 继承基础上下文，添加动作处理
   - handle_motion_result: 处理动作结果 → _create_motion_event
   - handle_result: 分发任务结果到对应处理方法
+- _create_motion_event: get_motion_engine() → engine.process() → motion_to_keyframes()
 
 SSE 事件格式：
 data: {"type": "text", "sentence_id": 1, "message": "你好呀~", ...}
@@ -51,9 +56,11 @@ from core.scheduler import TaskScheduler, create_text_task, create_motion_task
 from core.scheduler.task import TaskResult
 from core.chat.base import store_sentence_event, to_sse
 from core.chat.v1 import BaseChatContext
-from core.expression_generator.motion_combiner import MotionCombiner
-from core.expression_generator.action_sequencer import ActionSequencer
-
+from core.expression_generator.motion_engine_v3 import (
+    get_motion_engine,
+    estimate_text_duration,
+)
+from Config import Config
 from services.assistant_service import AssistantService
 
 assistant_service = AssistantService()
@@ -86,34 +93,6 @@ def create_scheduler() -> TaskScheduler:
     return scheduler
 
 
-# ============================================================
-# 辅助函数
-# ============================================================
-
-
-def calc_exit_ms(text: str) -> int:
-    """
-    根据句尾标点计算动作退出恢复时长
-
-    参数：
-    - text: 句子文本
-
-    返回：
-    - 退出时长（毫秒）
-    """
-    stripped = text.strip()
-    if "…" in stripped[-3:] or "..." in stripped[-3:]:
-        return 1000
-    elif stripped.endswith("！") or stripped.endswith("？") or stripped.endswith("?"):
-        return 700
-    elif stripped.endswith("。") or stripped.endswith("."):
-        return 500
-    elif stripped.endswith("，") or stripped.endswith(","):
-        return 350
-    else:
-        return 400
-
-
 async def _create_motion_event(
     sentence_id: int,
     text: str,
@@ -122,36 +101,49 @@ async def _create_motion_event(
     """
     创建动作事件
 
-    动作阶段关键帧由组合引擎生成，hold/exit 阶段由前端根据音频实际播放时长自行处理。
+    使用 V3 动作引擎：语义检索预录制动作 → 特殊动作覆盖 → 混合 → 输出逐帧曲线。
+
+    hold/exit 阶段由前端根据音频实际播放时长自行处理。
 
     参数：
     - sentence_id: 句子 ID
-    - text: 原始文本
-    - actions: LLM 输出的动作标签列表（如 ["smile", "nod"]）
+    - text: 原始文本（同时用于语义检索和时长估算）
+    - actions: LLM 输出的特殊动作标签列表（如 ["smile", "wink_left"]）
 
     返回：
-    - 动作事件字典，含 action 阶段关键帧 + exit_ms
+    - 动作事件字典，含逐帧曲线 (curves) + exit_ms
     """
-    combiner = MotionCombiner()
+    # 获取动作引擎单例（首次调用时加载数据库和 embedding 模型）
+    engine = get_motion_engine(Config.MOTION_DB_PATH)
 
-    # 标点感知的时长估算
-    text_duration = combiner.estimate_duration(text)
+    # 估算文本时长
+    text_duration = estimate_text_duration(text)
 
-    # 编排动作时序
-    sequencer = ActionSequencer()
-    action_specs = sequencer.sequence(
-        action_names=actions,
-        text_duration=text_duration,
+    # 获取事件循环
+    loop = asyncio.get_running_loop()
+
+    # 在线程池中执行动作处理（SentenceTransformer 编码是 CPU 密集型操作）
+    motion_data = await loop.run_in_executor(
+        None,
+        engine.process,
+        text,
+        actions,
+        text_duration,
     )
 
-    # 退出恢复时长
-    exit_ms = calc_exit_ms(text)
+    duration_ms = int((motion_data.duration if motion_data else text_duration) * 1000)
 
-    # 组合动作阶段关键帧
-    motion_keyframes = combiner.combine_keyframes(
-        action_specs=action_specs,
-        text_duration=text_duration,
-    )
+    if motion_data is None:
+        # 无匹配结果，返回空动作事件
+        return {
+            "type": "motion_frame",
+            "sentence_id": sentence_id,
+            "source_text": text,
+            "motions": [],
+            "duration": 0,
+            "timestamp_ms": time.time() * 1000,
+            "done": False,
+        }
 
     return {
         "type": "motion_frame",
@@ -159,18 +151,12 @@ async def _create_motion_event(
         "source_text": text,
         "motions": [
             {
-                "duration": motion_keyframes.duration,
-                "keyframes": {
-                    param: [
-                        {"time": kp.time, "value": kp.value, "ease": kp.ease}
-                        for kp in points
-                    ]
-                    for param, points in motion_keyframes.keyframes.items()
-                },
-                "exit_ms": exit_ms,
+                "duration": duration_ms,
+                "curves": motion_data.curves,
+                "fps": motion_data.fps,
             }
         ],
-        "duration": motion_keyframes.duration,
+        "duration": duration_ms,
         "timestamp_ms": time.time() * 1000,
         "done": False,
     }

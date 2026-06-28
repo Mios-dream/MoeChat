@@ -44,6 +44,8 @@ class Config:
         "lexicon": os.path.join(WAKEWORD_MODEL_DIR, "en.phone"),
         "tokens_type": "phone+ppinyin",
     }
+    # 动作数据库路径
+    MOTION_DB_PATH = os.path.join(PROJECT_ROOT, "data", "motion.db")
 
 
 # 设置环境变量,使用项目目录下的模型数据,而不是下载模型到默认位置，取消以下载到默认位置

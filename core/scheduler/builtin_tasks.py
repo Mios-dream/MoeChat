@@ -94,6 +94,9 @@ def create_motion_task(
         parse_fn=lambda data: data.get("actions", []),
         field_name="actions",
         priority=priority,
-        example='{"text": "你好呀~", "actions": ["smile", "nod"]}',
-        rules=["动作标签必须从【可用动作列表】中选择，不要自创动作名"],
+        example='{"text": "你好呀~", "actions": ["blush"]}',
+        rules=[
+            "动作标签必须从【可用动作列表】中选择，不要自创动作名",
+            "每句话建议 0-2 个动作，仅在必要时使用非必需",
+        ],
     )

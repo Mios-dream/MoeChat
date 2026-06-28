@@ -279,17 +279,12 @@ class TaskScheduler:
         # 动作任务详细说明
         if "motion" in self._tasks:
             try:
-                from core.expression_generator.atomic_actions import get_action_vocab
+                from core.expression_generator.motion_engine_v3 import (
+                    get_action_vocab_v3,
+                )
 
-                action_vocab = get_action_vocab()
-                details.append(f"""【可用动作列表】
-{action_vocab}
-
-【动作选择指南】
-- 根据句子的情感和内容选择合适的动作，动作可以组合使用
-- 动作的时序编排由系统自动处理，你只需选择合适的动作名称即可
-- 每句话建议 1-4 个动作，优先选择与文本情感最匹配的
-- 示例：{{"text": "你好呀~", "actions": ["smile", "nod"]}}""")
+                action_vocab = get_action_vocab_v3()
+                details.append(action_vocab)
             except ImportError:
                 Log.warning("[调度器] 无法导入动作词汇表，跳过动作详细说明")
 
@@ -641,6 +636,7 @@ class Pipeline:
         completed_tasks: set[str] = set()
         llm_delay_flag = False
         first_chunk_flag = False
+        result_content = ""
 
         while attempt <= self.max_retries:
             if attempt > 0:
@@ -659,6 +655,8 @@ class Pipeline:
                     )
                     llm_delay_flag = True
 
+                result_content += token
+
                 for result in self.parser.stream_parse(token):
                     result_count += 1
                     completed_tasks.add(result.task_type)
@@ -675,11 +673,11 @@ class Pipeline:
                 completed_tasks.add(result.task_type)
                 yield result
 
+            print("模型回复:" + result_content)
             # 检查是否有任务结果产出
             if completed_tasks:
                 # 有结果，执行成功
                 break
-
             # 无结果，准备重试
             Log.info("[管道] 未检测到任何任务结果，准备重试")
 

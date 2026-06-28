@@ -3,6 +3,7 @@ __pycache__
 .venv
 .vscode
 
+/data/*
 /data/models/*
 !/data/models/silero_vad.onnx
 
