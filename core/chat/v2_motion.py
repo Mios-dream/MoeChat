@@ -271,13 +271,13 @@ async def llm_chat_with_tts_and_motion_v2(params: chat_data):
 
     # 获取历史消息（包含上下文）
     history_messages = [
-        *agent.get_history(),
         {
-            "role": "user",
+            "role": "system",
             "content": await agent.get_context(
                 msg=ctx.user_message, is_sleep_mode=params.is_sleep_mode
             ),
         },
+        *agent.get_history(),
     ]
 
     # ============================================================

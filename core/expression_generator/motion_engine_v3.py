@@ -30,6 +30,7 @@ Live2D 动作引擎 V3 — 服务端适配器
 import sqlite3
 from dataclasses import dataclass
 from my_utils import embedding
+from my_utils.log import logger as Log
 import numpy as np
 
 # ============================================================================
@@ -237,7 +238,7 @@ class MotionDatabase:
         self._motion_ids: np.ndarray = np.empty((0,), dtype=np.int32)
         self._param_ids: list[str] = []
         self._motion_meta: dict[int, MotionMeta] = {}
-        self._embedding_model: str = "BAAI/bge-small-zh-v1.5"
+        self._embedding_model: str = "unknown"
 
         self._load()
 
@@ -264,7 +265,7 @@ class MotionDatabase:
             "SELECT id, text, embedding_blob, motion_id FROM entries ORDER BY id"
         ).fetchall()
         if not rows:
-            print("[MotionDatabase] 数据库为空，请先运行 build_motion_db.py")
+            Log.info("[MotionDatabase] 数据库为空，请先运行 build_motion_db.py")
             return
 
         n = len(rows)
@@ -290,7 +291,7 @@ class MotionDatabase:
         if row:
             self._embedding_model = row["value"]
 
-        print(
+        Log.info(
             f"[MotionDatabase] 加载 {n} 条条目, "
             f"{len(self._motion_meta)} 个动作, "
             f"embedding 维度 {dim}"
@@ -636,7 +637,6 @@ class MotionEngineService:
             text: 语义描述文本（用于检索匹配的预录制动作）
             actions: 特殊动作名列表（如 ["smile", "wink_left"]）
             max_duration: 动作最大时长（秒），用于匹配语音时长。
-                          超过此时长则截断动作。
 
         Returns:
             MotionData | None: 混合后的动作数据，无匹配结果返回 None
@@ -657,22 +657,22 @@ class MotionEngineService:
             result = results[0] if results else None
 
         if result is None:
-            print("[MotionEngineService] 无匹配结果")
+            Log.warning("[MotionEngineService] 无匹配结果")
             # 无匹配结果时，仅用动作覆盖生成纯表情动作
             return self._expression_only(actions, max_duration)
 
         matched_text, motion_id, score = result
-        print(f"[MotionEngineService] 检索匹配 [{score:.3f}]: {matched_text}")
+        Log.info(f"[MotionEngineService] 检索匹配 [{score:.3f}]: {matched_text}")
 
         # 2. 从 DB 加载预解析的动作曲线
         meta = self.database.get_motion_meta(motion_id)
         if meta is None:
-            print(f"[MotionEngineService] motion_id={motion_id} 元数据缺失")
+            Log.warning(f"[MotionEngineService] motion_id={motion_id} 元数据缺失")
             return self._expression_only(actions, max_duration)
 
         curves = self.database.get_motion_curves(motion_id)
         if not curves:
-            print(f"[MotionEngineService] motion_id={motion_id} 曲线数据缺失")
+            Log.warning(f"[MotionEngineService] motion_id={motion_id} 曲线数据缺失")
             return self._expression_only(actions, max_duration)
 
         base_motion = MotionData(
@@ -680,17 +680,13 @@ class MotionEngineService:
             duration=meta.duration,
             fps=meta.fps,
         )
-        print(
-            f"[MotionEngineService] 加载动作: {len(curves)} 条曲线, "
-            f"{base_motion.duration:.2f}s, {base_motion.frame_count} 帧"
-        )
 
         # 3. 生成特殊动作覆盖
         overlays = ActionOverlay.generate_all(
             actions, base_motion.duration, base_motion.fps
         )
-        if overlays:
-            print(f"[MotionEngineService] 覆盖参数: {list(overlays.keys())}")
+        # if overlays:
+        #     Log.info(f"[MotionEngineService] 覆盖参数: {list(overlays.keys())}")
 
         # 4. 混合: overlay 覆盖 → 嘴部参数默认 → 其余保留
         mixed_curves: dict[str, list[float]] = {}
@@ -705,22 +701,22 @@ class MotionEngineService:
                 mixed_curves[param_id] = values
 
         # 5. 时长截断
-        effective_duration = base_motion.duration
-        if 0 < max_duration < base_motion.duration:
-            effective_duration = max_duration
-            max_frame = int(effective_duration * base_motion.fps) + 1
-            for param_id in list(mixed_curves.keys()):
-                vals = mixed_curves[param_id]
-                if len(vals) > max_frame:
-                    mixed_curves[param_id] = vals[:max_frame]
-            print(
-                f"[MotionEngineService] 截断动作: {base_motion.duration:.2f}s → "
-                f"{effective_duration:.2f}s"
-            )
+        # effective_duration = base_motion.duration
+        # if 0 < max_duration < base_motion.duration:
+        #     effective_duration = max_duration
+        #     max_frame = int(effective_duration * base_motion.fps) + 1
+        #     for param_id in list(mixed_curves.keys()):
+        #         vals = mixed_curves[param_id]
+        #         if len(vals) > max_frame:
+        #             mixed_curves[param_id] = vals[:max_frame]
+        #     Log.info(
+        #         f"[MotionEngineService] 截断动作: {base_motion.duration:.2f}s → "
+        #         f"{effective_duration:.2f}s"
+        #     )
 
         return MotionData(
             curves=mixed_curves,
-            duration=effective_duration,
+            duration=base_motion.duration,
             fps=base_motion.fps,
         )
 
@@ -750,7 +746,7 @@ class MotionEngineService:
         for param_id, overlay_curve in overlays.items():
             curves[param_id] = overlay_curve
 
-        print(
+        Log.info(
             f"[MotionEngineService] 纯表情动作: {len(curves)} 条曲线, "
             f"{duration:.2f}s"
         )

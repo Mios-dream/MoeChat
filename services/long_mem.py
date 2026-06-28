@@ -611,8 +611,8 @@ class Memory:
         print(f"[检索日记耗时]：{time.time() - start_time}")
         start_time = time.time()
         # 检索尚未归档的对话消息，也就是今天内的消息
-        pending_hits = self._search_pending_turns(msg, time_range)
-        print(f"[检索未归档对话耗时]：{time.time() - start_time}")
+        # pending_hits = self._search_pending_turns(msg, time_range)
+        # print(f"[检索未归档对话耗时]：{time.time() - start_time}")
 
         blocks = []
 
@@ -621,18 +621,18 @@ class Memory:
             for day, summary, facts, score in diary_hits:
                 lines.append(f"日期: {day} (相关度: {score:.3f})")
                 lines.append(summary)
-                lines.append("事实要点:")
-                lines.append(facts)
-                lines.append("")
+                # 不再显示事实要点
+                # lines.append("事实要点:")
+                # lines.append(facts)
             blocks.append("\n".join(lines).strip())
-
-        if pending_hits:
-            lines = ["[未归档对话]"]
-            for ts, role, content, score in pending_hits:
-                t_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
-                speaker = self.user if role == "user" else self.char
-                lines.append(f"{t_str} {speaker}: {content} (相关度: {score:.3f})")
-            blocks.append("\n".join(lines).strip())
+        # 未归档的对话片段暂时不返回，避免 prompt 过长分散注意力
+        # if pending_hits:
+        #     lines = ["[未归档对话]"]
+        #     for ts, role, content, score in pending_hits:
+        #         t_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+        #         speaker = self.user if role == "user" else self.char
+        #         lines.append(f"{t_str} {speaker}: {content} (相关度: {score:.3f})")
+        #     blocks.append("\n".join(lines).strip())
 
         return "\n\n".join(blocks)
 

@@ -44,12 +44,12 @@ class AssistantSettings(BaseModel):
     )
     enableCoreMemory: bool = Field(True, description="助手是否开启核心记忆功能")
     # 日记内容搜索阈值，启用日志检索加强是需要，用于判断匹配程度。过高可能会丢失数据，过低则过滤少量无用记忆。
-    longMemoryThreshold: float = Field(0.5, description="助手日记功能的搜索阈值")
+    longMemoryThreshold: float = Field(0.8, description="助手日记功能的搜索阈值")
     # 是否开启世界书(知识库)功能，开启后可以根据用户输入的问题，从知识库中检索相关内容。
     enableLoreBooks: bool = Field(True, description="助手是否开启世界书(知识库)功能")
     # 世界书(知识库)检索阈值，启用知识库功能是需要，用于判断匹配程度。过高可能会丢失数据，过低则过滤少量无用记忆。
     loreBooksThreshold: float = Field(
-        0.5, description="助手世界书(知识库)功能的搜索阈值"
+        0.8, description="助手世界书(知识库)功能的搜索阈值"
     )
     # 世界书搜索深度
     loreBooksDepth: int = Field(3, description="助手世界书(知识库)功能的搜索深度")
@@ -73,9 +73,9 @@ class AssistantSettings(BaseModel):
                 "enableLongMemorySearchEnhance", True
             ),
             enableCoreMemory=data.get("enableCoreMemory", True),
-            longMemoryThreshold=data.get("longMemoryThreshold", 0.38),
+            longMemoryThreshold=data.get("longMemoryThreshold", 0.8),
             enableLoreBooks=data.get("enableLoreBooks", True),
-            loreBooksThreshold=data.get("loreBooksThreshold", 0.5),
+            loreBooksThreshold=data.get("loreBooksThreshold", 0.8),
             loreBooksDepth=data.get("loreBooksDepth", 3),
             enableEmotionSystem=data.get("enableEmotionSystem", False),
             enableEmotionPersist=data.get("enableEmotionPersist", False),

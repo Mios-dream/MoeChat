@@ -27,6 +27,7 @@ V4 信息调度中心
 └─────────────────────────────────────────────────────────────────┘
 """
 
+import json
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from enum import Enum
@@ -38,7 +39,7 @@ from core.llm.prompt_manager import PromptManager, PromptTemplate
 from core.scheduler.task import Task, TaskResult
 from core.scheduler.parsers.multi_parser import MultiParser
 from core.scheduler.parsers.text_stream_parser import TextStreamParser
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 # ============================================================
 # 提示词片段定义
@@ -356,6 +357,7 @@ class TaskScheduler:
             "每行必须是完整的、合法的 JSON 对象",
             "每行对应一句话，所有字段放在同一个 JSON 对象中",
             "不要输出 JSON 以外的任何内容（不要输出 markdown 代码块、解释说明等）",
+            "注意：对话历史中你的回复格式可能与当前要求的 JSON 格式不同，你必须忽略历史格式，严格按照上述规则以 JSON 格式输出",
         ]
         for task in sorted_tasks:
             if task.rules:
@@ -413,6 +415,65 @@ class TaskScheduler:
 
         return self._prompt_manager.system_prompt
 
+    def _normalize_history_for_json(
+        self,
+        history_messages: list[dict[str, str]] | None,
+    ) -> list[dict[str, str]]:
+        """
+        将历史消息中 assistant 角色的纯文本内容转换为 JSON 格式
+
+        根据当前注册的任务动态构建完整的 JSON 字段结构：
+        - text 字段填充原始内容
+        - 其他字段（如 actions）使用空值填充
+        确保模型看到的所有历史 assistant 回复都是完整的 JSON 格式，
+        消除纯文本历史对模型 JSON 输出格式的 few-shot 干扰。
+
+        参数：
+        - history_messages: 原始历史消息列表
+
+        返回：
+        - 格式化后的历史消息列表（assistant 纯文本 → 完整 JSON）
+        """
+        if not history_messages:
+            return []
+
+        # 根据注册的任务构建完整 JSON 模板的默认值
+        field_defaults: dict[str, object] = {}
+        for task in self._tasks.values():
+            if task.field_name == "text":
+                field_defaults[task.field_name] = ""  # placeholder，稍后替换
+            elif task.field_name == "actions":
+                field_defaults[task.field_name] = []
+            else:
+                field_defaults[task.field_name] = ""
+
+        # 检查是否有 text 之外的字段需要包含
+        has_extra_fields = len(field_defaults) > 1
+
+        formatted = []
+        for msg in history_messages:
+            if msg.get("role") == "assistant":
+                content = msg["content"]
+                stripped = content.strip()
+                # 已经是 JSON 格式则跳过
+                if stripped.startswith("{") and stripped.endswith("}"):
+                    formatted.append(msg)
+                else:
+                    if has_extra_fields:
+                        # 构建包含所有注册字段的完整 JSON
+                        json_obj = dict(field_defaults)
+                        json_obj["text"] = content
+                        wrapped = json.dumps(json_obj, ensure_ascii=False)
+                    else:
+                        # 只有 text 任务，简化输出
+                        wrapped = json.dumps(
+                            {"text": content}, ensure_ascii=False
+                        )
+                    formatted.append({"role": "assistant", "content": wrapped})
+            else:
+                formatted.append(msg)
+        return formatted
+
     def create_pipeline(
         self,
         user_message: str | None = None,
@@ -446,9 +507,9 @@ class TaskScheduler:
             {"role": "system", "content": task_system_prompt},
         ]
 
-        # 添加历史消息
+        # 添加历史消息（将 assistant 纯文本转为 JSON 格式，消除 few-shot 干扰）
         if history_messages:
-            messages.extend(history_messages)
+            messages.extend(self._normalize_history_for_json(history_messages))
 
         # 格式化时间
         format_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
@@ -601,7 +662,7 @@ class Pipeline:
         """
         messages = self.messages.copy()
 
-        retry_hint = f"\n【重要提醒】你的上一次回复没有包含全部所需字段，或者输出格式不正确，请确保本次回复必须符合格式要求。每行 JSON 对象都必须包含这些字段。"
+        retry_hint = f"\n【重要提醒】你的上一次回复没有包含全部所需字段，或者输出的不是要求的json格式，请确保本次回复必须符合格式要求。每行 JSON 对象都必须包含必要字段。"
 
         # 在最后一条用户消息后追加提醒
         if messages and messages[-1]["role"] == "user":
