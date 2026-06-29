@@ -52,7 +52,12 @@ from typing import Any
 
 from models.dto.chat_request import chat_data
 from my_utils.log import logger
-from core.scheduler import TaskScheduler, create_text_task, create_motion_task
+from core.scheduler import (
+    TaskScheduler,
+    create_text_task,
+    create_motion_task,
+    create_bilingual_task,
+)
 from core.scheduler.task import TaskResult
 from core.scheduler.parsers.text_stream_parser import filter_tts_text
 from core.chat.base import store_sentence_event, to_sse
@@ -72,13 +77,17 @@ assistant_service = AssistantService()
 # ============================================================
 
 
-def create_scheduler() -> TaskScheduler:
+def create_scheduler(lang: str = "zh") -> TaskScheduler:
     """
     创建 V3 信息调度器
 
     注册所有需要的任务：
     - text: 文本生成任务（优先级 100）
+    - bilingual: 双语翻译任务（优先级 150，仅在 GSV 语言非中文时注册）
     - motion: 动作标签任务（优先级 200）
+
+    参数：
+    - lang: GSV 合成目标语言代码（"zh"/"en"/"ja"）
 
     返回：
     - 配置好的 TaskScheduler 实例
@@ -87,6 +96,10 @@ def create_scheduler() -> TaskScheduler:
 
     # 注册文本任务
     scheduler.add_task(create_text_task(priority=100))
+
+    # 非中文输出时注册双语翻译任务
+    if lang != "zh" and lang in ("en", "ja"):
+        scheduler.add_task(create_bilingual_task(target_lang=lang, priority=150))
 
     # 注册动作任务
     scheduler.add_task(create_motion_task(priority=200))
@@ -172,20 +185,29 @@ class V3MotionChatContext(BaseChatContext):
     """
     V3Motion 聊天上下文
 
-    继承基础上下文，添加 V3 动作处理逻辑。
+    继承基础上下文，添加 V3 动作处理和双语翻译处理逻辑。
 
     调用链：
     - handle_result: 分发任务结果
       - text → handle_json_result（继承自 BaseChatContext）
+      - bilingual → handle_bilingual_result（双语翻译）
       - motion → handle_motion_result
     """
 
-    def __init__(self):
-        """初始化 V3Motion 聊天上下文"""
+    def __init__(self, tts_lang: str = "zh"):
+        """
+        初始化 V3Motion 聊天上下文
+
+        参数：
+        - tts_lang: GSV 合成目标语言代码（"zh"/"en"/"ja"）
+                    当不为 "zh" 时，启用双语翻译模式
+        """
         super().__init__(
             event_order=("text", "audio", "motion_frame"),
             tts_concurrency=1,
         )
+        # GSV 合成目标语言
+        self.tts_lang: str = tts_lang
         # 文本缓存（V3 模式使用）
         self.text_cache: dict[int, str] = {}
         # 动作缓存（V3 模式使用）
@@ -211,9 +233,13 @@ class V3MotionChatContext(BaseChatContext):
 
         # 创建文本和音频事件
         self.track_task(asyncio.create_task(self.create_text_event(sentence_id, text)))
-        self.track_task(
-            asyncio.create_task(self.create_audio_event(sentence_id, text, tts_text))
-        )
+        # 只有当 GSV 语言为中文时才创建音频事件，非中文时由双语翻译任务创建音频事件
+        if self.tts_lang == "zh":
+            self.track_task(
+                asyncio.create_task(
+                    self.create_audio_event(sentence_id, text, tts_text)
+                )
+            )
 
     async def handle_motion_result(self, result: TaskResult):
         """
@@ -242,6 +268,21 @@ class V3MotionChatContext(BaseChatContext):
                 self.sentence_events, sentence_id, "motion_frame", motion_event
             )
 
+    async def handle_bilingual_result(self, result: TaskResult):
+        """
+        处理双语翻译结果
+
+        参数：
+        - result: 双语翻译任务结果，data 格式为翻译后的文本字符串
+        """
+        sentence_id = result.sentence_id
+        text = result.data.get("text", "")
+        tts_text = result.data.get("tts_text", "")
+
+        self.track_task(
+            asyncio.create_task(self.create_audio_event(sentence_id, text, tts_text))
+        )
+
     async def handle_result(self, result: TaskResult):
         """
         处理调度器结果（分发到对应处理方法）
@@ -249,12 +290,15 @@ class V3MotionChatContext(BaseChatContext):
         调用链：
         - text → handle_json_result → text_wrapper + tts_task
         - motion → handle_motion_result → _create_motion_event
-
+        - bilingual → handle_bilingual_result → create_audio_event
         参数：
         - result: 调度器产出的任务结果
         """
+
         if result.task_type == "text":
             await self.handle_json_result(result)
+        elif result.task_type == "bilingual":
+            await self.handle_bilingual_result(result)
         elif result.task_type == "motion":
             await self.handle_motion_result(result)
 
@@ -271,11 +315,12 @@ async def llm_chat_with_tts_and_motion_v3(params: chat_data):
     使用信息调度中心，单次 LLM 调用同时生成文本和动作标签。
 
     流程概述：
-    1. 创建调度器，注册文本和动作任务
-    2. 调度器自动组合提示词
-    3. 创建管道，流式调用 LLM
-    4. 解析器将 LLM 输出分发给对应任务
-    5. 每个任务结果触发对应的事件（文本/音频/动作）
+    1. 获取 GSV 合成语言配置
+    2. 创建调度器（GSV 非中文时自动注册双语翻译任务），注册文本和动作任务
+    3. 调度器自动组合提示词
+    4. 创建管道，流式调用 LLM
+    5. 解析器将 LLM 输出分发给对应任务
+    6. 每个任务结果触发对应的事件（文本/音频/动作/双语翻译）
 
     参数：
     - params: 聊天请求参数
@@ -293,8 +338,13 @@ async def llm_chat_with_tts_and_motion_v3(params: chat_data):
         logger.error("当前没有加载助手")
         return
 
-    # 第二步：创建调度器和管道
-    scheduler = create_scheduler()
+    # 第二步：获取 GSV 合成语言配置，创建调度器和管道
+
+    tts_lang = agent.agent_config.gsvSetting.textLang
+    if tts_lang not in ("zh", "en", "ja"):
+        tts_lang = "zh"
+
+    scheduler = create_scheduler(lang=tts_lang)
 
     # 用户消息
     user_message = params.msg[-1]["content"]
@@ -310,14 +360,14 @@ async def llm_chat_with_tts_and_motion_v3(params: chat_data):
     ]
 
     # 创建管道
-    pipeline = scheduler.create_pipeline(
+    pipeline = scheduler.create_task_pipeline(
         system_context=agent.prompt,
         history_messages=history_messages,
         user_message=user_message,
     )
 
-    # 第三步：初始化上下文
-    ctx = V3MotionChatContext()
+    # 第三步：初始化上下文（传入 GSV 语言用于双语翻译控制）
+    ctx = V3MotionChatContext(tts_lang=tts_lang)
 
     # 第四步：执行管道并输出事件
 
@@ -349,7 +399,6 @@ async def llm_chat_with_tts_and_motion_v3(params: chat_data):
             {
                 "type": "done",
                 "timestamp_ms": time.time() * 1000,
-                "total_sentences": len(ctx.text_cache),
                 "full_text": full_text,
                 "done": True,
             }

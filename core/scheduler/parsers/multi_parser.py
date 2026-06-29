@@ -25,14 +25,13 @@ TaskResult(task_type="motion", data=["look_up"], sentence_id=2)
 
 from collections.abc import Generator
 from typing import Any
-import json
 import time
-
+from core.scheduler.parsers.base_parser import BaseParser
 from my_utils.log import logger as Log
 from core.scheduler.task import Task, TaskResult
 
 
-class MultiParser:
+class MultiParser(BaseParser):
     """
     多任务解析器
 
@@ -55,8 +54,6 @@ class MultiParser:
         """初始化多任务解析器"""
         # 任务注册表 {task_type: Task}
         self._tasks: dict[str, Task] = {}
-        # 行缓冲区（用于处理跨 token 的 JSON 行）
-        self._line_buffer: str = ""
         # 句子 ID 计数器
         self._sentence_counter: int = 0
         # 上一次的文本内容（用于检测新句子）
@@ -74,7 +71,6 @@ class MultiParser:
 
     def reset(self) -> None:
         """重置解析器状态"""
-        self._line_buffer = ""
         self._sentence_counter = 0
         self._last_text = ""
 
@@ -135,69 +131,20 @@ class MultiParser:
             timestamp=time.time(),
         )
 
-    def _process_line(self, line: str) -> Generator[TaskResult, None, None]:
+    def parse(self, data: dict) -> Generator[TaskResult, None, None]:
         """
-        处理一行 JSON
-
+        解析 JSON 数据, 并产出对应的 TaskResult
         参数：
-        - line: JSON 字符串
+        - data: 解析后的 JSON 字典
 
         产出：
         - TaskResult 实例
         """
-        line = line.strip()
-        if not line:
-            return
-
-        # 解析 JSON
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            Log.debug(f"[解析器] 跳过无效行: {line[:50]}...")
-            return
-
-        # 确保是字典类型
-        if not isinstance(data, dict):
-            return
-
         # 遍历已注册的任务，提取数据
         for task in self._tasks.values():
             result = self._extract_task_data(data, task)
             if result is not None:
                 yield result
-
-    def stream_parse(self, token: str) -> Generator[TaskResult, None, None]:
-        """
-        流式解析
-
-        每接收到一个 token，检查缓冲区是否有完整的 JSON 行。
-        如果有，解析并产出结果。
-
-        参数：
-        - token: 单个 token
-
-        产出：
-        - TaskResult 实例
-        """
-        self._line_buffer += token
-
-        # 检查是否有完整的行（以换行符分隔）
-        while "\n" in self._line_buffer:
-            line, self._line_buffer = self._line_buffer.split("\n", 1)
-            yield from self._process_line(line)
-
-    def flush(self) -> Generator[TaskResult, None, None]:
-        """
-        刷新缓冲区，处理剩余内容
-
-        在流结束时调用，确保处理所有剩余数据。
-
-        产出：
-        - 缓冲区中解析完成的 TaskResult
-        """
-        if self._line_buffer.strip():
-            yield from self._process_line(self._line_buffer)
-        self._line_buffer = ""
 
     @property
     def sentence_count(self) -> int:

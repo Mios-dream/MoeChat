@@ -31,7 +31,6 @@ from openai.types.chat import (
 
 from my_utils import config_manager as CConfig
 from my_utils.log import logger as Log
-from core.llm.prompt_manager import PromptManager
 from core.llm.response_parser import ResponseParser, StreamParserProtocol, TextParser
 from core.llm.callback_manager import CallbackManager, CallbackEvent
 
@@ -222,7 +221,7 @@ class LLMClient:
         self,
         messages: list[ChatCompletionMessageParam],
         parser: ResponseParser | StreamParserProtocol | None = None,
-        model_key: str | None = None,
+        model_key: Literal["ChatLLM", "LLM"] | None = None,
         extra_body: dict[str, Any] | None = None,
         timeout: float = 30.0,
     ) -> AsyncIterator[Any]:
@@ -304,86 +303,6 @@ class LLMClient:
         except Exception as e:
             Log.error(f"[LLM客户端] 流式请求失败: {e}")
             await self._callbacks.emit(CallbackEvent.ERROR, error=str(e))
-
-    async def stream_with_prompt(
-        self,
-        prompt_manager: PromptManager,
-        parser: ResponseParser | None = None,
-        model_key: str | None = None,
-        extra_body: dict[str, Any] | None = None,
-        timeout: float = 30.0,
-    ) -> AsyncIterator[Any]:
-        """
-        使用 PromptManager 的流式请求
-
-        参数：
-        - prompt_manager: 提示词管理器
-        - parser: 响应解析器
-        - model_key: 模型配置键名
-        - extra_body: 额外请求参数
-        - timeout: 超时时间（秒）
-
-        产出：
-        - 解析后的数据块
-        """
-        async for chunk in self.stream(
-            messages=prompt_manager.messages,
-            parser=parser,
-            model_key=model_key,
-            extra_body=extra_body,
-            timeout=timeout,
-        ):
-            yield chunk
-
-    def create_stream_request(
-        self,
-        messages: list[ChatCompletionMessageParam],
-        parser: ResponseParser | None = None,
-        model_key: str | None = None,
-        timeout: float = 30.0,
-        extra_body: dict[str, Any] | None = None,
-    ) -> StreamRequest:
-        """
-        创建流式请求配置
-
-        参数：
-        - messages: 消息列表
-        - parser: 响应解析器
-        - model_key: 模型配置键名
-        - timeout: 超时时间
-        - extra_body: 额外请求参数
-
-        返回：
-        - StreamRequest 实例
-        """
-        return StreamRequest(
-            messages=messages,
-            parser=parser or TextParser(),
-            model_key=model_key or self._model_key,
-            timeout=timeout,
-            extra_body=extra_body or {},
-        )
-
-    async def execute_stream_request(
-        self, request: StreamRequest
-    ) -> AsyncIterator[Any]:
-        """
-        执行流式请求
-
-        参数：
-        - request: StreamRequest 实例
-
-        产出：
-        - 解析后的数据块
-        """
-        async for chunk in self.stream(
-            messages=request.messages,
-            parser=request.parser,
-            model_key=request.model_key,
-            extra_body=request.extra_body,
-            timeout=request.timeout,
-        ):
-            yield chunk
 
     # ========== 工具调用支持 ==========
 

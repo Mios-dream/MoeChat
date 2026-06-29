@@ -94,7 +94,7 @@ class V2MotionChatContext(BaseChatContext):
         )
         store_sentence_event(self.sentence_events, sentence_id, "motion_frame", payload)
 
-    async def handle_text_result(self, result: TaskResult):
+    async def handle_result(self, result: TaskResult):
         """
         处理文本结果，生成文本、音频和动作事件
 
@@ -106,7 +106,7 @@ class V2MotionChatContext(BaseChatContext):
         - result: 文本任务结果
         """
         # 调用基类方法处理文本和音频事件
-        await super().handle_text_result(result)
+        await super().handle_result(result)
 
         # 获取句子信息用于动作生成
         sentence_id = result.sentence_id
@@ -298,7 +298,7 @@ async def llm_chat_with_tts_and_motion_v2(params: chat_data):
         #   → create_motion_event → base.motion_wrapper
         # ============================================================
         async for result in pipeline.execute():
-            await ctx.handle_text_result(result)
+            await ctx.handle_result(result)
 
             # drain_ready_events → base.drain_ready_sentence_events
             for payload in ctx.drain_ready_events():
@@ -315,7 +315,6 @@ async def llm_chat_with_tts_and_motion_v2(params: chat_data):
         final_response = {
             "type": "done",
             "timestamp_ms": time.time() * 1000,
-            "total_sentences": pipeline.sentence_count,
             "full_text": ctx.get_full_text(),
             "done": True,
         }

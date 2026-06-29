@@ -88,7 +88,7 @@ class BaseChatContext:
 
     def track_task(self, task: asyncio.Task[Any]):
         """
-        跟踪异步任务
+        跟踪异步任务，在任务完成后从 pending_tasks 中移除
 
         参数：
         - task: 要跟踪的异步任务
@@ -143,7 +143,7 @@ class BaseChatContext:
         )
         store_sentence_event(self.sentence_events, sentence_id, "audio", payload)
 
-    async def handle_text_result(self, result: TaskResult):
+    async def handle_result(self, result: TaskResult):
         """
         处理文本结果（V1 模式：使用 create_text_pipeline）
 
@@ -230,7 +230,7 @@ async def llm_chat_with_tts(params: chat_data):
     try:
         # 第五步：流式执行管道
         async for result in pipeline.execute():
-            await ctx.handle_text_result(result)
+            await ctx.handle_result(result)
 
             # drain_ready_events 内部调用 base.drain_ready_sentence_events
             for payload in ctx.drain_ready_events():
@@ -247,7 +247,6 @@ async def llm_chat_with_tts(params: chat_data):
         final_response = {
             "type": "done",
             "timestamp_ms": time.time() * 1000,
-            "total_sentences": pipeline.sentence_count,
             "full_text": ctx.get_full_text(),
             "done": True,
         }

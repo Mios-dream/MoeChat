@@ -36,6 +36,7 @@ from core.scheduler.scheduler import TaskScheduler, Pipeline
 from core.scheduler.builtin_tasks import (
     create_text_task,
     create_motion_task,
+    create_bilingual_task,
 )
 
 __all__ = [
@@ -50,4 +51,5 @@ __all__ = [
     # 内置任务工厂
     "create_text_task",
     "create_motion_task",
+    "create_bilingual_task",
 ]

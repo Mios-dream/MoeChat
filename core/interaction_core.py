@@ -1,7 +1,10 @@
 from datetime import datetime
 import time
-import asyncio
-from core.scheduler.builtin_tasks import create_motion_task, create_text_task
+from core.scheduler.builtin_tasks import (
+    create_motion_task,
+    create_text_task,
+    create_bilingual_task,
+)
 from models.dto.interaction_request import InteractionMessageRequest
 from my_utils import prompt as prompt_templates
 from my_utils.log import logger
@@ -94,12 +97,16 @@ def _build_interaction_message_list(
     return msg_list
 
 
-def _create_interaction_scheduler(with_motion: bool = False) -> TaskScheduler:
+def _create_interaction_scheduler(
+    with_motion: bool = False,
+    tts_lang: str = "zh",
+) -> TaskScheduler:
     """
     创建交互事件调度器
 
     参数：
     - with_motion: 是否包含动作任务
+    - tts_lang: GSV 合成目标语言代码（"zh"/"en"/"ja"），非中文时注册双语翻译任务
 
     返回：
     - 配置好的 TaskScheduler 实例
@@ -109,6 +116,10 @@ def _create_interaction_scheduler(with_motion: bool = False) -> TaskScheduler:
     # 注册文本任务
     scheduler.add_task(create_text_task(priority=100))
 
+    # 非中文输出时注册双语翻译任务
+    if tts_lang != "zh" and tts_lang in ("en", "ja"):
+        scheduler.add_task(create_bilingual_task(target_lang=tts_lang, priority=150))
+
     # 根据需要注册动作任务
     if with_motion:
         scheduler.add_task(create_motion_task(priority=200))
@@ -116,7 +127,7 @@ def _create_interaction_scheduler(with_motion: bool = False) -> TaskScheduler:
     return scheduler
 
 
-async def _execute_interaction_pipeline(
+async def generate_interaction_message(
     params: InteractionMessageRequest,
 ):
     """
@@ -148,10 +159,14 @@ async def _execute_interaction_pipeline(
         )
         return
 
-    # 创建调度器（根据是否需要动作）
-    scheduler = _create_interaction_scheduler(with_motion=params.generation_motion)
-    print(f"[交互] 调度器创建完成", scheduler.tasks)
+    # 获取 GSV 合成语言配置
+    tts_lang = agent.agent_config.gsvSetting.textLang
 
+    # 创建调度器（根据是否需要动作和语言配置）
+    scheduler = _create_interaction_scheduler(
+        with_motion=params.generation_motion,
+        tts_lang=tts_lang,
+    )
     # 创建管道
     # 注意：系统提示词通过 system_context 传入，历史消息和用户消息通过 history_messages 传入
     pipeline = scheduler.create_pipeline(
@@ -161,18 +176,16 @@ async def _execute_interaction_pipeline(
 
     # 初始化上下文（根据是否需要动作选择不同的 Context）
     if params.generation_motion:
-        chat_context = V3MotionChatContext()
+        chat_context = V3MotionChatContext(tts_lang=tts_lang)
     else:
         chat_context = BaseChatContext(event_order=("text", "audio"))
 
     try:
         # 流式执行管道
         async for result in pipeline.execute():
-            # 根据上下文类型处理结果
-            if params.generation_motion:
-                await chat_context.handle_result(result)
-            else:
-                await chat_context.handle_text_result(result)
+            # 处理结果
+            await chat_context.handle_result(result)
+
             # 输出就绪的句子事件
             for payload in chat_context.drain_ready_events():
                 yield to_sse(payload)
@@ -190,7 +203,6 @@ async def _execute_interaction_pipeline(
             {
                 "type": "done",
                 "timestamp_ms": time.time() * 1000,
-                "total_sentences": len(chat_context.text_cache),
                 "full_text": full_text,
                 "done": True,
             }
@@ -213,9 +225,3 @@ async def _execute_interaction_pipeline(
                 "done": True,
             }
         )
-
-
-async def generate_interaction_message(params: InteractionMessageRequest):
-    """交互消息生成（文本 + 语音，无动作帧）。"""
-    async for event in _execute_interaction_pipeline(params):
-        yield event

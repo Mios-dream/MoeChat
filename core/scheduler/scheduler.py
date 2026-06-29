@@ -32,7 +32,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from enum import Enum
 import time
-
+import asyncio
 from my_utils.log import logger as Log
 from core.llm import LLMClient
 from core.llm.prompt_manager import PromptManager, PromptTemplate
@@ -40,6 +40,7 @@ from core.scheduler.task import Task, TaskResult
 from core.scheduler.parsers.multi_parser import MultiParser
 from core.scheduler.parsers.text_stream_parser import TextStreamParser
 from typing import Any, Literal
+from core.llm.response_parser import ResponseParser, JsonLineParser, TextParser
 
 # ============================================================
 # 提示词片段定义
@@ -466,15 +467,13 @@ class TaskScheduler:
                         wrapped = json.dumps(json_obj, ensure_ascii=False)
                     else:
                         # 只有 text 任务，简化输出
-                        wrapped = json.dumps(
-                            {"text": content}, ensure_ascii=False
-                        )
+                        wrapped = json.dumps({"text": content}, ensure_ascii=False)
                     formatted.append({"role": "assistant", "content": wrapped})
             else:
                 formatted.append(msg)
         return formatted
 
-    def create_pipeline(
+    def create_task_pipeline(
         self,
         user_message: str | None = None,
         system_context: str | None = None,
@@ -531,7 +530,8 @@ class TaskScheduler:
         # 创建管道
         return Pipeline(
             messages=messages,
-            parser=parser,
+            llm_parser=JsonLineParser(),
+            task_parser=parser,
             max_retries=max_retries,
             retry_delay=retry_delay,
         )
@@ -580,7 +580,8 @@ class TaskScheduler:
 
         return Pipeline(
             messages=messages,
-            parser=parser,
+            llm_parser=TextParser(),
+            task_parser=parser,
         )
 
 
@@ -622,7 +623,8 @@ class Pipeline:
     def __init__(
         self,
         messages: list[dict[str, str]],
-        parser: MultiParser | TextStreamParser,
+        llm_parser: ResponseParser,
+        task_parser: MultiParser | TextStreamParser,
         model_key: Literal["ChatLLM", "LLM"] = "ChatLLM",
         max_retries: int = 2,
         retry_delay: float = 0,
@@ -632,21 +634,26 @@ class Pipeline:
 
         参数：
         - messages: 消息列表（包含系统提示词和用户消息）
-        - parser: 解析器（MultiParser 或 TextStreamParser）
+        - llm_parser: LLM 解析器（JsonLineParser）
+        - task_parser: 任务解析器（MultiParser 或 TextStreamParser）
         - model_key: 模型配置键名
         - max_retries: 最大重试次数（默认 2 次）
         - retry_delay: 重试间隔（秒）
         """
+        # 消息列表（包含系统提示词和用户消息）
         self.messages = messages
-        self.parser = parser
+
+        self.llm_parser = llm_parser
+        # 任务解析器可以是 MultiParser 或 TextStreamParser
+        self.task_parser = task_parser
+        # 模型配置键名
         self.model_key = model_key
+        # 最大重试次数
         self.llm_client = LLMClient(model_key=model_key)
+        # 重试配置
         self.max_retries = max_retries
+        # 重试间隔
         self.retry_delay = retry_delay
-        # 记录已注册的任务类型（用于检测完成情况）
-        self._registered_task_types: set[str] = set()
-        if isinstance(parser, MultiParser):
-            self._registered_task_types = parser.registered_task_types
 
     def _build_retry_messages(self) -> list[dict[str, str]]:
         """
@@ -680,24 +687,21 @@ class Pipeline:
         执行管道
 
         流程：
-        1. 重置解析器状态
-        2. 流式调用 LLM
-        3. 将每个 token 传递给解析器，流式产出解析结果
-        4. 执行完成后检查是否有任务结果产出
-        5. 若无结果则重试
+        1. 将调度器解析器直接传递给 LLM 客户端流式请求
+        2. LLM 客户端内部完成 reset / stream_parse / flush 全流程
+        3. 管道只负责结果计数、完成检测和重试逻辑
 
         产出：
         - TaskResult 实例
         """
-        import asyncio
 
         start_time = time.time()
+        # 记录产出结果数量
         result_count = 0
+        # 记录尝试次数
         attempt = 0
+        # 记录已完成的任务类型
         completed_tasks: set[str] = set()
-        llm_delay_flag = False
-        first_chunk_flag = False
-        result_content = ""
 
         while attempt <= self.max_retries:
             if attempt > 0:
@@ -705,43 +709,23 @@ class Pipeline:
                 await asyncio.sleep(self.retry_delay)
                 completed_tasks = set()
 
-            # 重置解析器
-            self.parser.reset()
-
-            # 流式调用 LLM，边解析边输出
-            async for token in self.llm_client.stream(messages=self.messages):  # type: ignore
-                if not llm_delay_flag:
-                    Log.info(
-                        f"[管道] LLM 延迟{time.time() - start_time:.2f}s后开始输出流式数据"
-                    )
-                    llm_delay_flag = True
-
-                result_content += token
-
-                for result in self.parser.stream_parse(token):
+            # 将解析器直接传入 LLM 客户端，由客户端统一管理解析生命周期
+            async for result in self.llm_client.stream(
+                messages=self.messages,  # type: ignore
+                parser=self.llm_parser,
+            ):
+                for task_result in self.task_parser.parse(
+                    result
+                ):  # 将 LLM 输出传给任务解析器,解析为多个任务
                     result_count += 1
-                    completed_tasks.add(result.task_type)
-                    if not first_chunk_flag:
-                        Log.info(
-                            f"[管道] 获取第一个结果延迟{time.time() - start_time:.2f}s"
-                        )
-                        first_chunk_flag = True
-                    yield result
+                    completed_tasks.add(task_result.task_type)
+                    yield task_result
 
-            # 处理缓冲区中的剩余数据
-            for result in self.parser.flush():
-                result_count += 1
-                completed_tasks.add(result.task_type)
-                yield result
-
-            print("模型回复:" + result_content)
             # 检查是否有任务结果产出
             if completed_tasks:
-                # 有结果，执行成功
                 break
-            # 无结果，准备重试
-            Log.info("[管道] 未检测到任何任务结果，准备重试")
 
+            Log.info("[管道] 未检测到任何任务结果，准备重试")
             self.messages = self._build_retry_messages()
             attempt += 1
 
@@ -751,7 +735,7 @@ class Pipeline:
         elapsed = time.time() - start_time
         Log.info(
             f"[管道] 执行完成: {result_count} 个结果, "
-            f"{self.parser.sentence_count} 个句子, "
+            f"{self.task_parser.sentence_count} 个句子, "
             f"尝试次数: {attempt + 1}, "
             f"耗时 {elapsed:.2f}s"
         )
@@ -759,4 +743,4 @@ class Pipeline:
     @property
     def sentence_count(self) -> int:
         """已处理的句子数量"""
-        return self.parser.sentence_count
+        return self.task_parser.sentence_count

@@ -31,6 +31,7 @@ for result in parser.flush():
 
 from collections.abc import Generator
 import time
+from core.scheduler.parsers.base_parser import BaseParser
 from core.scheduler.task import TaskResult
 
 # ============================================================
@@ -97,7 +98,7 @@ def filter_tts_text(text: str) -> str:
     return "".join(result)
 
 
-class TextStreamParser:
+class TextStreamParser(BaseParser):
     """
     纯文本流解析器
 
@@ -288,19 +289,19 @@ class TextStreamParser:
 
         yield self._create_result(message_chunk)
 
-    def stream_parse(self, token: str) -> Generator[TaskResult, None, None]:
+    def parse(self, data: str) -> Generator[TaskResult, None, None]:
         """
         流式解析
 
         每接收到一个 token，检测完整句子并产出结果。
 
         参数：
-        - token: 单个 token
+        - data: 待解析的字符串数据
 
         产出：
         - TaskResult 实例
         """
-        for ch in token:
+        for ch in data:
             if self._segment_bracket_stack:
                 self._bracket_buffer += ch
                 if ch in OPENING_BRACKETS:
