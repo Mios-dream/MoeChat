@@ -13,7 +13,7 @@ from models.types.user_state import UserStateInfo
 from core.emotion.emotion_engine import EmotionEngine
 from concurrent.futures import ThreadPoolExecutor
 from core.llm.llm_client import LLMClient
-from core.llm.response_parser import parse_llm_json_response
+from core.llm.response_parser import JsonParser
 from services import core_mem, data_base, long_mem
 
 
@@ -469,7 +469,7 @@ class Assistant:
                 Log.logger.info("核心记忆提取失败，跳过插入")
                 return
 
-            mem_list = parse_llm_json_response(res_msg).get("core_mem", [])
+            mem_list = JsonParser().parse(res_msg).get("core_mem", [])  # type: ignore
 
             if len(mem_list) > 0:
                 self.coreMemoryEngine.add_memory(mem_list)

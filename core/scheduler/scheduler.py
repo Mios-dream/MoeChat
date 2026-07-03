@@ -29,90 +29,15 @@ V4 信息调度中心
 
 import json
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
-from enum import Enum
 import time
 import asyncio
 from my_utils.log import logger as Log
 from core.llm import LLMClient
-from core.llm.prompt_manager import PromptManager, PromptTemplate
 from core.scheduler.task import Task, TaskResult
 from core.scheduler.parsers.multi_parser import MultiParser
 from core.scheduler.parsers.text_stream_parser import TextStreamParser
 from typing import Any, Literal
 from core.llm.response_parser import ResponseParser, JsonLineParser, TextParser
-
-# ============================================================
-# 提示词片段定义
-# ============================================================
-
-
-class PromptSection(Enum):
-    """
-    提示词片段位置
-
-    定义提示词片段在系统提示词中的插入位置。
-    数字越小，位置越靠前。
-    """
-
-    # 角色设定（最前面）
-    ROLE = 100
-    # 任务指令
-    TASK_INSTRUCTION = 200
-    # 任务详细说明（如动作词汇表）
-    TASK_DETAIL = 300
-    # 输出格式
-    OUTPUT_FORMAT = 400
-    # 输出示例
-    OUTPUT_EXAMPLE = 500
-    # 规则说明
-    RULES = 600
-    # 其他（最后面）
-    OTHER = 900
-
-
-@dataclass
-class PromptFragment:
-    """
-    提示词片段
-
-    属性：
-    - section: 插入位置（PromptSection 常量）
-    - priority: 同一位置内的优先级（数字越小越靠前）
-    - content: 提示词内容
-    - source: 来源标识（用于调试）
-    """
-
-    section: int
-    priority: int
-    content: str
-    source: str = ""
-
-
-# ============================================================
-# 提示词模板定义
-# ============================================================
-
-# 任务指令模板
-TASK_INSTRUCTION_TEMPLATE = PromptTemplate(
-    name="task_instruction",
-    template="""【需要执行的任务】：
-
-{task_instructions}""",
-    description="任务指令区域",
-    required_vars=["task_instructions"],
-)
-
-# 输出格式模板
-OUTPUT_FORMAT_TEMPLATE = PromptTemplate(
-    name="output_format",
-    template="""【输出格式】
-每行输出一个 JSON 对象，包含以下字段：
-{output_format}""",
-    description="输出格式说明",
-    required_vars=["output_format"],
-)
-
 
 # ============================================================
 # 调度器核心
@@ -160,18 +85,7 @@ class TaskScheduler:
 
     def __init__(self):
         """初始化调度器"""
-        # 任务注册表 {task_type: Task}
         self._tasks: dict[str, Task] = {}
-        # 提示词片段列表
-        self._fragments: list[PromptFragment] = []
-        # 提示词管理器
-        self._prompt_manager = PromptManager()
-        Log.info("[调度器] 初始化完成")
-
-    @property
-    def tasks(self) -> dict[str, Task]:
-        """获取已注册的任务"""
-        return self._tasks.copy()
 
     def add_task(self, task: Task) -> "TaskScheduler":
         """
@@ -203,154 +117,22 @@ class TaskScheduler:
             return True
         return False
 
-    def add_prompt_fragment(self, fragment: PromptFragment) -> "TaskScheduler":
+    def _build_task_system_prompt(self) -> str:
         """
-        添加提示词片段
-
-        参数：
-        - fragment: 提示词片段
+        使用 PromptManager 构建任务系统提示词
 
         返回：
-        - self，支持链式调用
+        - 完整的系统提示词
         """
-        self._fragments.append(fragment)
-        Log.debug(
-            f"[调度器] 添加提示词片段: section={fragment.section}, source={fragment.source}"
-        )
-        return self
 
-    def _build_task_instructions(self) -> str:
-        """
-        构建任务指令部分
-
-        将所有任务的提示词组合成编号列表。
-
-        返回：
-        - 任务指令字符串
-        """
-        instructions = []
-        # 按优先级排序
-        sorted_tasks = sorted(self._tasks.values(), key=lambda t: t.priority)
-
-        for i, task in enumerate(sorted_tasks, 1):
-            if task.prompt:
-                instructions.append(f"{i}. {task.prompt}")
-
-        return "\n".join(instructions) if instructions else "生成回复文本"
-
-    def _build_output_format(self) -> str:
-        """
-        构建输出格式说明
-
-        根据注册的任务，生成对应的 JSON 字段说明。
-
-        返回：
-        - 输出格式说明字符串
-        """
-        formats = []
-
-        # 文本字段（始终包含）
-        if "text" in self._tasks:
-            formats.append('- "text": 回复文本（必须）')
-
-        # 动作字段
-        if "motion" in self._tasks:
-            formats.append('- "actions": 动作标签列表（可选，如 ["smile", "nod"]）')
-
-        # 其他自定义字段
-        for task_type, task in self._tasks.items():
-            if task_type not in ("text", "motion") and task.field_name:
-                formats.append(
-                    f'- "{task.field_name}": {task.prompt or task.field_name}'
-                )
-
-        return "\n".join(formats) if formats else '- "text": 回复文本'
-
-    def _build_task_details(self) -> str:
-        """
-        构建任务详细说明
-
-        为特定任务提供详细的上下文信息，如动作词汇表、选择指南等。
-        这些信息帮助 LLM 更好地理解任务要求。
-
-        返回：
-        - 任务详细说明字符串
-        """
-        details = []
-
-        # 动作任务详细说明
-        if "motion" in self._tasks:
-            try:
-                from core.expression_generator.motion_engine_v3 import (
-                    get_action_vocab_v3,
-                )
-
-                action_vocab = get_action_vocab_v3()
-                details.append(action_vocab)
-            except ImportError:
-                Log.warning("[调度器] 无法导入动作词汇表，跳过动作详细说明")
-
-        return "\n".join(details) if details else ""
-
-    def _collect_fragments(self) -> list[PromptFragment]:
-        """
-        收集所有提示词片段（包括任务自带的和手动添加的）
-
-        返回：
-        - 按 section 和 priority 排序的片段列表
-        """
-        fragments = []
+        fragments: list[str] = ["你需要完成以下任务，并严格输出要求的格式。"]
 
         # 1. 从任务中收集提示词片段
         sorted_tasks = sorted(self._tasks.values(), key=lambda t: t.priority)
-        for i, task in enumerate(sorted_tasks, 1):
-            if task.prompt:
-                fragments.append(
-                    PromptFragment(
-                        section=PromptSection.TASK_INSTRUCTION.value,
-                        priority=task.priority,
-                        content=f"{i}. {task.prompt}",
-                        source=f"task:{task.name}",
-                    )
-                )
 
-        # 2. 添加任务详细说明（如动作词汇表）
-        task_details = self._build_task_details()
-        if task_details:
+        for index, task in enumerate(sorted_tasks):
             fragments.append(
-                PromptFragment(
-                    section=PromptSection.TASK_DETAIL.value,
-                    priority=100,
-                    content=task_details,
-                    source="task_details",
-                )
-            )
-
-        # 3. 添加输出格式说明
-        output_format = self._build_output_format()
-        fragments.append(
-            PromptFragment(
-                section=PromptSection.OUTPUT_FORMAT.value,
-                priority=100,
-                content=OUTPUT_FORMAT_TEMPLATE.render(output_format=output_format),
-                source="output_format",
-            )
-        )
-
-        # 4. 动态组合输出示例（从任务中收集）
-        examples = []
-        for task in sorted_tasks:
-            if task.example:
-                examples.append(task.example)
-        if examples:
-            examples_text = "\n".join(examples)
-            fragments.append(
-                PromptFragment(
-                    section=PromptSection.OUTPUT_EXAMPLE.value,
-                    priority=100,
-                    content=f"【输出示例】\n{examples_text}",
-                    source="output_example",
-                )
+                f"""【任务{index + 1}: {task.name}】\n{task.prompt}。\n输出字段: {task.field_name}。例如: {task.example}\n【任务规则】\n{"。".join(task.rules)}"""
             )
 
         # 5. 动态组合规则说明（从任务中收集 + 通用规则）
@@ -360,61 +142,11 @@ class TaskScheduler:
             "不要输出 JSON 以外的任何内容（不要输出 markdown 代码块、解释说明等）",
             "注意：对话历史中你的回复格式可能与当前要求的 JSON 格式不同，你必须忽略历史格式，严格按照上述规则以 JSON 格式输出",
         ]
-        for task in sorted_tasks:
-            if task.rules:
-                rules.extend(task.rules)
+
         rules_text = "\n".join(f"{i+1}. {rule}" for i, rule in enumerate(rules))
-        fragments.append(
-            PromptFragment(
-                section=PromptSection.RULES.value,
-                priority=100,
-                content=f"【严格规则】\n{rules_text}",
-                source="rules",
-            )
-        )
+        fragments.append(f"【严格规则】\n{rules_text}")
 
-        # 6. 添加手动注册的片段
-        fragments.extend(self._fragments)
-
-        # 按 section 和 priority 排序
-        fragments.sort(key=lambda f: (f.section, f.priority))
-
-        return fragments
-
-    def _build_task_system_prompt(self) -> str:
-        """
-        使用 PromptManager 构建任务系统提示词
-
-        返回：
-        - 完整的系统提示词
-        """
-        # 清空提示词管理器
-        self._prompt_manager.clear()
-
-        # 收集所有片段
-        fragments = self._collect_fragments()
-
-        # 按 section 分组组合
-        current_section = None
-        section_parts = []
-
-        for fragment in fragments:
-            if fragment.section != current_section:
-                # 新的 section，添加之前的内容
-                if section_parts:
-                    self._prompt_manager.add_system(
-                        "\n\n".join(section_parts), append=True
-                    )
-                current_section = fragment.section
-                section_parts = [fragment.content]
-            else:
-                section_parts.append(fragment.content)
-
-        # 添加最后一个 section
-        if section_parts:
-            self._prompt_manager.add_system("\n\n".join(section_parts), append=True)
-
-        return self._prompt_manager.system_prompt
+        return "\n".join(fragments)
 
     def _normalize_history_for_json(
         self,
@@ -441,15 +173,7 @@ class TaskScheduler:
         # 根据注册的任务构建完整 JSON 模板的默认值
         field_defaults: dict[str, object] = {}
         for task in self._tasks.values():
-            if task.field_name == "text":
-                field_defaults[task.field_name] = ""  # placeholder，稍后替换
-            elif task.field_name == "actions":
-                field_defaults[task.field_name] = []
-            else:
-                field_defaults[task.field_name] = ""
-
-        # 检查是否有 text 之外的字段需要包含
-        has_extra_fields = len(field_defaults) > 1
+            field_defaults[task.field_name] = ""
 
         formatted = []
         for msg in history_messages:
@@ -460,14 +184,10 @@ class TaskScheduler:
                 if stripped.startswith("{") and stripped.endswith("}"):
                     formatted.append(msg)
                 else:
-                    if has_extra_fields:
-                        # 构建包含所有注册字段的完整 JSON
-                        json_obj = dict(field_defaults)
-                        json_obj["text"] = content
-                        wrapped = json.dumps(json_obj, ensure_ascii=False)
-                    else:
-                        # 只有 text 任务，简化输出
-                        wrapped = json.dumps({"text": content}, ensure_ascii=False)
+                    # 构建包含所有注册字段的完整 JSON
+                    json_obj = dict(field_defaults)
+                    json_obj["text"] = content
+                    wrapped = json.dumps(json_obj, ensure_ascii=False)
                     formatted.append({"role": "assistant", "content": wrapped})
             else:
                 formatted.append(msg)
@@ -583,11 +303,6 @@ class TaskScheduler:
             llm_parser=TextParser(),
             task_parser=parser,
         )
-
-
-# ============================================================
-# 处理管道
-# ============================================================
 
 
 class Pipeline:
@@ -714,6 +429,7 @@ class Pipeline:
                 messages=self.messages,  # type: ignore
                 parser=self.llm_parser,
             ):
+                print(f"[管道] LLM 输出: {result}")
                 for task_result in self.task_parser.parse(
                     result
                 ):  # 将 LLM 输出传给任务解析器,解析为多个任务

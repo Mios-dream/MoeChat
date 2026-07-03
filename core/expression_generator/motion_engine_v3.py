@@ -29,40 +29,13 @@ Live2D 动作引擎 V3 — 服务端适配器
 
 import sqlite3
 from dataclasses import dataclass
+from core.expression_generator.utils.expression_loader import ExpressionInfo
 from my_utils import embedding
 from my_utils.log import logger as Log
 import numpy as np
 
-# ============================================================================
-# 参数定义（与 action_defs.py 一致，内联避免跨项目依赖）
-# ============================================================================
-
-# A组：表情参数 — 可以被特殊动作指令覆盖
-EXPRESSION_PARAMS: frozenset[str] = frozenset(
-    {
-        "ParamEyeLOpen",
-        "ParamEyeROpen",
-        "ParamEyeLSmile",
-        "ParamEyeRSmile",
-        "ParamEyeBallX",
-        "ParamEyeBallY",
-        "ParamMouthForm",
-        "ParamMouthOpenY",
-        "ParamCheek",
-        "ParamBrowLAngle",
-        "ParamBrowRAngle",
-        "ParamBrowLY",
-        "ParamBrowRY",
-        "ParamTear",
-    }
-)
-
 # 特殊动作定义: {param_id: [(time_offset_seconds, target_value), ...]}
 SIMPLE_ACTIONS: dict[str, dict[str, list[tuple[float, float]]]] = {
-    "blink": {
-        "ParamEyeLOpen": [(0.0, 0.0), (0.2, 1.0)],
-        "ParamEyeROpen": [(0.0, 0.0), (0.2, 1.0)],
-    },
     "close_eyes": {
         "ParamEyeLOpen": [(1, 0.0)],
         "ParamEyeROpen": [(1, 0.0)],
@@ -88,6 +61,15 @@ SIMPLE_ACTIONS: dict[str, dict[str, list[tuple[float, float]]]] = {
         "ParamMouthForm": [(0.0, -0.4)],
         "ParamMouthOpenY": [(0.0, 0.2)],
     },
+}
+
+ACTION_DESCRIPTIONS = {
+    "close_eyes": "闭眼（害羞、享受）",
+    "wink_left": "左眼 wink（俏皮、可爱）",
+    "wink_right": "右眼 wink（俏皮、可爱）",
+    "blush": "脸红（害羞、尴尬）",
+    "surprise": "惊讶（睁大眼睛）",
+    "pout": "嘟嘴（撒娇、不满）",
 }
 
 # 参数默认值（用于动作播放结束后恢复 + 嘴部参数默认填充）
@@ -117,52 +99,6 @@ PARAM_DEFAULTS: dict[str, float] = {
     "ParamBreath": 0.0,
 }
 
-# 嘴部参数（与语音不同步，优先用默认值或音频驱动）
-MOUTH_PARAMS: frozenset[str] = frozenset({"ParamMouthOpenY", "ParamMouthForm"})
-
-# LLM 可用动作列表（供 system prompt 使用）
-AVAILABLE_ACTIONS: list[str] = sorted(SIMPLE_ACTIONS.keys())
-
-
-# ============================================================================
-# 导出动作词汇表（供调度器提示词使用）
-# ============================================================================
-
-
-def get_action_vocab_v3() -> str:
-    """
-    获取 V3 动作词汇表（供 LLM 提示词使用）
-
-    返回：
-    - 格式化的动作描述字符串
-    """
-    action_descriptions = {
-        "blink": "眨眼",
-        "close_eyes": "闭眼（害羞、享受）",
-        "wink_left": "左眼 wink（俏皮、可爱）",
-        "wink_right": "右眼 wink（俏皮、可爱）",
-        "blush": "脸红（害羞、尴尬）",
-        "surprise": "惊讶（睁大眼睛）",
-        "pout": "嘟嘴（撒娇、不满）",
-    }
-    lines = ["【可用动作列表】"]
-    for name in AVAILABLE_ACTIONS:
-        desc = action_descriptions.get(name, name)
-        lines.append(f"- {name}: {desc}")
-    lines.append("")
-    lines.append("【动作选择指南】")
-    lines.append(
-        "- 身体/头部的大幅度动作由系统自动从数据库匹配，你只需选择面部表情动作"
-    )
-    lines.append("- 每句话建议 0-2 个动作，非必需")
-    lines.append('- 示例：{"text": "你好呀~", "actions": ["blush"]}')
-    return "\n".join(lines)
-
-
-# ============================================================================
-# 数据类
-# ============================================================================
-
 
 @dataclass
 class MotionData:
@@ -173,11 +109,13 @@ class MotionData:
         curves: param_id → [frame0_value, frame1_value, ...]
         duration: 动作时长（秒）
         fps: 帧率
+        expression: 表情名称列表（不覆盖动作曲线，由前端单独处理）
     """
 
     curves: dict[str, list[float]]
     duration: float
     fps: float = 60.0
+    expression: list[str] | None = None
 
     @property
     def frame_count(self) -> int:
@@ -551,8 +489,6 @@ class ActionOverlay:
                 continue
             action_def = SIMPLE_ACTIONS[action_name]
             for param_id, keyframes in action_def.items():
-                if param_id not in EXPRESSION_PARAMS:
-                    continue
                 curve = cls._generate_param_curve(
                     keyframes,
                     duration,
@@ -562,11 +498,6 @@ class ActionOverlay:
                 overlay[param_id] = curve
 
         return overlay
-
-
-# ============================================================================
-# 文本时长估算
-# ============================================================================
 
 
 def estimate_text_duration(text: str) -> float:
@@ -629,24 +560,14 @@ class MotionEngineService:
         """
         self.database = MotionDatabase(db_path)
         self.matcher: SemanticMatcher | None = None
-        self._initialized = False
-
-    def init_matcher(self) -> None:
-        """初始化语义匹配器（首次调用时加载 embedding 模型）"""
-        if self.matcher is None:
-            self.matcher = SemanticMatcher(self.database)
-        self._initialized = True
-
-    @property
-    def is_ready(self) -> bool:
-        """引擎是否已就绪（数据库已加载，匹配器已初始化）"""
-        return self._initialized and self.database.num_entries > 0
+        self.matcher = SemanticMatcher(self.database)
 
     def process(
         self,
         text: str,
         actions: list[str],
         max_duration: float | None = None,
+        expressions: list[ExpressionInfo] | None = None,
     ) -> MotionData | None:
         """
         处理语义输入：检索 + 覆盖 + 混合
@@ -655,29 +576,23 @@ class MotionEngineService:
             text: 语义描述文本（用于检索匹配的预录制动作）
             actions: 特殊动作名列表（如 ["smile", "wink_left"]）
             max_duration: 动作最大时长（秒），用于匹配语音时长。
+            expressions: 可用表情列表（ExpressionInfo 列表），用于解析表情名称
 
         Returns:
             MotionData | None: 混合后的动作数据，无匹配结果返回 None
         """
-        self.init_matcher()
         if self.matcher is None or self.database.num_entries == 0:
             return None
 
-        # 如果没有提供时长，估算
-        if max_duration is None or max_duration <= 0:
-            max_duration = estimate_text_duration(text)
-
-        # 1. 语义检索 + 按时长优选
-        if max_duration > 0:
+        # 1. 从数据库进行，语义检索，然后按时长优选
+        if max_duration and max_duration > 0:
             result = self.matcher.search_with_duration(text, max_duration, k=5)
         else:
             results = self.matcher.search(text, k=1)
             result = results[0] if results else None
 
         if result is None:
-            Log.warning("[MotionEngineService] 无匹配结果")
-            # 无匹配结果时，仅用动作覆盖生成纯表情动作
-            return self._expression_only(actions, max_duration)
+            return None
 
         matched_text, motion_id, score = result
         Log.info(f"[MotionEngineService] 检索匹配 [{score:.3f}]: {matched_text}")
@@ -686,12 +601,12 @@ class MotionEngineService:
         meta = self.database.get_motion_meta(motion_id)
         if meta is None:
             Log.warning(f"[MotionEngineService] motion_id={motion_id} 元数据缺失")
-            return self._expression_only(actions, max_duration)
+            return None
 
         curves = self.database.get_motion_curves(motion_id)
         if not curves:
             Log.warning(f"[MotionEngineService] motion_id={motion_id} 曲线数据缺失")
-            return self._expression_only(actions, max_duration)
+            return None
 
         base_motion = MotionData(
             curves=curves,
@@ -699,22 +614,31 @@ class MotionEngineService:
             fps=meta.fps,
         )
 
-        # 3. 生成特殊动作覆盖
-        overlays = ActionOverlay.generate_all(
-            actions, base_motion.duration, base_motion.fps
-        )
-        # if overlays:
-        #     Log.info(f"[MotionEngineService] 覆盖参数: {list(overlays.keys())}")
+        # 3. 分离特殊动作和表情：表情不覆盖动作曲线，由前端单独处理
+        # 简单动作
+        simple_actions: list[str] = []
+        # 表情动作
+        expression_names: list[str] = []
 
-        # 4. 混合: overlay 覆盖 → 嘴部参数默认 → 其余保留
+        expression_map = [expr.name for expr in (expressions if expressions else {})]
+
+        for action_name in actions:
+            if action_name in SIMPLE_ACTIONS:
+                simple_actions.append(action_name)
+
+            if action_name in expression_map:
+                expression_names.append(action_name)
+
+        # 4. 生成特殊动作覆盖（仅对 SIMPLE_ACTIONS 中的动作）
+        overlays = ActionOverlay.generate_all(
+            simple_actions, base_motion.duration, base_motion.fps
+        )
+
+        # 5. 混合: overlay 覆盖
         mixed_curves: dict[str, list[float]] = {}
         for param_id, values in base_motion.curves.items():
             if param_id in overlays:
                 mixed_curves[param_id] = overlays[param_id]
-            elif param_id in MOUTH_PARAMS:
-                mixed_curves[param_id] = [
-                    PARAM_DEFAULTS.get(param_id, 0.0)
-                ] * base_motion.frame_count
             else:
                 mixed_curves[param_id] = values
 
@@ -722,87 +646,31 @@ class MotionEngineService:
         for param_id, overlay_curve in overlays.items():
             if param_id not in mixed_curves:
                 mixed_curves[param_id] = overlay_curve
+
         # 5. 时长截断
-        # effective_duration = base_motion.duration
-        # if 0 < max_duration < base_motion.duration:
-        #     effective_duration = max_duration
-        #     max_frame = int(effective_duration * base_motion.fps) + 1
-        #     for param_id in list(mixed_curves.keys()):
-        #         vals = mixed_curves[param_id]
-        #         if len(vals) > max_frame:
-        #             mixed_curves[param_id] = vals[:max_frame]
-        #     Log.info(
-        #         f"[MotionEngineService] 截断动作: {base_motion.duration:.2f}s → "
-        #         f"{effective_duration:.2f}s"
-        #     )
+        effective_duration = base_motion.duration
 
-        return MotionData(
-            curves=mixed_curves,
-            duration=base_motion.duration,
-            fps=base_motion.fps,
-        )
-        # return MotionData(
-        #     curves=mixed_curves,
-        #     duration=effective_duration,
-        #     fps=base_motion.fps,
-        # )
-
-    def _expression_only(
-        self, actions: list[str], duration: float
-    ) -> MotionData | None:
-        """
-        仅用表情动作覆盖，无 DB 动作时的回退方案
-
-        Args:
-            actions: 特殊动作名列表
-            duration: 时长（秒）
-
-        Returns:
-            MotionData | None
-        """
-        if not actions:
-            return None
-
-        fps = 60.0
-        overlays = ActionOverlay.generate_all(actions, duration, fps)
-        if not overlays:
-            return None
-
-        frame_count = int(duration * fps) + 1
-        curves: dict[str, list[float]] = {}
-        for param_id, overlay_curve in overlays.items():
-            curves[param_id] = overlay_curve
-
-        Log.info(
-            f"[MotionEngineService] 纯表情动作: {len(curves)} 条曲线, "
-            f"{duration:.2f}s"
-        )
-        return MotionData(curves=curves, duration=duration, fps=fps)
-
-
-# ============================================================================
-# 单例管理
-# ============================================================================
-
-
-_motion_engine_instance: MotionEngineService | None = None
-
-
-def get_motion_engine(db_path: str | None = None) -> MotionEngineService:
-    """
-    获取 MotionEngineService 单例
-
-    首次调用时初始化数据库连接和 embedding 模型。
-    后续调用复用已有实例。
-
-    Args:
-        db_path: motion.db 路径，默认 data/motion.db
-
-    Returns:
-        MotionEngineService 实例
-    """
-    global _motion_engine_instance
-    if _motion_engine_instance is None:
-        _motion_engine_instance = MotionEngineService(db_path)
-        _motion_engine_instance.init_matcher()
-    return _motion_engine_instance
+        if max_duration and 0 < max_duration < base_motion.duration:
+            effective_duration = max_duration
+            max_frame = int(effective_duration * base_motion.fps) + 1
+            for param_id in list(mixed_curves.keys()):
+                vals = mixed_curves[param_id]
+                if len(vals) > max_frame:
+                    mixed_curves[param_id] = vals[:max_frame]
+            Log.info(
+                f"[MotionEngineService] 截断动作: {base_motion.duration:.2f}s → "
+                f"{effective_duration:.2f}s"
+            )
+            return MotionData(
+                curves=mixed_curves,
+                duration=effective_duration,
+                fps=base_motion.fps,
+                expression=expression_names,
+            )
+        else:
+            return MotionData(
+                curves=mixed_curves,
+                duration=base_motion.duration,
+                fps=base_motion.fps,
+                expression=expression_names,
+            )

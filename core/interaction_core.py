@@ -169,7 +169,7 @@ async def generate_interaction_message(
     )
     # 创建管道
     # 注意：系统提示词通过 system_context 传入，历史消息和用户消息通过 history_messages 传入
-    pipeline = scheduler.create_pipeline(
+    pipeline = scheduler.create_task_pipeline(
         system_context=_build_interaction_system_prompt(params),
         history_messages=msg_list_for_llm,
     )

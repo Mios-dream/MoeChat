@@ -17,7 +17,8 @@ Task 的关键属性：
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable
+from typing import Any
+from collections.abc import Callable
 import time
 
 
@@ -25,7 +26,7 @@ import time
 class Task:
     """
     任务定义
-    
+
     属性：
     - name: 任务名称（唯一标识）
     - type: 任务类型（用于解析器分发）
@@ -35,7 +36,7 @@ class Task:
     - priority: 优先级（数字越小优先级越高，影响提示词顺序）
     - example: 输出示例片段（如 '{"text": "你好呀~"}'）
     - rules: 规则列表（如 ["每行必须包含 text 字段"]）
-    
+
     示例：
     ```python
     task = Task(
@@ -50,6 +51,7 @@ class Task:
     )
     ```
     """
+
     name: str
     type: str
     prompt: str
@@ -58,7 +60,7 @@ class Task:
     priority: int = 100
     example: str = ""
     rules: list[str] = field(default_factory=list)
-    
+
     def __post_init__(self):
         """验证任务定义"""
         if not self.name:
@@ -68,14 +70,14 @@ class Task:
         if not self.field_name:
             # 默认使用 type 作为字段名
             self.field_name = self.type
-    
+
     def parse(self, data: dict[str, Any]) -> Any:
         """
         从 JSON 数据中提取该任务的数据
-        
+
         参数：
         - data: 解析后的 JSON 字典
-        
+
         返回：
         - 提取的数据
         """
@@ -86,7 +88,7 @@ class Task:
 class TaskResult:
     """
     任务执行结果
-    
+
     属性：
     - task_name: 任务名称
     - task_type: 任务类型
@@ -94,7 +96,7 @@ class TaskResult:
     - raw_data: 原始 JSON 数据
     - sentence_id: 句子序号（用于关联同一句的不同任务结果）
     - timestamp: 时间戳
-    
+
     示例：
     ```python
     result = TaskResult(
@@ -107,13 +109,14 @@ class TaskResult:
     )
     ```
     """
+
     task_name: str
     task_type: str
     data: Any
     raw_data: dict[str, Any] = field(default_factory=dict)
     sentence_id: int = 0
     timestamp: float = field(default_factory=time.time)
-    
+
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
         return {

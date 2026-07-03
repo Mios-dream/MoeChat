@@ -40,7 +40,7 @@ from core.chat.base import (
 
 from core.chat.v1 import BaseChatContext, llm_chat_with_tts
 from core.chat.v2_motion import llm_chat_with_tts_and_motion_v2
-from core.chat.v3_motion import V3MotionChatContext, llm_chat_with_tts_and_motion_v3
+from core.chat.v3_motion import V3ChatService
 
 __all__ = [
     # 基础组件
@@ -53,11 +53,10 @@ __all__ = [
     "to_sse",
     # 上下文
     "BaseChatContext",
-    "V3MotionChatContext",
     # V1 版本
     "llm_chat_with_tts",
     # V2Motion 版本
     "llm_chat_with_tts_and_motion_v2",
     # V3 版本
-    "llm_chat_with_tts_and_motion_v3",
+    "V3ChatService",
 ]

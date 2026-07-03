@@ -313,35 +313,3 @@ class JsonLineParser(ResponseParser):
             except json.JSONDecodeError:
                 pass
         self._buffer = ""
-
-
-def parse_llm_json_response(content: str) -> dict[str, Any]:
-    """
-    从 LLM 文本响应中提取首个 JSON 对象并反序列化。
-
-    背景：
-    - 部分模型可能返回 ```json 包裹文本或夹带说明文本。
-    - 这里使用正则抓取最外层 `{...}`，尽量容错。
-
-    参数：
-    - content: LLM 返回的原始文本
-
-    返回：
-    - 解析后的 JSON 字典
-
-    异常：
-    - ValueError: 若未找到 JSON 片段或解析失败
-
-    使用示例：
-    ```python
-    result = parse_llm_json_response('```json\n{"key": "value"}\n```')
-    # result = {"key": "value"}
-    ```
-    """
-    try:
-        json_match = re.search(r"\{[\s\S]*\}", content)
-        if not json_match:
-            raise ValueError(f"无法解析 LLM 返回的 JSON: {content[:100]}...")
-        return json.loads(json_match.group())
-    except json.JSONDecodeError as e:
-        raise ValueError(f"JSON 解析失败: {e}, 内容: {content[:100]}...")

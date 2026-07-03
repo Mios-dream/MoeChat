@@ -1,7 +1,7 @@
 from my_utils.log import logger as Log
 from my_utils import config_manager as CConfig
 from core.llm.llm_client import LLMClient
-from core.llm.response_parser import parse_llm_json_response
+from core.llm.response_parser import JsonParser
 import asyncio
 import time
 
@@ -355,7 +355,7 @@ ParamBodyAngleX, ParamBodyAngleY, ParamBodyAngleZ
         if not content:
             Log.warning("LLM 返回内容为空")
             return {}
-        return parse_llm_json_response(content)
+        return JsonParser().parse(content)  # type: ignore
 
     async def generate(self, input_text: str, context: str = "") -> dict:
         """生成单次表情参数。

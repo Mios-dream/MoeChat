@@ -18,8 +18,7 @@ from my_utils import config_manager as CConfig
 from my_utils import embedding
 from my_utils import log as Log
 from core.llm.llm_client import LLMClient
-from core.llm.response_parser import parse_llm_json_response
-
+from core.llm.response_parser import JsonParser
 
 RAW_SUFFIXES = {".txt", ".md"}
 # 知识库抽取提示词模板
@@ -293,16 +292,14 @@ class DataBase:
         初始化元数据库。
         """
         # raw_files 记录原始文件的相对路径、MD5、对应页面和更新时间
-        self._conn.execute(
-            """
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS raw_files (
                 raw_path TEXT PRIMARY KEY,
                 file_md5 TEXT NOT NULL,
                 source_page_id TEXT NOT NULL,
                 updated TEXT NOT NULL
             )
-            """
-        )
+            """)
         # wiki_pages 记录页面的基本信息和内容
         # page_id 格式为 "{page_type}/{sanitized_title}"
         # page_type 是 entity/concept/source 之一
@@ -311,8 +308,7 @@ class DataBase:
         # tags_json 和 sources_json 存储标签和来源的 JSON 数组文本
         # raw_path 记录对应的 raw 文件路径，便于追溯和管理
         # created 和 updated 记录页面的创建和更新时间，格式为 "YYYY-MM-DD HH:MM:SS"
-        self._conn.execute(
-            """
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS wiki_pages (
                 page_id TEXT PRIMARY KEY,
                 page_type TEXT NOT NULL,
@@ -325,13 +321,11 @@ class DataBase:
                 updated TEXT NOT NULL,
                 raw_path TEXT
             )
-            """
-        )
+            """)
         # page_refs 记录页面之间的引用关系，用于构建关联网络和辅助检索
         # ref_type 可以是 "entity"、"concept" 或 "source"，表示引用的页面类型
         # updated 记录引用关系的更新时间，格式为 "YYYY-MM-DD HH:MM:SS"
-        self._conn.execute(
-            """
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS page_refs (
                 from_page_id TEXT NOT NULL,
                 to_page_id TEXT NOT NULL,
@@ -339,13 +333,11 @@ class DataBase:
                 updated TEXT NOT NULL,
                 PRIMARY KEY(from_page_id, to_page_id, ref_type)
             )
-            """
-        )
+            """)
         # chunks 记录页面分块后的文本内容和对应的 FAISS ID，用于向量检索
         # chunk_id 是自增主键，page_id 是所属页面 ID，chunk_text 是分块文本内容，faiss_id 是对应的向量 ID，updated 记录更新时间
         # 当页面更新时，相关的 chunk 记录会被删除，新的 chunk 会被插入，并且对应的向量会被更新到 FAISS 索引中
-        self._conn.execute(
-            """
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS chunks (
                 chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 page_id TEXT NOT NULL,
@@ -354,12 +346,10 @@ class DataBase:
                 updated TEXT NOT NULL,
                 FOREIGN KEY(page_id) REFERENCES wiki_pages(page_id) ON DELETE CASCADE
             )
-            """
-        )
+            """)
         # facts 记录从文本中抽取的结构化事实，便于构建知识图谱和辅助推理
         # fact_id 是自增主键，subject 是事实主体，predicate 是关系，object 是客体，source_page_id 是来源页面 ID，raw_path 是对应的 raw 文件路径，updated 记录更新时间
-        self._conn.execute(
-            """
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS facts (
                 fact_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 subject TEXT NOT NULL,
@@ -369,8 +359,7 @@ class DataBase:
                 raw_path TEXT NOT NULL,
                 updated TEXT NOT NULL
             )
-            """
-        )
+            """)
 
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_wiki_pages_type ON wiki_pages(page_type)"
@@ -740,39 +729,40 @@ class DataBase:
 
         try:
             content = _sync_run_coroutine(
-                self._llm_client.request([{"role": "user", "content": prompt}]), timeout=120
+                self._llm_client.request([{"role": "user", "content": prompt}]),
+                timeout=120,
             )
             if not content:
                 return self._fallback_extract(raw_rel_path, cleaned_text)
-            parsed = parse_llm_json_response(content)
+            parsed = JsonParser().parse(content)
         except Exception as exc:
             Log.logger.warning(f"LLM 抽取失败，使用回退逻辑: {exc}")
             return self._fallback_extract(raw_rel_path, cleaned_text)
 
-        title = str(parsed.get("title") or stem).strip()
+        title = str(parsed.get("title") or stem).strip() # type: ignore
         if not title:
             title = stem
 
-        summary = str(parsed.get("summary") or "").strip()
+        summary = str(parsed.get("summary") or "").strip() # type: ignore
         if not summary:
             summary = self._fallback_extract(raw_rel_path, cleaned_text)["summary"]
 
         tags = [
-            str(item).strip() for item in parsed.get("tags", []) if str(item).strip()
+            str(item).strip() for item in parsed.get("tags", []) if str(item).strip() # type: ignore
         ]
         entities = [
             str(item).strip()
-            for item in parsed.get("entities", [])
+            for item in parsed.get("entities", []) # type: ignore
             if str(item).strip()
         ]
         concepts = [
             str(item).strip()
-            for item in parsed.get("concepts", [])
+            for item in parsed.get("concepts", []) # type: ignore
             if str(item).strip()
         ]
 
         normalized_relations: list[dict[str, str]] = []
-        for item in parsed.get("relations", []):
+        for item in parsed.get("relations", []): # type: ignore
             if not isinstance(item, dict):
                 continue
             subject = str(item.get("subject") or "").strip()
@@ -1247,14 +1237,12 @@ class DataBase:
         Returns:
             tuple[list[dict[str, Any]], int]: 冲突列表与修复数量
         """
-        cursor = self._conn.execute(
-            """
+        cursor = self._conn.execute("""
             SELECT subject, predicate, COUNT(DISTINCT object) AS obj_count
             FROM facts
             GROUP BY subject, predicate
             HAVING obj_count > 1
-            """
-        )
+            """)
         groups = cursor.fetchall()
 
         conflicts: list[dict[str, Any]] = []
@@ -1328,16 +1316,14 @@ class DataBase:
         report["contradictions"] = contradictions
         report["fixed"]["contradictions"] = contradiction_fixed
 
-        cursor = self._conn.execute(
-            """
+        cursor = self._conn.execute("""
             SELECT p.page_id
             FROM wiki_pages p
             LEFT JOIN page_refs r ON p.page_id = r.to_page_id
             WHERE p.page_type IN ('entity', 'concept')
             GROUP BY p.page_id
             HAVING COUNT(r.from_page_id) = 0
-            """
-        )
+            """)
         orphan_ids = [row[0] for row in cursor.fetchall()]
         report["orphan_pages"] = orphan_ids
 
@@ -1345,14 +1331,12 @@ class DataBase:
             linked = self._ensure_orphan_summary_page(orphan_ids)
             report["fixed"]["orphan_links"] = linked
 
-        cursor = self._conn.execute(
-            """
+        cursor = self._conn.execute("""
             SELECT DISTINCT r.to_page_id
             FROM page_refs r
             LEFT JOIN wiki_pages p ON r.to_page_id = p.page_id
             WHERE p.page_id IS NULL
-            """
-        )
+            """)
         missing_targets = [row[0] for row in cursor.fetchall()]
         report["missing_targets"] = missing_targets
 
@@ -1368,13 +1352,11 @@ class DataBase:
                 fixed_missing += 1
             report["fixed"]["missing_pages"] = fixed_missing
 
-        cursor = self._conn.execute(
-            """
+        cursor = self._conn.execute("""
             SELECT rf.raw_path, rf.updated, p.updated, rf.file_md5
             FROM raw_files rf
             JOIN wiki_pages p ON rf.source_page_id = p.page_id
-            """
-        )
+            """)
         outdated = []
         current_raw = self._scan_raw_files()
         for raw_path, _raw_updated, _page_updated, stored_md5 in cursor.fetchall():
@@ -1404,15 +1386,13 @@ class DataBase:
             self._rebuild_embeddings_index()
             report["fixed"]["index_rebuilt"] = True
 
-        cursor = self._conn.execute(
-            """
+        cursor = self._conn.execute("""
             SELECT to_page_id, COUNT(*) AS inbound_count
             FROM page_refs
             GROUP BY to_page_id
             HAVING inbound_count >= 5
             ORDER BY inbound_count DESC
-            """
-        )
+            """)
         candidates = [row[0] for row in cursor.fetchall()]
         report["summary_page_candidates"] = candidates
 

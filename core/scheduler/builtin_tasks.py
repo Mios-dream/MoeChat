@@ -56,7 +56,7 @@ def create_text_task(
     return Task(
         name="text_generation",
         type="text",
-        prompt="进行自然、流畅的回答",
+        prompt="助手的回复文本内容，保持语气、情感和表达风格",
         parse_fn=lambda data: data.get("text", ""),
         field_name="text",
         priority=priority,
@@ -67,6 +67,7 @@ def create_text_task(
 
 def create_motion_task(
     callback: Callable[[TaskResult], Awaitable[None]] | None = None,
+    available_actions: str | None = None,
     priority: int = 200,
 ) -> Task:
     """
@@ -94,14 +95,15 @@ def create_motion_task(
     return Task(
         name="motion_generation",
         type="motion",
-        prompt="为每个句子生成配合内容的动作标签（从下方【可用动作列表】中选择）",
+        prompt=f"助手应做出的动作或表情（从下方【可用动作列表】中选择）。【可用动作列表】\n{available_actions}",
         parse_fn=lambda data: data.get("actions", []),
         field_name="actions",
         priority=priority,
         example='{"text": "你好呀~", "actions": ["blush"]}',
         rules=[
-            "动作标签必须从【可用动作列表】中选择，不要自创动作名",
+            "动作标签和表情必须从【可用动作列表】中选择，不要自创动作名",
             "每句话建议 0-2 个动作，仅在必要时使用非必需",
+            "动作标签和表情都应放在 actions 数组中",
         ],
     )
 

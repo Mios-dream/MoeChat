@@ -1,5 +1,5 @@
 from core.llm.llm_client import LLMClient
-from core.llm.response_parser import parse_llm_json_response
+from core.llm.response_parser import JsonParser
 from my_utils.log import logger
 from pathlib import Path
 import json
@@ -328,9 +328,9 @@ async def _filter_parameters_with_llm(
             logger.error("[动作规划] LLM 参数筛选返回空响应")
             return None
         # 解析 LLM 响应
-        data = parse_llm_json_response(response)
+        data = JsonParser().parse(response)
         # 提取建议保留的参数 ID 列表
-        keep_ids_raw = data.get("keep_ids", [])
+        keep_ids_raw = data.get("keep_ids", [])  # type: ignore
 
         keep_ids = {str(pid) for pid in keep_ids_raw if pid in all_parameters}
         # 与基础参数做并集，防止 LLM 漏选核心参数。

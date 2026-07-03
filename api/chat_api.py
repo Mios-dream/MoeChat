@@ -27,10 +27,12 @@ from core.chat.base import assistant_service
 from core.chat import (
     llm_chat_with_tts,  # V1 版本
     llm_chat_with_tts_and_motion_v2,  # V2 版本
-    llm_chat_with_tts_and_motion_v3,  # V3 版本
+    V3ChatService,  # V3 版本
 )
 
 chat_api = APIRouter()
+# V3 版本：信息调度中心
+v3_service = V3ChatService()
 
 
 def _get_motion_version() -> str:
@@ -69,9 +71,9 @@ async def tts_api_get(
         motion_version = _get_motion_version()
 
         if motion_version == "v3":
-            # V3 版本：信息调度中心
+
             return StreamingResponse(
-                llm_chat_with_tts_and_motion_v3(params),
+                v3_service.chat(params),
                 media_type="text/event-stream",
             )
         else:
@@ -106,7 +108,7 @@ async def tts_api(params: chat_data):
         if motion_version == "v3":
             # V3 版本：信息调度中心
             return StreamingResponse(
-                llm_chat_with_tts_and_motion_v3(params),
+                v3_service.chat(params),
                 media_type="text/event-stream",
             )
         else:

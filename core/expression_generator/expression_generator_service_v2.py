@@ -19,11 +19,10 @@ import json
 from my_utils.log import logger as Log
 from my_utils import config_manager as CConfig
 from core.llm.llm_client import LLMClient
-from core.llm.response_parser import parse_llm_json_response
-from core.expression_generator.live2d_expression_loader import (
+from core.llm.response_parser import JsonParser
+from core.expression_generator.utils.expression_loader import (
     ExpressionInfo,
     load_expressions,
-    build_expression_descriptions,
 )
 import asyncio
 import time
@@ -197,7 +196,6 @@ class ExpressionGeneratorV2:
     async def initialize(
         self,
         assistant_name: str,
-        use_expression_cache: bool = True,
     ) -> None:
         """
         初始化生成器
@@ -214,9 +212,7 @@ class ExpressionGeneratorV2:
         """
 
         # 加载表情
-        self.expressions = await load_expressions(
-            assistant_name, use_cache=use_expression_cache
-        )
+        self.expressions = load_expressions(assistant_name)
 
         # 构建表情映射
         self.expression_map = {expr.name: expr for expr in self.expressions}
@@ -244,8 +240,6 @@ class ExpressionGeneratorV2:
         返回：
         - 完整的系统提示词
         """
-        # 表情描述（固定）
-        expr_desc = build_expression_descriptions(self.expressions)
 
         # TTS 特殊规则（固定）
         tts_rules = """
@@ -260,7 +254,7 @@ class ExpressionGeneratorV2:
 {PARAM_DESCRIPTIONS}
 
 可用表情或动作（仅在必要时使用来丰富角色表情）：
-{expr_desc}
+{[expr.name for expr in self.expressions]}
 
 输出为 JSON：
 {{"duration": 1500, "params": {{"ax": 15, "ay": -5, "els": 1}}, "expr": ["微笑"]}}
@@ -410,7 +404,7 @@ class ExpressionGeneratorV2:
             Log.warning(f"{log_prefix} LLM 返回内容为空")
             return {}
 
-        return parse_llm_json_response(content)
+        return JsonParser().parse(content)  # type: ignore
 
     # ============================================================
     # 结果后处理
