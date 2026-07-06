@@ -5,7 +5,7 @@ import yaml
 from Config import Config
 from my_utils import config_manager as CConfig
 from services.tts_service import ttsService
-from models.dto.assistant_request import AddAssistantRequest, UpdateAssistantRequest
+from models.dto.request.assistant_request import AddAssistantRequest, UpdateAssistantRequest
 from models.types.assistant_info import AssistantInfo
 from models.types.user_state import UserStateInfo
 from core.assistant import Assistant

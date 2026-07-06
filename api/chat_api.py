@@ -17,22 +17,44 @@ MotionGenerator:
 
 from fastapi.responses import StreamingResponse
 from fastapi import APIRouter, HTTPException, Query
-from models.dto.chat_request import ChatData
+from models.dto.request.chat_request import ChatData
 from my_utils import config_manager as CConfig
 
 # 导入基础组件
-from core.chat.base import assistant_service
+from core.chat.base import assistant_service, to_sse
 
-# 导入各版本的聊天函数
+# 导入各版本的聊天服务
 from core.chat import (
-    llm_chat_with_tts,  # V1 版本
-    llm_chat_with_tts_and_motion_v2,  # V2 版本
+    V1ChatService,  # V1 版本
+    V2ChatService,  # V2 版本
     V3ChatService,  # V3 版本
 )
+from models.dto.response.ChatResponse import FullChatResponse
+from collections.abc import AsyncGenerator
 
 chat_api = APIRouter()
+# V1 版本：基础文本 + TTS
+v1_service = V1ChatService()
+# V2 版本：文本 + TTS + 动作
+v2_service = V2ChatService()
 # V3 版本：信息调度中心
 v3_service = V3ChatService()
+
+
+async def to_sse_stream(
+    generator: AsyncGenerator[FullChatResponse, None],
+) -> AsyncGenerator[str, None]:
+    """
+    将模型对象异步生成器统一转换为 SSE 格式流
+
+    参数：
+    - generator: 产出 FullChatResponse 模型对象的异步生成器
+
+    返回：
+    - 产出 SSE 格式字符串的异步生成器
+    """
+    async for payload in generator:
+        yield to_sse(payload)
 
 
 def _get_motion_version() -> str:
@@ -73,19 +95,19 @@ async def tts_api_get(
         if motion_version == "v3":
 
             return StreamingResponse(
-                v3_service.chat(params),
+                to_sse_stream(v3_service.chat(params)),
                 media_type="text/event-stream",
             )
         else:
             # V2 版本：基础版本
             return StreamingResponse(
-                llm_chat_with_tts_and_motion_v2(params),
+                to_sse_stream(v2_service.chat(params)),
                 media_type="text/event-stream",
             )
     else:
         # 不生成动作
         return StreamingResponse(
-            llm_chat_with_tts(params),
+            to_sse_stream(v1_service.chat(params)),
             media_type="text/event-stream",
         )
 
@@ -108,19 +130,19 @@ async def tts_api(params: ChatData):
         if motion_version == "v3":
             # V3 版本：信息调度中心
             return StreamingResponse(
-                v3_service.chat(params),
+                to_sse_stream(v3_service.chat(params)),
                 media_type="text/event-stream",
             )
         else:
             # V2 版本：基础版本
             return StreamingResponse(
-                llm_chat_with_tts_and_motion_v2(params),
+                to_sse_stream(v2_service.chat(params)),
                 media_type="text/event-stream",
             )
     else:
         # 不生成动作
         return StreamingResponse(
-            llm_chat_with_tts(params),
+            to_sse_stream(v1_service.chat(params)),
             media_type="text/event-stream",
         )
 

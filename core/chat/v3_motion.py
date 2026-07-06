@@ -49,7 +49,7 @@ data: {"type": "motion_frame", "sentence_id": 1, "motions": [...], ...}
 from collections.abc import AsyncGenerator
 import time
 import asyncio
-from models.dto.chat_request import ChatData
+from models.dto.request.chat_request import ChatData
 from models.dto.response.ChatResponse import (
     ChatResponse,
     DoneResponse,

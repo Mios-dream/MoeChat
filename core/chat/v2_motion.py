@@ -35,18 +35,23 @@ data: {"type": "motion_frame", "sentence_id": 1, "motions": [...], ...}
 
 import time
 import asyncio
+from collections.abc import AsyncGenerator
 from typing import Any
-from models.dto.chat_request import ChatData
+from models.dto.request.chat_request import ChatData
+from models.dto.response.ChatResponse import (
+    DoneResponse,
+    ErrorResponse,
+    FullChatResponse,
+    MotionResponse,
+)
 from my_utils.log import logger
-from core.chat.base import store_sentence_event, to_sse
+from core.chat.base import store_sentence_event
 from core.chat.v1 import BaseChatContext
 from core.scheduler import TaskScheduler, TaskResult
 from core.expression_generator.expression_generator_service_v2 import (
     ExpressionGeneratorV2,
 )
 from services.assistant_service import AssistantService
-
-assistant_service = AssistantService()
 
 
 class V2MotionChatContext(BaseChatContext):
@@ -126,7 +131,7 @@ async def motion_wrapper(
     user_message: str,
     assistant_message: list[str],
     motion_history: dict | None = None,
-) -> dict[str, Any]:
+) -> MotionResponse:
     """
     V2 版本动作规划任务封装
 
@@ -146,16 +151,12 @@ async def motion_wrapper(
         f"[动作生成] 准备生成动作，句子ID: {sentence_id}, 内容: {sentence_text}"
     )
 
-    current_time_ms = time.time() * 1000
-    motion_event: dict[str, Any] = {
-        "type": "motion_frame",
-        "sentence_id": sentence_id,
-        "source_text": sentence_text,
-        "motions": [],
-        "duration": 0,
-        "timestamp_ms": current_time_ms,
-        "done": False,
-    }
+    motion_event: MotionResponse = MotionResponse(
+        sentence_id=sentence_id,
+        source_text=sentence_text,
+        motions=[],
+        duration=0,
+    )
 
     async with motion_semaphore:
         try:
@@ -193,7 +194,7 @@ async def motion_wrapper(
                 timeout_seconds=10.0,
             )
 
-            motion_event["duration"] = duration_time
+            motion_event.duration = duration_time
 
             # 转换帧格式为前端可用的格式
             motions = []
@@ -206,7 +207,7 @@ async def motion_wrapper(
                     motion_data["expression"] = frame.expression
                 motions.append(motion_data)
 
-            motion_event["motions"] = motions
+            motion_event.motions = motions
 
             # 记录动作参数到历史（用于连贯性）
             if motion_history is not None and frames:
@@ -222,123 +223,118 @@ async def motion_wrapper(
         return motion_event
 
 
-async def llm_chat_with_tts_and_motion_v2(params: ChatData):
+class V2ChatService:
     """
-    V2Motion 版本聊天流式输出
+    V2 聊天服务
 
-    并行文字/语音/动作，极低延迟同步。
-
-    流程概述：
-    1. 构建消息列表（包含动作提示词）
-    2. 获取 V2 动作生成器
-    3. 创建调度器和纯文本管道
-    4. 流式执行管道，处理文本和动作结果
-    5. 事件循环：按序输出就绪事件
-
-    参数：
-    - params: 聊天请求参数
-
-    产出：
-    - SSE 格式的事件流
+    提供 V2 版本的聊天流式输出接口（文本+语音+动作）。
     """
-    # ============================================================
-    # 第一步：获取助手实例
-    # ============================================================
-    agent = assistant_service.get_current_assistant()
 
-    if not agent:
-        logger.error("[V2Motion] 当前没有加载助手")
-        return
+    def __init__(self):
+        """
+        初始化 V2 聊天服务
+        """
+        self.assistant_service = AssistantService()
+        self.motion_generator: ExpressionGeneratorV2 | None = None
 
-    # ============================================================
-    # 第三步：获取动作生成器
-    # ============================================================
-    motion_generator: ExpressionGeneratorV2 | None = None
-    try:
-        motion_generator = ExpressionGeneratorV2()
-        await motion_generator.initialize(agent.agent_name)
-    except Exception as e:
-        logger.warning(f"[V2Motion] 获取动作生成器失败: {e}")
+    async def _init_motion_generator(
+        self, agent_name: str
+    ) -> ExpressionGeneratorV2 | None:
+        """
+        初始化 V2 动作生成器
 
-    if motion_generator is None:
-        logger.warning("[动作规划] 未找到可用 Live2D 参数，将输出空动作事件")
+        参数：
+        - agent_name: 助手名称
 
-    # ============================================================
-    # 第四步：初始化上下文
-    # ============================================================
-    ctx = V2MotionChatContext(motion_generator)
-    ctx.user_message = params.msg[-1]["content"] if params.msg else ""
+        返回：
+        - 动作生成器实例，失败返回 None
+        """
+        try:
+            generator = ExpressionGeneratorV2()
+            await generator.initialize(agent_name)
+            return generator
+        except Exception as e:
+            logger.warning(f"[V2Motion] 获取动作生成器失败: {e}")
+            return None
 
-    # 获取历史消息（包含上下文）
-    history_messages = [
-        {
-            "role": "system",
-            "content": await agent.get_context(
-                msg=ctx.user_message, is_sleep_mode=params.is_sleep_mode
-            ),
-        },
-        *agent.get_history(),
-    ]
+    async def chat(self, params: ChatData) -> AsyncGenerator[FullChatResponse]:
+        """
+        V2 版本聊天流式输出
 
-    # ============================================================
-    # 第五步：创建调度器和纯文本管道
-    # ============================================================
-    scheduler = TaskScheduler()
-    pipeline = scheduler.create_text_pipeline(
-        system_context=agent.prompt,
-        history_messages=history_messages,
-        user_message=ctx.user_message,
-    )
+        并行文字/语音/动作，极低延迟同步。
 
-    try:
-        # ============================================================
-        # 第六步：流式执行管道
-        # handle_text_result 调用链：
-        #   → super().handle_text_result() → base.text_wrapper / base.tts_wrapper
-        #   → create_motion_event → base.motion_wrapper
-        # ============================================================
-        async for result in pipeline.execute():
-            await ctx.handle_result(result)
+        流程概述：
+        1. 获取助手实例，初始化动作生成器
+        2. 创建调度器和纯文本管道
+        3. 流式执行管道，处理文本和动作结果
+        4. 事件循环：按序输出就绪事件
 
-            # drain_ready_events → base.drain_ready_sentence_events
-            for payload in ctx.drain_ready_events():
-                yield to_sse(payload)
+        参数：
+        - params: 聊天请求参数
+        """
+        agent = self.assistant_service.get_current_assistant()
 
-        # 等待所有异步任务完成
-        await ctx.wait_for_completion()
+        if not agent:
+            logger.error("[V2Motion] 当前没有加载助手")
+            yield ErrorResponse(error_code="NO_ASSISTANT", data="当前没有加载助手")
 
-        # 输出剩余事件
-        for payload in ctx.drain_ready_events():
-            yield to_sse(payload)
+            return
 
-        # 输出完成信号
-        final_response = {
-            "type": "done",
-            "timestamp_ms": time.time() * 1000,
-            "full_text": ctx.get_full_text(),
-            "done": True,
-        }
-        yield to_sse(final_response)
+        self.motion_generator = await self._init_motion_generator(agent.agent_name)
 
-        # 保存到助手上下文
-        asyncio.create_task(
-            agent.add_msg(
-                user_msg=ctx.user_message,
-                assistant_msg=ctx.get_full_text(),
-            )
-        )
+        if self.motion_generator is None:
+            logger.warning("[动作规划] 未找到可用 Live2D 参数，将输出空动作事件")
 
-    except Exception as e:
-        # 取消所有任务
-        for task in list(ctx.pending_tasks):
-            task.cancel()
+        ctx = V2MotionChatContext(self.motion_generator)
+        ctx.user_message = params.msg[-1]["content"] if params.msg else ""
 
-        logger.error(f"处理数据时出错: {e}", exc_info=True)
-        yield to_sse(
+        history_messages = [
             {
-                "type": "error",
-                "timestamp_ms": time.time() * 1000,
-                "data": str(e),
-                "done": True,
-            }
+                "role": "system",
+                "content": await agent.get_context(
+                    msg=ctx.user_message, is_sleep_mode=params.is_sleep_mode
+                ),
+            },
+            *agent.get_history(),
+        ]
+
+        scheduler = TaskScheduler()
+        pipeline = scheduler.create_text_pipeline(
+            system_context=agent.prompt,
+            history_messages=history_messages,
+            user_message=ctx.user_message,
         )
+
+        try:
+            # 流式执行管道
+            async for result in pipeline.execute():
+                await ctx.handle_result(result)
+
+                for payload in ctx.drain_ready_events():
+                    yield payload
+
+            # 等待所有异步任务完成
+            await ctx.wait_for_completion()
+
+            # 输出剩余事件
+            for payload in ctx.drain_ready_events():
+                yield payload
+
+            # 输出完成信号
+            yield DoneResponse(full_text=ctx.get_full_text())
+
+            # 保存到助手上下文
+            asyncio.create_task(
+                agent.add_msg(
+                    user_msg=ctx.user_message,
+                    assistant_msg=ctx.get_full_text(),
+                )
+            )
+
+        except Exception as e:
+            # 取消所有任务
+            for task in list(ctx.pending_tasks):
+                task.cancel()
+
+            logger.error(f"处理数据时出错: {e}", exc_info=True)
+            yield ErrorResponse(error_code="500", data=f"处理数据时出错: {e}")

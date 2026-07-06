@@ -26,7 +26,7 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 
 from core.chat.v3_motion import V3ChatService
-from models.dto.chat_request import ChatData
+from models.dto.request.chat_request import ChatData
 from models.dto.response.ChatResponse import ErrorResponse
 from my_utils.log import logger
 from api.ws.chat_protocol import ChatWSMessageType

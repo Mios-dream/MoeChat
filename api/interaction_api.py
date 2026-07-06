@@ -2,7 +2,7 @@ from fastapi import APIRouter
 
 from fastapi.responses import StreamingResponse
 
-from models.dto.interaction_request import InteractionMessageRequest
+from models.dto.request.interaction_request import InteractionMessageRequest
 from core.interaction_core import generate_interaction_message
 
 interaction_api = APIRouter()

@@ -2,7 +2,7 @@ import json
 from fastapi import (
     APIRouter,
 )
-from models.dto.asr_request import asr_data
+from models.dto.request.asr_request import asr_data
 import base64
 import soundfile as sf
 from fastapi import WebSocket

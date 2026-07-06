@@ -28,14 +28,18 @@ data: {"type": "text", "sentence_id": 1, "message": "你好呀~", ...}
 data: {"type": "audio", "sentence_id": 1, "file": "base64...", ...}
 """
 
-import time
 import asyncio
+from collections.abc import AsyncGenerator
 from typing import Any
-from models.dto.chat_request import ChatData
-from models.dto.response.ChatResponse import ChatResponse
+from models.dto.request.chat_request import ChatData
+from models.dto.response.ChatResponse import (
+    FullChatResponse,
+    ChatResponse,
+    DoneResponse,
+    ErrorResponse,
+)
 from my_utils.log import logger
 from core.chat.base import (
-    to_sse,
     text_wrapper,
     tts_wrapper,
     store_sentence_event,
@@ -44,8 +48,6 @@ from core.chat.base import (
 from core.scheduler import TaskResult
 from core.scheduler import TaskScheduler
 from services.assistant_service import AssistantService
-
-assistant_service = AssistantService()
 
 
 class BaseChatContext:
@@ -178,100 +180,92 @@ class BaseChatContext:
             await asyncio.sleep(0.01)
 
 
-async def llm_chat_with_tts(params: ChatData):
+class V1ChatService:
     """
-    V1 版本聊天流式输出
+    V1 聊天服务
 
-    并行文字/语音，极低延迟同步。
-
-    流程概述：
-    1. 构建消息列表
-    2. 创建调度器和纯文本管道
-    3. 流式执行管道，处理文本结果
-    4. 事件循环：按序输出就绪事件
-
-    参数：
-    - params: 聊天请求参数
-
-    产出：
-    - SSE 格式的事件流
+    提供 V1 版本的聊天流式输出接口（文本+语音，不含动作）。
     """
-    # 第一步：获取助手实例
-    agent = assistant_service.get_current_assistant()
 
-    if not agent:
-        logger.error("当前没有加载助手")
-        return
+    def __init__(self):
+        """
+        初始化 V1 聊天服务
+        """
+        self.assistant_service = AssistantService()
 
-    # 第三步：初始化上下文（使用 chat_context.BaseChatContext）
-    ctx = BaseChatContext()
-    ctx.user_message = params.msg[-1]["content"] if params.msg else ""
+    async def chat(self, params: ChatData) -> AsyncGenerator[FullChatResponse, None]:
+        """
+        V1 版本聊天流式输出
 
-    # print(ctx.user_message, params.is_sleep_mode)
+        并行文字/语音，极低延迟同步。
 
-    # 获取历史消息（包含上下文）
-    history_messages = [
-        {
-            "role": "system",
-            "content": await agent.get_context(
-                msg=ctx.user_message, is_sleep_mode=params.is_sleep_mode
-            ),
-        },
-        *agent.get_history(),
-    ]
+        流程概述：
+        1. 获取助手实例，构建历史消息
+        2. 创建调度器和纯文本管道
+        3. 流式执行管道，处理文本结果
+        4. 事件循环：按序输出就绪事件
 
-    # 第四步：创建调度器和纯文本管道
-    scheduler = TaskScheduler()
-    pipeline = scheduler.create_text_pipeline(
-        system_context=agent.prompt,
-        history_messages=history_messages,
-        user_message=ctx.user_message,
-    )
+        参数：
+        - params: 聊天请求参数
+        """
+        agent = self.assistant_service.get_current_assistant()
 
-    try:
-        # 第五步：流式执行管道
-        async for result in pipeline.execute():
-            await ctx.handle_result(result)
+        if not agent:
+            logger.error("当前没有加载助手")
+            yield ErrorResponse(error_code="NO_ASSISTANT", data="当前没有加载助手")
 
-            # drain_ready_events 内部调用 base.drain_ready_sentence_events
-            for payload in ctx.drain_ready_events():
-                yield to_sse(payload)
+            return
 
-        # 等待所有异步任务完成
-        await ctx.wait_for_completion()
+        ctx = BaseChatContext()
+        ctx.user_message = params.msg[-1]["content"] if params.msg else ""
 
-        # 输出剩余事件
-        for payload in ctx.drain_ready_events():
-            yield to_sse(payload)
-
-        # 输出完成信号
-        final_response = {
-            "type": "done",
-            "timestamp_ms": time.time() * 1000,
-            "full_text": ctx.get_full_text(),
-            "done": True,
-        }
-        yield to_sse(final_response)
-
-        # 保存到助手上下文
-        asyncio.create_task(
-            agent.add_msg(
-                user_msg=ctx.user_message,
-                assistant_msg=ctx.get_full_text(),
-            )
-        )
-
-    except Exception as e:
-        # 取消所有任务
-        for task in list(ctx.pending_tasks):
-            task.cancel()
-
-        logger.error(f"处理数据时出错: {e}", exc_info=True)
-        yield to_sse(
+        history_messages = [
             {
-                "type": "error",
-                "timestamp_ms": time.time() * 1000,
-                "data": str(e),
-                "done": True,
-            }
+                "role": "system",
+                "content": await agent.get_context(
+                    msg=ctx.user_message, is_sleep_mode=params.is_sleep_mode
+                ),
+            },
+            *agent.get_history(),
+        ]
+
+        scheduler = TaskScheduler()
+        pipeline = scheduler.create_text_pipeline(
+            system_context=agent.prompt,
+            history_messages=history_messages,
+            user_message=ctx.user_message,
         )
+
+        try:
+            # 流式执行管道
+            async for result in pipeline.execute():
+                await ctx.handle_result(result)
+
+                for payload in ctx.drain_ready_events():
+                    yield payload
+
+            # 等待所有异步任务完成
+            await ctx.wait_for_completion()
+
+            # 输出剩余事件
+            for payload in ctx.drain_ready_events():
+                yield payload
+
+            # 输出完成信号
+            yield DoneResponse(full_text=ctx.get_full_text())
+
+            # 保存到助手上下文
+            asyncio.create_task(
+                agent.add_msg(
+                    user_msg=ctx.user_message,
+                    assistant_msg=ctx.get_full_text(),
+                )
+            )
+
+        except Exception as e:
+            # 取消所有任务
+            for task in list(ctx.pending_tasks):
+                task.cancel()
+
+            logger.error(f"处理数据时出错: {e}", exc_info=True)
+            yield ErrorResponse(error_code="500", data=f"处理数据时出错: {e}")

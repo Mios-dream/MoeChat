@@ -5,7 +5,7 @@ from core.scheduler.builtin_tasks import (
     create_text_task,
     create_bilingual_task,
 )
-from models.dto.interaction_request import InteractionMessageRequest
+from models.dto.request.interaction_request import InteractionMessageRequest
 from my_utils import prompt as prompt_templates
 from my_utils.log import logger
 from services.assistant_service import AssistantService

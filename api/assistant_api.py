@@ -6,7 +6,7 @@ import io
 import tempfile
 import yaml
 from pathlib import Path
-from models.dto.assistant_request import (
+from models.dto.request.assistant_request import (
     AddAssistantRequest,
     AssistantAssetsCheckRequest,
     AssistantAssetsDownloadRequest,

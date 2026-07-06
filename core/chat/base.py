@@ -255,14 +255,14 @@ def drain_ready_sentence_events(
     return expected_sentence_id, ready_payloads
 
 
-def to_sse(payload: dict) -> str:
+def to_sse(payload: BaseModel) -> str:
     """
-    将字典转换为 SSE 格式
+    将 Pydantic 模型转换为 SSE 格式
 
     参数：
-    - payload: 事件字典
+    - payload: Pydantic 模型
 
     返回：
     - SSE 格式字符串
     """
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    return f"data: {payload.model_dump_json(ensure_ascii=False)}\n\n"

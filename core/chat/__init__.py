@@ -16,11 +16,17 @@
 
 使用示例：
 ```python
-from core.chat import llm_chat_with_tts_and_motion_v3
+from core.chat import V1ChatService, V3ChatService
 
-# V3 版本
-async for event in llm_chat_with_tts_and_motion_v3(params):
-    send_sse(event)
+# V1 版本（文本 + TTS）
+v1_service = V1ChatService()
+async for sse_event in v1_service.chat(params):
+    send_sse(sse_event)
+
+# V3 版本（文本 + TTS + 动作 + 工具调用）
+v3_service = V3ChatService()
+async for sse_event in v3_service.chat(params):
+    send_sse(sse_event)
 ```
 """
 
@@ -38,8 +44,8 @@ from core.chat.base import (
     to_sse,
 )
 
-from core.chat.v1 import BaseChatContext, llm_chat_with_tts
-from core.chat.v2_motion import llm_chat_with_tts_and_motion_v2
+from core.chat.v1 import BaseChatContext, V1ChatService
+from core.chat.v2_motion import V2ChatService
 from core.chat.v3_motion import V3ChatService
 
 __all__ = [
@@ -54,9 +60,9 @@ __all__ = [
     # 上下文
     "BaseChatContext",
     # V1 版本
-    "llm_chat_with_tts",
+    "V1ChatService",
     # V2Motion 版本
-    "llm_chat_with_tts_and_motion_v2",
+    "V2ChatService",
     # V3 版本
     "V3ChatService",
 ]
