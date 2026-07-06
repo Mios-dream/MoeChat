@@ -28,16 +28,32 @@ V4 信息调度中心
 """
 
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 import time
 import asyncio
+from typing import Any, Literal
+from openai.types.chat import (
+    ChatCompletionFunctionToolParam,
+    ChatCompletionMessageFunctionToolCallParam,
+    ChatCompletionMessageParam,
+)
+
 from my_utils.log import logger as Log
 from core.llm import LLMClient
-from core.scheduler.task import Task, TaskResult
+from core.llm.response_parser import JsonLineParser, TextParser
+from core.scheduler.task import (
+    Task,
+    TaskResult,
+    ToolCallEvent,
+    ToolExecutionResult,
+)
 from core.scheduler.parsers.multi_parser import MultiParser
 from core.scheduler.parsers.text_stream_parser import TextStreamParser
-from typing import Any, Literal
-from core.llm.response_parser import ResponseParser, JsonLineParser, TextParser
+
+ToolCallHandler = Callable[
+    [list[ChatCompletionMessageFunctionToolCallParam]],
+    Awaitable[ToolExecutionResult],
+]
 
 # ============================================================
 # 调度器核心
@@ -127,6 +143,8 @@ class TaskScheduler:
 
         fragments: list[str] = ["你需要完成以下任务，并严格输出要求的格式。"]
 
+        # 工具调用规则（独立章节，在任务列表之前确保 LLM 优先理解）
+
         # 1. 从任务中收集提示词片段
         sorted_tasks = sorted(self._tasks.values(), key=lambda t: t.priority)
 
@@ -134,12 +152,19 @@ class TaskScheduler:
             fragments.append(
                 f"""【任务{index + 1}: {task.name}】\n{task.prompt}。\n输出字段: {task.field_name}。例如: {task.example}\n【任务规则】\n{"。".join(task.rules)}"""
             )
-
+        fragments.append("""【工具调用规则 - 最高优先级】
+如果你判断当前对话需要调用外部工具（如搜索、查询、截图、OCR等）：
+1. 可以先用一行 JSON 输出一句简短提示文本，
+   如 {"text": "让我帮你搜索一下...", "actions": []}
+2. 然后使用函数调用（function calling）机制实际调用工具
+3. 工具结果返回后，继续以 JSON 格式逐句输出包含结果的完整回复
+4. 绝对不要在 JSON 文本中表演或模拟工具执行过程，应实际调用工具后根据真实结果回复
+不需要调用工具时，直接以 JSON 格式输出回复即可，不受此规则影响。""")
         # 5. 动态组合规则说明（从任务中收集 + 通用规则）
         rules = [
             "每行必须是完整的、合法的 JSON 对象",
             "每行对应一句话，所有字段放在同一个 JSON 对象中",
-            "不要输出 JSON 以外的任何内容（不要输出 markdown 代码块、解释说明等）",
+            "不要输出 JSON 以外的任何内容（不要输出 markdown 代码块、解释说明等）。函数调用（function calling/tool calls）不受此条限制——工具调用和 JSON 文本输出是两个并行通道",
             "注意：对话历史中你的回复格式可能与当前要求的 JSON 格式不同，你必须忽略历史格式，严格按照上述规则以 JSON 格式输出",
         ]
 
@@ -150,8 +175,8 @@ class TaskScheduler:
 
     def _normalize_history_for_json(
         self,
-        history_messages: list[dict[str, str]] | None,
-    ) -> list[dict[str, str]]:
+        history_messages: list[ChatCompletionMessageParam] | None,
+    ) -> list[ChatCompletionMessageParam]:
         """
         将历史消息中 assistant 角色的纯文本内容转换为 JSON 格式
 
@@ -178,7 +203,7 @@ class TaskScheduler:
         formatted = []
         for msg in history_messages:
             if msg.get("role") == "assistant":
-                content = msg["content"]
+                content: str = msg["content"]  # type: ignore
                 stripped = content.strip()
                 # 已经是 JSON 格式则跳过
                 if stripped.startswith("{") and stripped.endswith("}"):
@@ -195,15 +220,21 @@ class TaskScheduler:
 
     def create_task_pipeline(
         self,
-        user_message: str | None = None,
-        system_context: str | None = None,
-        history_messages: list[dict[str, str]] | None = None,
+        user_message: str,
+        system_context: str,
+        history_messages: list[ChatCompletionMessageParam] | None = None,
         max_retries: int = 2,
         retry_delay: float = 0,
+        tools: list[ChatCompletionFunctionToolParam] | None = None,
+        tool_handler: ToolCallHandler | None = None,
+        max_tool_rounds: int = 10,
     ) -> "Pipeline":
         """
         创建多行json返回处理管道
         用于让 LLM 输出多行 JSON，每行对应一句话，包含文本和动作等字段，进行多任务输出。
+
+        支持 Function Calling 工具调用：传入 tools 和 tool_handler 后，
+        管道会在 LLM 决定调用工具时自动执行工具并将结果注入上下文，继续生成回复。
 
         参数：
         - user_message: 用户提问消息
@@ -211,30 +242,26 @@ class TaskScheduler:
         - history_messages: 历史消息列表（可选）
         - max_retries: 最大重试次数（默认 2 次）
         - retry_delay: 重试间隔（秒）
+        - tools: OpenAI 工具定义列表（None 表示不使用工具）
+        - tool_handler: 工具调用处理器，用于执行工具并返回结果
+        - max_tool_rounds: 最大工具调用轮次（默认 10 轮）
 
         返回：
         - Pipeline 实例
         """
-        # 构建系统提示词
         task_system_prompt = self._build_task_system_prompt()
 
-        # 构建消息列表
-        messages = [
-            # 角色的系统提示词
+        messages: list[ChatCompletionMessageParam] = [
             {"role": "system", "content": system_context},
-            # 任务系统提示词
             {"role": "system", "content": task_system_prompt},
         ]
 
-        # 添加历史消息（将 assistant 纯文本转为 JSON 格式，消除 few-shot 干扰）
         if history_messages:
             messages.extend(self._normalize_history_for_json(history_messages))
 
-        # 格式化时间
         format_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
 
         if user_message:
-            # 添加用户消息
             messages.append(
                 {
                     "role": "user",
@@ -242,25 +269,26 @@ class TaskScheduler:
                 }
             )
 
-        # 创建解析器
         parser = MultiParser()
         for task in self._tasks.values():
             parser.register_task(task)
 
-        # 创建管道
         return Pipeline(
             messages=messages,
             llm_parser=JsonLineParser(),
             task_parser=parser,
             max_retries=max_retries,
             retry_delay=retry_delay,
+            tools=tools,
+            tool_handler=tool_handler,
+            max_tool_rounds=max_tool_rounds,
         )
 
     def create_text_pipeline(
         self,
-        user_message: str | None = None,
-        system_context: str | None = None,
-        history_messages: list[dict[str, str]] | None = None,
+        user_message: str,
+        system_context: str,
+        history_messages: list[ChatCompletionMessageParam] | None = None,
     ) -> "Pipeline":
         """
         创建纯文本处理管道,只能处理文本，不能进行多任务
@@ -277,7 +305,7 @@ class TaskScheduler:
         parser = TextStreamParser()
 
         # 构建消息列表
-        messages = [
+        messages: list[ChatCompletionMessageParam] = [
             # 角色的系统提示词
             {"role": "system", "content": system_context},
         ]
@@ -314,6 +342,7 @@ class Pipeline:
     2. 将响应传递给解析器
     3. 产出解析后的结果
     4. 检测任务完成情况，必要时自动重试
+    5. 支持 Function Calling 工具调用循环
 
     支持的解析器：
     - MultiParser: JSON 格式解析（用于 V4 带动作帧的聊天）
@@ -321,14 +350,22 @@ class Pipeline:
 
     使用示例：
     ```python
-    # JSON 模式（V4）
+    # JSON 模式（V4，带工具调用）
     parser = MultiParser()
     parser.register_task(create_text_task())
-    pipeline = scheduler.create_pipeline("你好呀~")
+    pipeline = Pipeline(
+        messages=messages,
+        llm_parser=JsonLineParser(),
+        task_parser=parser,
+        tools=tool_defs,
+        tool_handler=integration.process_tool_calls,
+    )
+    async for result in pipeline.execute():
+        print(result.task_type, result.data)
 
     # 纯文本模式
     parser = TextStreamParser()
-    pipeline = Pipeline(messages=messages, parser=parser)
+    pipeline = Pipeline(messages=messages, llm_parser=TextParser(), task_parser=parser)
 
     async for result in pipeline.execute():
         print(result.task_type, result.data)
@@ -337,122 +374,233 @@ class Pipeline:
 
     def __init__(
         self,
-        messages: list[dict[str, str]],
-        llm_parser: ResponseParser,
+        messages: list[ChatCompletionMessageParam],
+        llm_parser: JsonLineParser | TextParser,
         task_parser: MultiParser | TextStreamParser,
         model_key: Literal["ChatLLM", "LLM"] = "ChatLLM",
         max_retries: int = 2,
         retry_delay: float = 0,
+        tools: list[ChatCompletionFunctionToolParam] | None = None,
+        tool_handler: ToolCallHandler | None = None,
+        max_tool_rounds: int = 10,
     ):
         """
         初始化管道
 
         参数：
         - messages: 消息列表（包含系统提示词和用户消息）
-        - llm_parser: LLM 解析器（JsonLineParser）
+        - llm_parser: LLM 解析器（JsonLineParser 或 TextParser）
         - task_parser: 任务解析器（MultiParser 或 TextStreamParser）
         - model_key: 模型配置键名
         - max_retries: 最大重试次数（默认 2 次）
         - retry_delay: 重试间隔（秒）
+        - tools: OpenAI 工具定义列表（None 表示不使用工具）
+        - tool_handler: 工具调用处理器，签名为 async (tool_calls) -> (tool_messages, raw_results)
+        - max_tool_rounds: 最大工具调用轮次（默认 10 轮，防止死循环）
         """
-        # 消息列表（包含系统提示词和用户消息）
-        self.messages = messages
-
+        self.messages: list[ChatCompletionMessageParam] = messages
         self.llm_parser = llm_parser
-        # 任务解析器可以是 MultiParser 或 TextStreamParser
         self.task_parser = task_parser
-        # 模型配置键名
         self.model_key = model_key
-        # 最大重试次数
         self.llm_client = LLMClient(model_key=model_key)
-        # 重试配置
         self.max_retries = max_retries
-        # 重试间隔
         self.retry_delay = retry_delay
+        self.tools = tools
+        self.tool_handler = tool_handler
+        self.max_tool_rounds = max_tool_rounds
 
-    def _build_retry_messages(self) -> list[dict[str, str]]:
+    def _build_retry_messages(
+        self, messages: list[ChatCompletionMessageParam]
+    ) -> list[ChatCompletionMessageParam]:
         """
         构建重试消息列表
 
         在原有消息基础上，添加强化提示词，强调必须输出缺失的任务字段。
 
         参数：
-        - missing_tasks: 缺失的任务类型集合
+        - messages: 当前消息列表
 
         返回：
         - 重试消息列表
         """
-        messages = self.messages.copy()
+        messages_copy = list(messages)
 
-        retry_hint = f"\n【重要提醒】你的上一次回复没有包含全部所需字段，或者输出的不是要求的json格式，请确保本次回复必须符合格式要求。每行 JSON 对象都必须包含必要字段。"
+        retry_hint = "\n【重要提醒】你的上一次回复没有包含全部所需字段，或者输出的不是要求的json格式，请确保本次回复必须符合格式要求。每行 JSON 对象都必须包含必要字段。"
 
-        # 在最后一条用户消息后追加提醒
-        if messages and messages[-1]["role"] == "user":
-            messages[-1] = {
+        if messages_copy and messages_copy[-1]["role"] == "user":
+            messages_copy[-1] = {
                 "role": "user",
-                "content": messages[-1]["content"] + retry_hint,
+                "content": f"{messages_copy[-1]['content']}{retry_hint}",
             }
         else:
-            messages.append({"role": "user", "content": retry_hint})
+            messages_copy.append({"role": "user", "content": retry_hint})
 
-        return messages
+        return messages_copy
 
-    async def execute(self) -> AsyncGenerator[TaskResult, Any]:
+    async def _execute_stream_round(
+        self,
+        current_messages: list[ChatCompletionMessageParam],
+        effective_tools: list[ChatCompletionFunctionToolParam] | None,
+        state: dict,
+    ) -> AsyncGenerator[TaskResult]:
         """
-        执行管道
+        执行单轮带重试的流式 LLM 调用
+
+        负责一完整的工具轮次内的流式输出 + 重试逻辑：
+        1. 发起 LLM 流式调用
+        2. 逐 chunk 解析：工具调用请求存入 state["tool_calls"]，
+           任务解析结果存入 state["completed_tasks"] 并 yield 产出
+        3. 若本轮无产出，重试（重置解析器 + 构建重试消息）
+        4. 全部重试耗尽后通过 state 的空白标记通知调用方
+
+        参数：
+        - current_messages: 当前消息列表
+        - effective_tools: 当前轮次有效的工具定义列表
+        - state: 可变字典，用于向外传递中间状态（出参），键名：
+          - "completed_tools" (set[str]): 本轮完成的任务类型集合
+          - "tool_calls" (list | None): 累积的工具调用请求
+
+        产出：
+        - TaskResult 实例（解析后的任务结果）
+        """
+        state["completed_tasks"] = set()
+        state["tool_calls"] = None
+
+        for attempt in range(self.max_retries + 1):
+            stream_messages = list(current_messages)
+            # 如果是重试，则清空状态，在用户消息中追加强化提示词
+            if attempt > 0:
+                Log.info(f"[管道] 第 {attempt} 次重试...")
+                await asyncio.sleep(self.retry_delay)
+                state["completed_tasks"].clear()
+                state["tool_calls"] = None
+                self.llm_parser.reset()
+                self.task_parser.reset()
+                stream_messages = self._build_retry_messages(current_messages)
+
+            async for chunk in self.llm_client.stream(
+                messages=stream_messages,
+                parser=self.llm_parser,
+                tools=effective_tools,
+            ):
+                if chunk.tool_calls is not None:
+                    state["tool_calls"] = chunk.tool_calls
+                elif chunk.parsed_data is not None:
+                    for task_result in self.task_parser.parse(chunk.parsed_data):
+                        state["completed_tasks"].add(task_result.task_type)
+                        yield task_result
+
+            if state["completed_tasks"] or state["tool_calls"]:
+                return
+
+            Log.info("[管道] 未检测到任何任务结果，准备重试")
+
+        Log.warning(f"[管道] 重试 {self.max_retries} 次后仍未产出任何任务结果")
+
+    def _build_tool_call_result(
+        self,
+        tool_calls: list[ChatCompletionMessageFunctionToolCallParam],
+    ) -> TaskResult:
+        """
+        从原始 LLM tool_calls 构建 tool_call TaskResult
+
+        不等待工具执行，让上层 chat() 能立即排出已就绪的句子事件。
+        tool_result 在工具执行完成后单独产出。
+
+        参数：
+        - tool_calls: LLM 返回的工具调用请求列表
+
+        返回：
+        - tool_call TaskResult
+        """
+        events: list[ToolCallEvent] = []
+        for tc in tool_calls:
+            func = tc.get("function", {})
+            events.append(
+                ToolCallEvent(
+                    call_id=tc.get("id", ""),
+                    tool_name=func.get("name", ""),
+                    arguments=func.get("arguments", "{}"),
+                )
+            )
+        return TaskResult(
+            task_name="tool_call",
+            task_type="tool_call",
+            data=events,
+        )
+
+    async def execute(self) -> AsyncGenerator[TaskResult]:
+        """
+        执行管道（顶层编排）
 
         流程：
-        1. 将调度器解析器直接传递给 LLM 客户端流式请求
-        2. LLM 客户端内部完成 reset / stream_parse / flush 全流程
-        3. 管道只负责结果计数、完成检测和重试逻辑
+        1. 工具调用轮次循环：每轮先请求 LLM（带 tools），根据响应决定是工具调用还是正常输出
+        2. 每轮内部包含重试逻辑（JSON 格式验证失败时重试）
+        3. 工具调用后自动注入结果并继续
+
+        事件类型：
+        - text / motion / bilingual / ...: 通过 task_parser 解析的多任务结果
+        - tool_call: 工具调用请求（data 为 tool_calls 列表）
+        - tool_result: 工具调用执行结果（data 为 raw_results 列表）
 
         产出：
         - TaskResult 实例
         """
-
         start_time = time.time()
-        # 记录产出结果数量
         result_count = 0
-        # 记录尝试次数
-        attempt = 0
-        # 记录已完成的任务类型
-        completed_tasks: set[str] = set()
+        current_messages: list[ChatCompletionMessageParam] = list(self.messages)
+        effective_tools = self.tools
+        total_tool_rounds = 0
+        # 记录每轮的工具调用和任务完成情况，供外部判断是否继续下一轮
+        round_state: dict = {}
 
-        while attempt <= self.max_retries:
-            if attempt > 0:
-                Log.info(f"[管道] 第 {attempt} 次重试...")
-                await asyncio.sleep(self.retry_delay)
-                completed_tasks = set()
-
-            # 将解析器直接传入 LLM 客户端，由客户端统一管理解析生命周期
-            async for result in self.llm_client.stream(
-                messages=self.messages,  # type: ignore
-                parser=self.llm_parser,
+        for tool_round in range(self.max_tool_rounds + 2):
+            async for task_result in self._execute_stream_round(
+                current_messages, effective_tools, round_state
             ):
-                print(f"[管道] LLM 输出: {result}")
-                for task_result in self.task_parser.parse(
-                    result
-                ):  # 将 LLM 输出传给任务解析器,解析为多个任务
-                    result_count += 1
-                    completed_tasks.add(task_result.task_type)
-                    yield task_result
+                result_count += 1
+                yield task_result
+            # 如果 LLM 请求了工具调用
+            if round_state["tool_calls"] and self.tool_handler:
+                total_tool_rounds = tool_round + 1
 
-            # 检查是否有任务结果产出
-            if completed_tasks:
+                # 阶段 1：立即产出 tool_call 事件（不等工具执行），
+                # 让上层 chat() 有机会调用 drain_ordered() 释放已就绪的句子事件
+                yield self._build_tool_call_result(round_state["tool_calls"])
+
+                # 阶段 2：执行工具（可能耗时很长），产出 tool_result 事件
+                exec_result = await self.tool_handler(round_state["tool_calls"])
+
+                if exec_result.tool_result_events:
+                    yield TaskResult(
+                        task_name="tool_result",
+                        task_type="tool_result",
+                        data=exec_result.tool_result_events,
+                    )
+
+                # 注入工具消息到上下文，准备下一轮 LLM 调用
+                current_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": round_state["tool_calls"],
+                    }
+                )
+                current_messages.extend(exec_result.context_messages)
+
+                self.llm_parser.reset()
+                self.task_parser.reset(keep_counter=True)
+
+                continue
+            # 如果本轮没有工具调用请求，且已经产出任务结果，则结束循环
+            if round_state["completed_tasks"] and not round_state["tool_calls"]:
                 break
-
-            Log.info("[管道] 未检测到任何任务结果，准备重试")
-            self.messages = self._build_retry_messages()
-            attempt += 1
-
-        if not completed_tasks:
-            Log.warning(f"[管道] 重试 {attempt} 次后仍未产出任何任务结果")
 
         elapsed = time.time() - start_time
         Log.info(
             f"[管道] 执行完成: {result_count} 个结果, "
             f"{self.task_parser.sentence_count} 个句子, "
-            f"尝试次数: {attempt + 1}, "
+            f"工具轮次: {total_tool_rounds}, "
             f"耗时 {elapsed:.2f}s"
         )
 

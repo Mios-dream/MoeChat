@@ -149,12 +149,18 @@ class TextStreamParser(BaseParser):
         # TTS 文本过滤用的括号栈
         self._tts_bracket_stack: list[str] = []
 
-    def reset(self) -> None:
-        """重置解析器状态"""
+    def reset(self, keep_counter: bool = False) -> None:
+        """
+        重置解析器状态
+
+        参数：
+        - keep_counter: 是否保留句子计数器（默认 False）
+        """
         self._sentence_buffer = ""
         self._bracket_buffer = ""
         self._segment_bracket_stack = []
-        self._sentence_counter = 0
+        if not keep_counter:
+            self._sentence_counter = 0
         self._tts_bracket_stack = []
 
     @staticmethod

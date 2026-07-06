@@ -7,6 +7,7 @@
 - on_start: 请求开始前
 - on_token: 每收到一个 token
 - on_chunk: 解析出一个完整数据块
+- on_tool_calls: 流式响应中累积到工具调用
 - on_complete: 请求完成
 - on_error: 请求出错
 
@@ -44,6 +45,7 @@ class CallbackEvent(str, Enum):
     - START: 请求开始前
     - TOKEN: 每收到一个 token
     - CHUNK: 解析出一个完整数据块
+    - TOOL_CALLS: 流式响应中累积到工具调用
     - COMPLETE: 请求完成
     - ERROR: 请求出错
     """
@@ -51,6 +53,7 @@ class CallbackEvent(str, Enum):
     START = "on_start"
     TOKEN = "on_token"
     CHUNK = "on_chunk"
+    TOOL_CALLS = "on_tool_calls"
     COMPLETE = "on_complete"
     ERROR = "on_error"
 

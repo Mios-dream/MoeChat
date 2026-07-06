@@ -21,6 +21,7 @@ import re
 from typing import Any
 
 from Config import Config
+from models.dto.response.ChatResponse import AudioResponse, ChatResponse, TextResponse
 from services.tts_service import ttsService
 from my_utils import config_manager as CConfig
 from my_utils.log import logger
@@ -96,7 +97,7 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
         return None
 
 
-async def text_wrapper(sentence_id: int, sentence_text: str) -> dict[str, Any]:
+async def text_wrapper(sentence_id: int, sentence_text: str) -> TextResponse:
     """
     封装文本事件
 
@@ -107,13 +108,10 @@ async def text_wrapper(sentence_id: int, sentence_text: str) -> dict[str, Any]:
     返回：
     - 文本事件字典
     """
-    return {
-        "type": "text",
-        "sentence_id": sentence_id,
-        "message": sentence_text,
-        "timestamp_ms": time.time() * 1000,
-        "done": False,
-    }
+    return TextResponse(
+        sentence_id=sentence_id,
+        message=sentence_text,
+    )
 
 
 async def tts_wrapper(
@@ -121,7 +119,7 @@ async def tts_wrapper(
     sentence_id: int,
     sentence_text: str,
     tts_text: str,
-) -> dict[str, Any]:
+) -> AudioResponse:
     """
     封装音频事件
 
@@ -134,15 +132,12 @@ async def tts_wrapper(
     返回：
     - 音频事件字典
     """
-    audio_event: dict[str, Any] = {
-        "type": "audio",
-        "sentence_id": sentence_id,
-        "message": tts_text,
-        "source_text": sentence_text,
-        "file": "",
-        "timestamp_ms": time.time() * 1000,
-        "done": False,
-    }
+    audio_event: AudioResponse = AudioResponse(
+        sentence_id=sentence_id,
+        message=tts_text,
+        source_text=sentence_text,
+        file="",
+    )
 
     async with tts_semaphore:
         try:
@@ -172,7 +167,7 @@ async def tts_wrapper(
                 )
                 audio_data = await tts_task(tts_data_item)
                 if audio_data:
-                    audio_event["file"] = base64.b64encode(audio_data).decode("utf-8")
+                    audio_event.file = base64.b64encode(audio_data).decode("utf-8")
                 else:
                     logger.warning(f"[TTS] 生成空音频，sentence_id: {sentence_id}")
             else:
@@ -208,10 +203,10 @@ def _get_emotion(msg: str) -> str | None:
 
 
 def store_sentence_event(
-    sentence_events: dict[int, dict[str, dict[str, Any]]],
+    sentence_events: dict[int, dict[str, ChatResponse]],
     sentence_id: int,
     event_key: str,
-    payload: dict[str, Any],
+    payload: ChatResponse,
 ):
     """
     按句子聚合事件
@@ -228,10 +223,10 @@ def store_sentence_event(
 
 
 def drain_ready_sentence_events(
-    sentence_events: dict[int, dict[str, dict[str, Any]]],
+    sentence_events: dict[int, dict[str, ChatResponse]],
     expected_sentence_id: int,
     event_order: tuple[str, ...],
-) -> tuple[int, list[dict[str, Any]]]:
+) -> tuple[int, list[ChatResponse]]:
     """
     按 sentence_id 递增释放完整事件集合
 
@@ -243,7 +238,7 @@ def drain_ready_sentence_events(
     返回：
     - (下一个预期句子 ID, 可输出的事件列表)
     """
-    ready_payloads: list[dict[str, Any]] = []
+    ready_payloads: list[ChatResponse] = []
 
     while True:
         current = sentence_events.get(expected_sentence_id)
@@ -252,8 +247,7 @@ def drain_ready_sentence_events(
         if not all(event_type in current for event_type in event_order):
             break
 
-        for event_type in event_order:
-            ready_payloads.append(current[event_type])
+        ready_payloads.extend(current.values())
 
         sentence_events.pop(expected_sentence_id, None)
         expected_sentence_id += 1

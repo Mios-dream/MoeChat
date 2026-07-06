@@ -31,9 +31,12 @@ class BaseParser:
         """
         ...
 
-    def reset(self) -> None:
+    def reset(self, keep_counter: bool = False) -> None:
         """
         重置解析器状态
+
+        参数：
+        - keep_counter: 是否保留句子计数器（默认 False）
         """
         ...
 

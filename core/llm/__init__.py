@@ -35,7 +35,11 @@ from core.llm.response_parser import (
     TextParser,
 )
 from core.llm.callback_manager import CallbackManager, CallbackEvent
-from core.llm.llm_client import LLMClient, StreamRequest
+from core.llm.llm_client import (
+    LLMClient,
+    LLMStreamChunk,
+    ToolCallResult,
+)
 
 __all__ = [
     # 提示词管理
@@ -51,5 +55,6 @@ __all__ = [
     "CallbackEvent",
     # LLM 客户端
     "LLMClient",
-    "StreamRequest",
+    "LLMStreamChunk",
+    "ToolCallResult",
 ]

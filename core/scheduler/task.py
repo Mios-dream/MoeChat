@@ -126,3 +126,100 @@ class TaskResult:
             "sentence_id": self.sentence_id,
             "timestamp": self.timestamp,
         }
+
+
+# ============================================================
+# 工具调用事件类型
+# ============================================================
+
+
+@dataclass
+class ToolCallEvent:
+    """
+    LLM 请求工具调用的标准化事件
+
+    替代直接透传 OpenAI ChatCompletionMessageFunctionToolCallParam 原始类型，
+    为上层消费者（ChatContext → SSE 输出）提供类型安全的工具调用信息。
+
+    Attributes:
+        call_id: OpenAI tool_call_id，全局唯一
+        tool_name: 工具名称
+        arguments: LLM 填充的调用参数（JSON 字符串）
+    """
+
+    call_id: str
+    """OpenAI tool_call_id，格式如 'call_xxxxx'"""
+
+    tool_name: str
+    """工具名称，与 ToolMeta.name 对应"""
+
+    arguments: str
+    """LLM 填充的调用参数，JSON 字符串格式"""
+
+
+@dataclass
+class ToolResultEvent:
+    """
+    工具执行结果的标准化事件
+
+    替代直接透传 ToolCallResult 结构化对象，
+    为上层消费者提供类型安全、字段精简的执行结果信息。
+
+    Attributes:
+        call_id: 对应的请求 call_id
+        tool_name: 工具名称
+        arguments: 原始调用参数（用于前端展示调用链路）
+        content: 返回给 LLM 的执行结果文本
+        success: 是否执行成功
+        error: 失败时的错误描述
+        error_code: 结构化错误码
+        duration_ms: 执行耗时（毫秒）
+    """
+
+    call_id: str
+    """对应的请求 call_id"""
+
+    tool_name: str
+    """工具名称"""
+
+    arguments: dict[str, Any]
+    """原始调用参数，用于前端展示完整的工具调用链路"""
+
+    content: str
+    """返回给 LLM 的执行结果文本"""
+
+    success: bool
+    """是否执行成功"""
+
+    error: str | None = None
+    """失败时的错误描述"""
+
+    error_code: str | None = None
+    """结构化错误码（TOOL_NOT_FOUND, TOOL_TIMEOUT 等）"""
+
+    duration_ms: float = 0.0
+    """执行耗时（毫秒）"""
+
+
+@dataclass
+class ToolExecutionResult:
+    """
+    工具执行统一返回结构
+
+    替代 ToolCallHandler 原先返回的裸 tuple
+    (list[ToolMessage], list[Any])，将事件流和上下文注入消息分离。
+
+    Attributes:
+        tool_call_events: LLM 请求的工具调用事件列表
+        tool_result_events: 工具执行后的结果事件列表
+        context_messages: 需要注入 LLM 上下文的 OpenAI tool 角色消息列表
+    """
+
+    tool_call_events: list[ToolCallEvent]
+    """LLM 请求的每个工具调用的标准化事件"""
+
+    tool_result_events: list[ToolResultEvent]
+    """每个工具调用执行后的标准化结果事件"""
+
+    context_messages: list[Any]
+    """需要注入 LLM 上下文的 OpenAI ChatCompletionToolMessageParam 列表"""

@@ -16,29 +16,25 @@
 - 可扩展：易于添加新的 LLM 提供商
 """
 
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
+from collections.abc import AsyncGenerator
 import asyncio
 import json
 import time
 
 from openai import AsyncOpenAI
 from openai.types.chat import (
+    ChatCompletionFunctionToolParam,
+    ChatCompletionMessageFunctionToolCallParam,
     ChatCompletionMessageParam,
-    ChatCompletionToolMessageParam,
+    ChatCompletionToolUnionParam,
 )
 
 from my_utils import config_manager as CConfig
 from my_utils.log import logger as Log
 from core.llm.response_parser import ResponseParser, StreamParserProtocol, TextParser
 from core.llm.callback_manager import CallbackManager, CallbackEvent
-
-
-class ToolCallError(Exception):
-    """工具调用异常"""
-
-    pass
 
 
 @dataclass
@@ -62,23 +58,16 @@ class ToolCallResult:
 
 
 @dataclass
-class StreamRequest:
+class LLMStreamChunk:
     """
-    流式请求配置
-
+    LLM 响应片段
     属性：
-    - messages: 消息列表
-    - parser: 响应解析器
-    - model_key: 模型配置键名（"LLM", "ChatLLM", "SLM"）
-    - timeout: 超时时间（秒）
-    - extra_body: 额外请求参数
+    - parsed_data: 解析器解析后的数据（有 parser 时产出对应数据，无 parser 时 TextParser 输出原始 token）
+    - tool_calls: 工具调用列表（流末尾一次性产出，优先于 parser flush，None 表示无工具调用）
     """
 
-    messages: list[dict[str, str]]
-    parser: ResponseParser = field(default_factory=TextParser)
-    model_key: str = "ChatLLM"
-    timeout: float = 30.0
-    extra_body: dict[str, Any] = field(default_factory=dict)
+    parsed_data: Any | None = None
+    tool_calls: list[ChatCompletionMessageFunctionToolCallParam] | None = None
 
 
 class LLMClient:
@@ -164,6 +153,8 @@ class LLMClient:
         model_key: str | None = None,
         extra_body: dict[str, Any] | None = None,
         timeout: float = 30.0,
+        tools: list[ChatCompletionToolUnionParam] | None = None,
+        tool_choice: Literal["auto", "none", "required"] = "auto",
     ) -> str | None:
         """
         非流式请求
@@ -173,9 +164,12 @@ class LLMClient:
         - model_key: 模型配置键名（None 使用默认值）
         - extra_body: 额外请求参数
         - timeout: 超时时间（秒）
+        - tools: OpenAI 工具定义列表（None 表示不使用工具）
+        - tool_choice: 工具选择策略（"auto"/"none"/"required"）
 
         返回：
         - 响应文本，失败返回 None
+          若启用工具且模型返回 tool_calls 则 content 为 None
         """
         effective_model_key = model_key or self._model_key
         config = self._get_model_config(effective_model_key)
@@ -190,13 +184,19 @@ class LLMClient:
             if extra_body:
                 final_extra.update(extra_body)
 
+            # 构建请求参数
+            create_kwargs: dict[str, Any] = {
+                "model": config.get("model", ""),
+                "messages": messages,
+                "stream": False,
+                "extra_body": final_extra,
+            }
+            if tools:
+                create_kwargs["tools"] = tools
+                create_kwargs["tool_choice"] = tool_choice
+
             response = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=config.get("model", ""),
-                    messages=messages,
-                    stream=False,
-                    extra_body=final_extra,
-                ),
+                client.chat.completions.create(**create_kwargs),
                 timeout=timeout,
             )
 
@@ -220,11 +220,13 @@ class LLMClient:
     async def stream(
         self,
         messages: list[ChatCompletionMessageParam],
-        parser: ResponseParser | StreamParserProtocol | None = None,
+        parser: ResponseParser[Any, Any] | StreamParserProtocol[Any] | None = None,
         model_key: Literal["ChatLLM", "LLM"] | None = None,
         extra_body: dict[str, Any] | None = None,
         timeout: float = 30.0,
-    ) -> AsyncIterator[Any]:
+        tools: list[ChatCompletionFunctionToolParam] | None = None,
+        tool_choice: Literal["auto", "none", "required"] = "auto",
+    ) -> AsyncGenerator[LLMStreamChunk, None]:
         """
         流式请求
 
@@ -235,9 +237,13 @@ class LLMClient:
         - model_key: 模型配置键名（None 使用默认值）
         - extra_body: 额外请求参数
         - timeout: 超时时间（秒）
+        - tools: OpenAI 工具定义列表（None 表示不使用工具）
+        - tool_choice: 工具选择策略（"auto"/"none"/"required"）
 
         产出：
-        - 解析后的数据块
+        - LLMStreamChunk: 统一结构，通过字段承载不同语义：
+          - .parsed_data: parser 解析后的数据块（有 parser 时）
+          - .tool_calls: 工具调用列表（优先于 parser flush 产出，None 表示无工具调用）
         """
         effective_model_key = model_key or self._model_key
         config = self._get_model_config(effective_model_key)
@@ -246,6 +252,9 @@ class LLMClient:
 
         # 重置解析器状态
         effective_parser.reset()
+
+        # 用于流式模式下累积工具调用
+        tool_calls_by_index: dict[int, ChatCompletionMessageFunctionToolCallParam] = {}
 
         # 触发开始回调
         await self._callbacks.emit(CallbackEvent.START, messages=messages)
@@ -263,38 +272,74 @@ class LLMClient:
             response = await client.chat.completions.create(
                 model=config.get("model", ""),
                 messages=messages,
-                stream=True,
                 extra_body=final_extra,
+                stream=True,
+                tools=tools or [],
+                tool_choice=tool_choice,
             )
 
             async for chunk in response:
-                # 检查超时
-                if time.time() - start_time > timeout:
-                    Log.warning(f"[LLM客户端] 流式请求超时 ({timeout}s)")
-                    break
 
-                if chunk is None or chunk.choices is None or len(chunk.choices) == 0:
+                if (
+                    chunk is None
+                    or chunk.choices is None
+                    or len(chunk.choices) == 0
+                    or (delta := chunk.choices[0].delta) is None
+                ):
                     continue
 
-                delta = chunk.choices[0].delta
-                if not delta or not delta.content:
+                # 处理工具调用增量（tool_calls 分步到达）
+                if tools and getattr(delta, "tool_calls", None) and delta.tool_calls:
+                    for call in delta.tool_calls:
+                        idx = call.index
+                        if idx not in tool_calls_by_index:
+                            tool_calls_by_index[idx] = {
+                                "id": call.id or "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        tc = tool_calls_by_index[idx]
+                        if call.id:
+                            tc["id"] = call.id
+                        if call.function:
+                            if call.function.name:
+                                tc["function"]["name"] = call.function.name
+                            if call.function.arguments:
+                                tc["function"]["arguments"] += call.function.arguments
+                    # 正在收集工具调用，不再产出文本 token
                     continue
 
-                token = delta.content
+                # 已有工具调用在收集，跳过后续文本
+                if tool_calls_by_index:
+                    continue
 
-                # 触发 token 回调
-                await self._callbacks.emit(CallbackEvent.TOKEN, token=token)
+                # 正常文本 token 处理
+                if delta.content:
+                    token = delta.content
 
-                # 使用解析器处理 token
-                for parsed in effective_parser.stream_parse(token):
-                    # 触发 chunk 回调
-                    await self._callbacks.emit(CallbackEvent.CHUNK, chunk=parsed)
-                    yield parsed
+                    # 触发 token 回调
+                    await self._callbacks.emit(CallbackEvent.TOKEN, token=token)
+
+                    # 使用解析器处理 token
+                    for parsed in effective_parser.stream_parse(token):
+                        # 触发 chunk 回调
+                        await self._callbacks.emit(CallbackEvent.CHUNK, chunk=parsed)
+                        yield LLMStreamChunk(parsed_data=parsed)
+
+            # 先产出累积的工具调用事件（优先于 parser flush，确保调用方先感知工具调用）
+            if tool_calls_by_index:
+                sorted_calls: list[ChatCompletionMessageFunctionToolCallParam] = [
+                    tool_calls_by_index[idx]
+                    for idx in sorted(tool_calls_by_index.keys())
+                ]
+                # 触发工具调用回调
+                await self._callbacks.emit(CallbackEvent.TOOL_CALLS, calls=sorted_calls)
+                yield LLMStreamChunk(tool_calls=sorted_calls)
 
             # 处理解析器缓冲区中的剩余数据
             for parsed in effective_parser.flush():
                 await self._callbacks.emit(CallbackEvent.CHUNK, chunk=parsed)
-                yield parsed
+                yield LLMStreamChunk(parsed_data=parsed)
 
             # 触发完成回调
             elapsed = time.time() - start_time
@@ -303,598 +348,3 @@ class LLMClient:
         except Exception as e:
             Log.error(f"[LLM客户端] 流式请求失败: {e}")
             await self._callbacks.emit(CallbackEvent.ERROR, error=str(e))
-
-    # ========== 工具调用支持 ==========
-
-    def _build_request_kwargs(
-        self,
-        config: dict,
-        messages: list[ChatCompletionMessageParam],
-        tools: list[dict] | None = None,
-        extra_body: dict[str, Any] | None = None,
-        stream: bool = False,
-    ) -> dict[str, Any]:
-        """
-        构建请求参数
-
-        参数：
-        - config: 模型配置
-        - messages: 消息列表
-        - tools: 工具定义列表
-        - extra_body: 额外请求参数
-        - stream: 是否流式请求
-
-        返回：
-        - 请求参数字典
-        """
-        kwargs: dict[str, Any] = {
-            "model": config.get("model", ""),
-            "messages": messages,
-            "stream": stream,
-            "extra_body": {**config.get("extra_config", {}), **(extra_body or {})},
-        }
-
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
-
-        return kwargs
-
-    def _normalize_tool_calls(self, tool_calls: list[Any]) -> list[dict[str, Any]]:
-        """
-        标准化工具调用格式
-
-        将 OpenAI 返回的 tool_calls 对象转换为可序列化的字典格式。
-
-        参数：
-        - tool_calls: OpenAI tool_calls 列表
-
-        返回：
-        - 标准化后的工具调用字典列表
-        """
-        normalized = []
-        for tc in tool_calls:
-            normalized.append(
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                }
-            )
-        return normalized
-
-    async def _execute_tool_calls(
-        self,
-        tool_calls: list[dict[str, Any]],
-        tool_executor: Any,
-    ) -> list[ToolCallResult]:
-        """
-        执行工具调用
-
-        参数：
-        - tool_calls: 标准化的工具调用列表
-        - tool_executor: 工具执行器（需提供 execute 方法）
-
-        返回：
-        - 工具执行结果列表
-        """
-        results = []
-        for tc in tool_calls:
-            tool_name = tc["function"]["name"]
-            tool_call_id = tc["id"]
-            try:
-                arguments = json.loads(tc["function"]["arguments"])
-            except json.JSONDecodeError:
-                arguments = {}
-
-            try:
-                Log.info(f"[LLM客户端] 执行工具: {tool_name}, 参数: {arguments}")
-                result = await tool_executor.execute(tool_name, arguments)
-                results.append(
-                    ToolCallResult(
-                        tool_call_id=tool_call_id,
-                        tool_name=tool_name,
-                        arguments=arguments,
-                        result=result,
-                        success=True,
-                    )
-                )
-            except Exception as e:
-                Log.error(f"[LLM客户端] 工具执行失败: {tool_name}, 错误: {e}")
-                results.append(
-                    ToolCallResult(
-                        tool_call_id=tool_call_id,
-                        tool_name=tool_name,
-                        arguments=arguments,
-                        result=json.dumps({"error": str(e)}, ensure_ascii=False),
-                        success=False,
-                    )
-                )
-
-        return results
-
-    def _build_tool_result_messages(
-        self,
-        tool_calls: list[dict[str, Any]],
-        tool_results: list[ToolCallResult],
-    ) -> list[ChatCompletionToolMessageParam]:
-        """
-        构建工具结果消息
-
-        参数：
-        - tool_calls: 工具调用列表
-        - tool_results: 工具执行结果列表
-
-        返回：
-        - 工具结果消息列表
-        """
-        messages: list[ChatCompletionToolMessageParam] = []
-        for tc, result in zip(tool_calls, tool_results):
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": result.result,
-                }
-            )
-        return messages
-
-    async def request_with_tools(
-        self,
-        messages: list[ChatCompletionMessageParam],
-        tools: list[dict] | None = None,
-        tool_executor: Any = None,
-        model_key: str | None = None,
-        extra_body: dict[str, Any] | None = None,
-        timeout: float = 30.0,
-        max_rounds: int = 5,
-    ) -> str | None:
-        """
-        带工具调用的非流式请求（同步工具调用）
-
-        支持 OpenAI function calling 协议，自动执行工具调用循环直到获得最终响应。
-
-        参数：
-        - messages: 消息列表
-        - tools: 工具定义列表（OpenAI tools 格式）
-        - tool_executor: 工具执行器（需提供 execute 方法），默认使用 ToolManager
-        - model_key: 模型配置键名
-        - extra_body: 额外请求参数
-        - timeout: 超时时间（秒）
-        - max_rounds: 最大工具调用轮次，防止死循环
-
-        返回：
-        - 最终响应文本，失败返回 None
-
-        使用示例：
-        ```python
-        from my_utils.tool_manager import ToolManager
-
-        client = LLMClient()
-        tools = ToolManager.get_openai_tools()
-        result = await client.request_with_tools(
-            messages=[{"role": "user", "content": "你好"}],
-            tools=tools,
-            tool_executor=ToolManager,
-        )
-        ```
-        """
-        # 延迟导入避免循环依赖
-        if tool_executor is None:
-            from my_utils.tool_manager import ToolManager
-
-            tool_executor = ToolManager
-
-        effective_model_key = model_key or self._model_key
-        config = self._get_model_config(effective_model_key)
-        client = self._get_client(effective_model_key)
-
-        # 触发开始回调
-        await self._callbacks.emit(CallbackEvent.START, messages=messages)
-
-        current_messages = list(messages)
-
-        for round_idx in range(max_rounds):
-            try:
-                kwargs = self._build_request_kwargs(
-                    config, current_messages, tools, extra_body, stream=False
-                )
-
-                response = await asyncio.wait_for(
-                    client.chat.completions.create(**kwargs),
-                    timeout=timeout,
-                )
-
-                message = response.choices[0].message
-
-                # 没有工具调用，返回最终结果
-                if not message.tool_calls:
-                    content = message.content
-                    await self._callbacks.emit(CallbackEvent.COMPLETE, content=content)
-                    return content
-
-                # 有工具调用，执行工具
-                Log.info(
-                    f"[LLM客户端] 工具调用轮次 {round_idx + 1}: "
-                    f"{len(message.tool_calls)} 个工具调用"
-                )
-
-                # 将助手消息（包含 tool_calls）添加到消息列表
-                normalized_calls = self._normalize_tool_calls(message.tool_calls)
-                current_messages.append(
-                    {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": normalized_calls,
-                    }
-                )
-
-                # 执行工具调用
-                tool_results = await self._execute_tool_calls(
-                    normalized_calls, tool_executor
-                )
-
-                # 添加工具结果到消息列表
-                tool_messages = self._build_tool_result_messages(
-                    normalized_calls, tool_results
-                )
-                current_messages.extend(tool_messages)
-
-            except asyncio.TimeoutError:
-                Log.warning(f"[LLM客户端] 请求超时 ({timeout}s)")
-                await self._callbacks.emit(CallbackEvent.ERROR, error="请求超时")
-                return None
-
-            except Exception as e:
-                Log.error(f"[LLM客户端] 请求失败: {e}")
-                await self._callbacks.emit(CallbackEvent.ERROR, error=str(e))
-                return None
-
-        Log.warning(f"[LLM客户端] 工具调用超过最大轮次 {max_rounds}，强制结束")
-        return None
-
-    async def stream_with_tools(
-        self,
-        messages: list[ChatCompletionMessageParam],
-        tools: list[dict] | None = None,
-        tool_executor: Any = None,
-        model_key: str | None = None,
-        extra_body: dict[str, Any] | None = None,
-        timeout: float = 30.0,
-        max_rounds: int = 5,
-    ) -> AsyncIterator[str]:
-        """
-        带工具调用的流式请求（同步工具调用）
-
-        流式输出文本内容，当检测到工具调用时执行工具并继续生成。
-
-        参数：
-        - messages: 消息列表
-        - tools: 工具定义列表（OpenAI tools 格式）
-        - tool_executor: 工具执行器（需提供 execute 方法），默认使用 ToolManager
-        - model_key: 模型配置键名
-        - extra_body: 额外请求参数
-        - timeout: 超时时间（秒）
-        - max_rounds: 最大工具调用轮次，防止死循环
-
-        产出：
-        - 文本内容片段
-
-        使用示例：
-        ```python
-        from my_utils.tool_manager import ToolManager
-
-        client = LLMClient()
-        tools = ToolManager.get_openai_tools()
-        async for chunk in client.stream_with_tools(
-            messages=[{"role": "user", "content": "你好"}],
-            tools=tools,
-            tool_executor=ToolManager,
-        ):
-            print(chunk, end="", flush=True)
-        ```
-        """
-        # 延迟导入避免循环依赖
-        if tool_executor is None:
-            from my_utils.tool_manager import ToolManager
-
-            tool_executor = ToolManager
-
-        effective_model_key = model_key or self._model_key
-        config = self._get_model_config(effective_model_key)
-        client = self._get_client(effective_model_key)
-
-        # 触发开始回调
-        await self._callbacks.emit(CallbackEvent.START, messages=messages)
-
-        current_messages = list(messages)
-        streamed = False
-
-        # 第一轮：流式请求
-        tool_calls_by_index: dict[int, dict] = {}
-
-        try:
-            kwargs = self._build_request_kwargs(
-                config, current_messages, tools, extra_body, stream=True
-            )
-
-            response = await client.chat.completions.create(**kwargs)
-
-            async for chunk in response:
-                if chunk is None or chunk.choices is None or len(chunk.choices) == 0:
-                    continue
-
-                delta = chunk.choices[0].delta
-
-                # 收集工具调用
-                if delta and getattr(delta, "tool_calls", None):
-                    for call in delta.tool_calls:
-                        idx = call.index
-                        tool_call = tool_calls_by_index.get(
-                            idx,
-                            {
-                                "id": call.id,
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""},
-                            },
-                        )
-                        if call.id:
-                            tool_call["id"] = call.id
-                        if call.function and call.function.name:
-                            tool_call["function"]["name"] = call.function.name
-                        if call.function and call.function.arguments:
-                            tool_call["function"][
-                                "arguments"
-                            ] += call.function.arguments
-                        tool_calls_by_index[idx] = tool_call
-
-                # 输出文本内容
-                if delta and delta.content and not tool_calls_by_index:
-                    streamed = True
-                    await self._callbacks.emit(CallbackEvent.TOKEN, token=delta.content)
-                    yield delta.content
-
-        except Exception as e:
-            Log.error(f"[LLM客户端] 流式请求失败: {e}")
-            await self._callbacks.emit(CallbackEvent.ERROR, error=str(e))
-            return
-
-        # 没有工具调用，直接结束
-        if not tool_calls_by_index:
-            if not streamed:
-                # 回退到普通流式请求
-                async for chunk in self.stream(
-                    messages=current_messages,
-                    model_key=model_key,
-                    extra_body=extra_body,
-                    timeout=timeout,
-                ):
-                    yield chunk
-            return
-
-        # 有工具调用，进入工具调用循环
-        tool_calls = [
-            tool_calls_by_index[idx] for idx in sorted(tool_calls_by_index.keys())
-        ]
-
-        # 将助手消息（包含 tool_calls）添加到消息列表
-        current_messages.append(
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": tool_calls,
-            }
-        )
-
-        # 执行工具
-        Log.info(f"[LLM客户端] 流式工具调用: {len(tool_calls)} 个工具")
-        tool_results = await self._execute_tool_calls(tool_calls, tool_executor)
-        tool_messages = self._build_tool_result_messages(tool_calls, tool_results)
-        current_messages.extend(tool_messages)
-
-        # 后续轮次：非流式请求（因为需要等待工具执行完成）
-        for round_idx in range(1, max_rounds):
-            try:
-                kwargs = self._build_request_kwargs(
-                    config, current_messages, tools, extra_body, stream=False
-                )
-
-                response = await asyncio.wait_for(
-                    client.chat.completions.create(**kwargs),
-                    timeout=timeout,
-                )
-
-                message = response.choices[0].message
-
-                # 没有工具调用，输出最终结果
-                if not message.tool_calls:
-                    if message.content:
-                        for char in message.content:
-                            yield char
-                    return
-
-                # 继续工具调用
-                Log.info(
-                    f"[LLM客户端] 工具调用轮次 {round_idx + 1}: "
-                    f"{len(message.tool_calls)} 个工具调用"
-                )
-
-                normalized_calls = self._normalize_tool_calls(message.tool_calls)
-                current_messages.append(
-                    {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": normalized_calls,
-                    }
-                )
-
-                tool_results = await self._execute_tool_calls(
-                    normalized_calls, tool_executor
-                )
-                tool_messages = self._build_tool_result_messages(
-                    normalized_calls, tool_results
-                )
-                current_messages.extend(tool_messages)
-
-            except asyncio.TimeoutError:
-                Log.warning(f"[LLM客户端] 请求超时 ({timeout}s)")
-                await self._callbacks.emit(CallbackEvent.ERROR, error="请求超时")
-                return
-
-            except Exception as e:
-                Log.error(f"[LLM客户端] 请求失败: {e}")
-                await self._callbacks.emit(CallbackEvent.ERROR, error=str(e))
-                return
-
-        Log.warning(f"[LLM客户端] 工具调用超过最大轮次 {max_rounds}，强制结束")
-
-    async def stream_with_tools_async(
-        self,
-        messages: list[ChatCompletionMessageParam],
-        tools: list[dict] | None = None,
-        tool_executor: Any = None,
-        model_key: str | None = None,
-        extra_body: dict[str, Any] | None = None,
-        timeout: float = 30.0,
-        max_rounds: int = 5,
-    ) -> AsyncIterator[str]:
-        """
-        带工具调用的流式请求（后台异步工具调用）
-
-        当检测到工具调用时，在后台异步执行工具，同时继续流式输出。
-        适用于工具执行耗时较长的场景。
-
-        参数：
-        - messages: 消息列表
-        - tools: 工具定义列表（OpenAI tools 格式）
-        - tool_executor: 工具执行器（需提供 execute 方法），默认使用 ToolManager
-        - model_key: 模型配置键名
-        - extra_body: 额外请求参数
-        - timeout: 超时时间（秒）
-        - max_rounds: 最大工具调用轮次，防止死循环
-
-        产出：
-        - 文本内容片段
-
-        注意：
-        - 此方法会创建后台任务执行工具调用
-        - 工具执行完成后，会自动发起新一轮请求
-        - 适用于需要同时输出文本和执行工具的场景
-        """
-        # 延迟导入避免循环依赖
-        if tool_executor is None:
-            from my_utils.tool_manager import ToolManager
-
-            tool_executor = ToolManager
-
-        effective_model_key = model_key or self._model_key
-        config = self._get_model_config(effective_model_key)
-        client = self._get_client(effective_model_key)
-
-        # 触发开始回调
-        await self._callbacks.emit(CallbackEvent.START, messages=messages)
-
-        current_messages = list(messages)
-
-        for round_idx in range(max_rounds):
-            tool_calls_by_index: dict[int, dict] = {}
-            streamed = False
-
-            try:
-                kwargs = self._build_request_kwargs(
-                    config, current_messages, tools, extra_body, stream=True
-                )
-
-                response = await client.chat.completions.create(**kwargs)
-
-                # 后台工具执行任务
-                tool_execution_task: asyncio.Task | None = None
-
-                async for chunk in response:
-                    if (
-                        chunk is None
-                        or chunk.choices is None
-                        or len(chunk.choices) == 0
-                    ):
-                        continue
-
-                    delta = chunk.choices[0].delta
-
-                    # 收集工具调用
-                    if delta and getattr(delta, "tool_calls", None):
-                        for call in delta.tool_calls:
-                            idx = call.index
-                            tool_call = tool_calls_by_index.get(
-                                idx,
-                                {
-                                    "id": call.id,
-                                    "type": "function",
-                                    "function": {"name": "", "arguments": ""},
-                                },
-                            )
-                            if call.id:
-                                tool_call["id"] = call.id
-                            if call.function and call.function.name:
-                                tool_call["function"]["name"] = call.function.name
-                            if call.function and call.function.arguments:
-                                tool_call["function"][
-                                    "arguments"
-                                ] += call.function.arguments
-                            tool_calls_by_index[idx] = tool_call
-
-                    # 输出文本内容
-                    if delta and delta.content and not tool_calls_by_index:
-                        streamed = True
-                        await self._callbacks.emit(
-                            CallbackEvent.TOKEN, token=delta.content
-                        )
-                        yield delta.content
-
-                # 没有工具调用，结束
-                if not tool_calls_by_index:
-                    if not streamed:
-                        async for chunk in self.stream(
-                            messages=current_messages,
-                            model_key=model_key,
-                            extra_body=extra_body,
-                            timeout=timeout,
-                        ):
-                            yield chunk
-                    return
-
-                # 有工具调用，执行工具
-                tool_calls = [
-                    tool_calls_by_index[idx]
-                    for idx in sorted(tool_calls_by_index.keys())
-                ]
-
-                # 将助手消息添加到消息列表
-                current_messages.append(
-                    {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": tool_calls,
-                    }
-                )
-
-                # 后台执行工具调用
-                Log.info(
-                    f"[LLM客户端] 后台异步工具调用轮次 {round_idx + 1}: "
-                    f"{len(tool_calls)} 个工具"
-                )
-
-                tool_results = await self._execute_tool_calls(tool_calls, tool_executor)
-                tool_messages = self._build_tool_result_messages(
-                    tool_calls, tool_results
-                )
-                current_messages.extend(tool_messages)
-
-            except Exception as e:
-                Log.error(f"[LLM客户端] 请求失败: {e}")
-                await self._callbacks.emit(CallbackEvent.ERROR, error=str(e))
-                return
-
-        Log.warning(f"[LLM客户端] 工具调用超过最大轮次 {max_rounds}，强制结束")

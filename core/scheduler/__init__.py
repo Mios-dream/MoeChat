@@ -29,7 +29,7 @@ async for result in pipeline.execute():
 ```
 """
 
-from core.scheduler.task import Task, TaskResult
+from core.scheduler.task import Task, TaskResult, ToolCallEvent, ToolResultEvent, ToolExecutionResult
 from core.scheduler.parsers.multi_parser import MultiParser
 from core.scheduler.parsers.text_stream_parser import TextStreamParser
 from core.scheduler.scheduler import TaskScheduler, Pipeline
@@ -48,6 +48,9 @@ __all__ = [
     # 数据结构
     "Task",
     "TaskResult",
+    "ToolCallEvent",
+    "ToolResultEvent",
+    "ToolExecutionResult",
     # 内置任务工厂
     "create_text_task",
     "create_motion_task",

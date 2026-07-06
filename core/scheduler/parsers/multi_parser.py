@@ -69,9 +69,15 @@ class MultiParser(BaseParser):
         self._tasks[task.type] = task
         Log.debug(f"[解析器] 注册任务: {task.name} (type={task.type})")
 
-    def reset(self) -> None:
-        """重置解析器状态"""
-        self._sentence_counter = 0
+    def reset(self, keep_counter: bool = False) -> None:
+        """
+        重置解析器状态
+
+        参数：
+        - keep_counter: 是否保留句子计数器（工具调用后继续编号时使用）
+        """
+        if not keep_counter:
+            self._sentence_counter = 0
         self._last_text = ""
 
     def _get_sentence_id(self, data: dict[str, Any]) -> int:

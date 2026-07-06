@@ -31,7 +31,8 @@ data: {"type": "audio", "sentence_id": 1, "file": "base64...", ...}
 import time
 import asyncio
 from typing import Any
-from models.dto.chat_request import chat_data
+from models.dto.chat_request import ChatData
+from models.dto.response.ChatResponse import ChatResponse
 from my_utils.log import logger
 from core.chat.base import (
     to_sse,
@@ -75,7 +76,7 @@ class BaseChatContext:
         - event_order: 事件类型顺序
         - tts_concurrency: TTS 并发数
         """
-        self.sentence_events: dict[int, dict[str, dict[str, Any]]] = {}
+        self.sentence_events: dict[int, dict[str, ChatResponse]] = {}
         self.expected_sentence_id: int = 1
         self.pending_tasks: set[asyncio.Task[Any]] = set()
         self.tts_semaphore: asyncio.Semaphore = asyncio.Semaphore(tts_concurrency)
@@ -96,7 +97,7 @@ class BaseChatContext:
         self.pending_tasks.add(task)
         task.add_done_callback(self.pending_tasks.discard)
 
-    def drain_ready_events(self) -> list[dict[str, Any]]:
+    def drain_ready_events(self) -> list[ChatResponse]:
         """
         排出所有就绪的句子事件
 
@@ -177,7 +178,7 @@ class BaseChatContext:
             await asyncio.sleep(0.01)
 
 
-async def llm_chat_with_tts(params: chat_data):
+async def llm_chat_with_tts(params: ChatData):
     """
     V1 版本聊天流式输出
 

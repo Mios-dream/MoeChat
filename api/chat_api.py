@@ -17,7 +17,7 @@ MotionGenerator:
 
 from fastapi.responses import StreamingResponse
 from fastapi import APIRouter, HTTPException, Query
-from models.dto.chat_request import chat_data
+from models.dto.chat_request import ChatData
 from my_utils import config_manager as CConfig
 
 # 导入基础组件
@@ -64,7 +64,7 @@ async def tts_api_get(
         raise ValueError("消息内容不能为空")
 
     message_list = [{"role": "user", "content": text}]
-    params = chat_data(msg=message_list, is_sleep_mode=is_sleep_mode)
+    params = ChatData(msg=message_list, is_sleep_mode=is_sleep_mode)
 
     if generation_motion:
         # 根据配置选择版本
@@ -91,7 +91,7 @@ async def tts_api_get(
 
 
 @chat_api.post("/chat")
-async def tts_api(params: chat_data):
+async def tts_api(params: ChatData):
     """
     POST 方式聊天接口
 

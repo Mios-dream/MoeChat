@@ -10,6 +10,7 @@ from api.config_api import config_api
 from api.wakeword_api import wakeword_api
 from api.knowledge_api import knowledge_api
 from api.interaction_api import interaction_api
+from api.ws.chat_ws_api import chat_ws_api
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(asr_api)
@@ -22,3 +23,4 @@ api_router.include_router(config_api)
 api_router.include_router(wakeword_api)
 api_router.include_router(knowledge_api)
 api_router.include_router(interaction_api)
+api_router.include_router(chat_ws_api)  # 新增: 统一聊天 WebSocket

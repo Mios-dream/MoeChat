@@ -13,14 +13,17 @@
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Generator
-from typing import Any, Protocol, runtime_checkable
+from collections.abc import Iterator
+from typing import Any, Protocol, runtime_checkable, TypeVar, Generic
 import json
 import re
 
+T = TypeVar("T", covariant=True)  # 流式产出元素类型（协变）
+R = TypeVar("R")  # parse() 的返回类型
+
 
 @runtime_checkable
-class StreamParserProtocol(Protocol):
+class StreamParserProtocol(Protocol[T]):
     """
     流式解析器协议
 
@@ -33,11 +36,11 @@ class StreamParserProtocol(Protocol):
     - reset: 重置状态
     """
 
-    def stream_parse(self, token: str) -> Generator[Any, None, None]:
+    def stream_parse(self, token: str) -> Iterator[T]:
         """流式解析"""
         ...
 
-    def flush(self) -> Generator[Any, None, None]:
+    def flush(self) -> Iterator[T]:
         """刷新缓冲区"""
         ...
 
@@ -46,7 +49,7 @@ class StreamParserProtocol(Protocol):
         ...
 
 
-class ResponseParser(ABC):
+class ResponseParser(ABC, Generic[T, R]):
     """
     响应解析器基类
 
@@ -59,7 +62,7 @@ class ResponseParser(ABC):
     """
 
     @abstractmethod
-    def parse(self, content: str) -> Any:
+    def parse(self, content: str) -> R:
         """
         解析完整响应内容
 
@@ -71,7 +74,8 @@ class ResponseParser(ABC):
         """
         pass
 
-    def stream_parse(self, token: str) -> Generator[Any, None, None]:
+    @abstractmethod
+    def stream_parse(self, token: str) -> Iterator[T]:
         """
         流式解析（逐 token）
 
@@ -84,8 +88,7 @@ class ResponseParser(ABC):
         产出：
         - 解析完成的数据块
         """
-        return
-        yield  # 使函数成为生成器
+        pass
 
     def reset(self) -> None:
         """
@@ -95,7 +98,7 @@ class ResponseParser(ABC):
         """
         pass
 
-    def flush(self) -> Generator[Any, None, None]:
+    def flush(self) -> Iterator[T]:
         """
         刷新缓冲区，处理剩余内容
 
@@ -105,11 +108,10 @@ class ResponseParser(ABC):
         产出：
         - 缓冲区中解析完成的数据
         """
-        return
-        yield  # 使函数成为生成器
+        return iter(())
 
 
-class TextParser(ResponseParser):
+class TextParser(ResponseParser[str, str]):
     """
     纯文本解析器
 
@@ -130,12 +132,12 @@ class TextParser(ResponseParser):
         """返回纯文本"""
         return content.strip() if self._strip else content
 
-    def stream_parse(self, token: str) -> Generator[str, None, None]:
+    def stream_parse(self, token: str) -> Iterator[str]:
         """直接产出 token"""
         yield token
 
 
-class JsonParser(ResponseParser):
+class JsonParser(ResponseParser[dict | list, dict | list]):
     """
     JSON 对象解析器
 
@@ -158,6 +160,32 @@ class JsonParser(ResponseParser):
         - strict: 是否严格模式（不允许非 JSON 内容）
         """
         self._strict = strict
+        self._buffer = ""
+        self._completed = False
+
+    def reset(self) -> None:
+        """重置流式解析状态"""
+        self._buffer = ""
+        self._completed = False
+
+    def _extract_first_json(self, content: str) -> dict[str, Any] | list[Any] | None:
+        """从文本中提取第一个完整的 JSON 对象或数组。"""
+        start_candidates = [
+            idx for idx in (content.find("{"), content.find("[")) if idx != -1
+        ]
+        if not start_candidates:
+            return None
+
+        candidate = content[min(start_candidates) :]
+
+        try:
+            parsed, _ = json.JSONDecoder().raw_decode(candidate)
+        except json.JSONDecodeError:
+            return None
+
+        if isinstance(parsed, (dict, list)):
+            return parsed
+        return None
 
     def parse(self, content: str) -> dict[str, Any] | list[Any]:
         """
@@ -202,8 +230,51 @@ class JsonParser(ResponseParser):
 
         return {}
 
+    def stream_parse(self, token: str) -> Iterator[dict[str, Any] | list[Any]]:
+        """
+        流式解析 JSON
 
-class JsonLineParser(ResponseParser):
+        累积 token，直到解析出第一个完整的 JSON 对象或数组后立即产出。
+        解析完成后会忽略后续 token，直到调用 reset()。
+
+        参数：
+        - token: 单个 token
+
+        产出：
+        - 第一个完整的 JSON 对象或数组
+        """
+        if self._completed:
+            return iter(())
+
+        self._buffer += token
+
+        parsed = self._extract_first_json(self._buffer)
+        if parsed is None:
+            return iter(())
+
+        self._completed = True
+        self._buffer = ""
+        yield parsed
+
+    def flush(self) -> Iterator[dict[str, Any] | list[Any]]:
+        """
+        刷新缓冲区，尝试输出最后一个完整 JSON。
+
+        若流式过程中已经解析到第一个完整 JSON，则这里不再输出内容。
+        """
+        if self._completed:
+            return iter(())
+
+        parsed = self._extract_first_json(self._buffer)
+        if parsed is not None:
+            self._completed = True
+            self._buffer = ""
+            yield parsed
+
+        self._buffer = ""
+
+
+class JsonLineParser(ResponseParser[dict[str, Any], list[dict[str, Any]]]):
     """
     JSON 行解析器（流式友好）
 
@@ -269,7 +340,7 @@ class JsonLineParser(ResponseParser):
 
         return results
 
-    def stream_parse(self, token: str) -> Generator[dict[str, Any], None, None]:
+    def stream_parse(self, token: str) -> Iterator[dict[str, Any]]:
         """
         流式解析
 
@@ -298,7 +369,7 @@ class JsonLineParser(ResponseParser):
                 # 不是有效的 JSON，跳过
                 continue
 
-    def flush(self) -> Generator[dict[str, Any], None, None]:
+    def flush(self) -> Iterator[dict[str, Any]]:
         """
         刷新缓冲区，处理剩余内容
 

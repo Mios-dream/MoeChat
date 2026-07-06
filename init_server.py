@@ -8,8 +8,8 @@ from my_utils.log import logger
 import os
 from my_utils.logo import print_moechat_logo
 from my_utils.version import get_project_version
-from my_utils.tool_manager import ToolManager
 from services.assistant_service import AssistantService
+from tool_system.core.registry import get_registry as get_tool_registry
 
 assistant_service = AssistantService()
 
@@ -72,6 +72,8 @@ async def initialize_tools():
     """
     初始化工具/技能系统
     扫描 plugins/ 目录并加载所有技能
+    旧系统路径: plugins/ → ToolManager.load_plugins()
+    新系统路径: tool_system/server_plugins/ 等 → ToolRegistry.discover()
     """
     from my_utils import config_manager as CConfig
 
@@ -83,9 +85,23 @@ async def initialize_tools():
 
     logger.info("开始初始化工具/技能系统...")
 
-    # 自动发现并加载插件
-    if tools_config.get("auto_discover", True):
-        loaded_count = ToolManager.load_plugins("plugins")
-        logger.info(f"工具系统初始化完成，共加载 {loaded_count} 个工具")
-    else:
-        logger.info("自动发现已禁用，跳过插件扫描")
+    total_tools = 0
+
+    # ── 新系统: 自动扫描 tool_system 插件目录 ──
+    new_registry = get_tool_registry()
+    scan_paths = [
+        "plugins/server_plugins",
+        "plugins/client_plugins",
+        "plugins/hybrid_plugins",
+    ]
+    for scan_path in scan_paths:
+        try:
+            new_count = new_registry.discover(scan_path)
+            if new_count > 0:
+                logger.info(f"新工具系统: {scan_path} 加载了 {new_count} 个工具")
+                total_tools += new_count
+        except Exception as e:
+            logger.warning(f"新工具系统扫描 {scan_path} 失败: {e}")
+
+    logger.info(f"工具系统初始化完成，共加载 {total_tools} 个工具")
+    logger.info(f"新工具系统状态: {new_registry}")

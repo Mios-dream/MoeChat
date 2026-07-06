@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from core.llm.llm_client import LLMClient
 from core.llm.response_parser import JsonParser
 from services import core_mem, data_base, long_mem
+from openai.types.chat import ChatCompletionMessageParam
 
 
 class Assistant:
@@ -565,7 +566,7 @@ class Assistant:
 
         return final_content
 
-    def get_history(self) -> list[dict]:
+    def get_history(self) -> list[ChatCompletionMessageParam]:
         """
         获取当前上下文的历史记录
 

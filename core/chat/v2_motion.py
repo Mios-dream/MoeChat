@@ -36,7 +36,7 @@ data: {"type": "motion_frame", "sentence_id": 1, "motions": [...], ...}
 import time
 import asyncio
 from typing import Any
-from models.dto.chat_request import chat_data
+from models.dto.chat_request import ChatData
 from my_utils.log import logger
 from core.chat.base import store_sentence_event, to_sse
 from core.chat.v1 import BaseChatContext
@@ -222,7 +222,7 @@ async def motion_wrapper(
         return motion_event
 
 
-async def llm_chat_with_tts_and_motion_v2(params: chat_data):
+async def llm_chat_with_tts_and_motion_v2(params: ChatData):
     """
     V2Motion 版本聊天流式输出
 
