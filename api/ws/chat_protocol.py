@@ -102,7 +102,7 @@ class ChatWSMessageType(str, Enum):
     """
 
     # ── 对话流式输出 ──
-    CHAT_TOKEN = "chat:token"
+    CHAT_TOKEN = "chat:text"
     """
     文本 token: {
         type, content: str,

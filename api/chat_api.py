@@ -31,14 +31,18 @@ from core.chat import (
 )
 from models.dto.response.ChatResponse import FullChatResponse
 from collections.abc import AsyncGenerator
+from tool_system.integration import ToolCallIntegration
 
 chat_api = APIRouter()
 # V1 版本：基础文本 + TTS
 v1_service = V1ChatService()
 # V2 版本：文本 + TTS + 动作
 v2_service = V2ChatService()
-# V3 版本：信息调度中心
+# V3 版本：信息调度中心（服务端工具）
 v3_service = V3ChatService()
+v3_service.set_integration(
+    ToolCallIntegration()
+)  # HTTP API 仅支持服务端工具，无 WS 连接
 
 
 async def to_sse_stream(

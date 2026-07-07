@@ -18,8 +18,6 @@
     3. 完成后通过 ResultNotifier 通知
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 import time
@@ -29,15 +27,12 @@ from tool_system.core.types import (
     ToolCallRequest,
     ToolCallResult,
 )
-from tool_system.core.registry import get_registry
 from tool_system.executors.base_executor import BaseExecutor
 from tool_system.executors.server_executor import (
     ServerSyncExecutor,
-    ServerAsyncExecutor,
 )
 from tool_system.executors.client_executor import (
     ClientSyncExecutor,
-    ClientAsyncExecutor,
     PendingCallTable,
 )
 
@@ -175,9 +170,7 @@ class HybridSyncExecutor(BaseExecutor):
 
         # ── Phase 2: 服务端阶段 ──
         try:
-            final_result = await hybrid_tool.server_phase(
-                client_data, **validated_args
-            )
+            final_result = await hybrid_tool.server_phase(client_data, **validated_args)
         except Exception as e:
             return self._wrap_error(
                 request,

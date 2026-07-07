@@ -38,6 +38,40 @@ from tool_system.core.types import (
     ToolCallResult,
 )
 from tool_system.executors.base_executor import BaseExecutor
+from models.dto.response.ToolWsResponse import ToolCallWsMessage
+
+
+def _build_tool_call_message(request: ToolCallRequest, mode: str) -> ToolCallWsMessage:
+    """
+    构建下发给客户端的 tool:call 消息
+
+    根据工具调用的敏感度和模式构建标准化的 ToolCallWsMessage 模型。
+
+    Args:
+        request: 工具调用请求
+        mode: 执行模式标识（sync / async）
+
+    Returns:
+        严格类型化的 ToolCallWsMessage 实例
+    """
+    sensitivity = request.sensitivity.value
+
+    # 敏感工具 → 附加确认提示文本
+    confirm_message: str | None = None
+    if sensitivity == "sensitive":
+        confirm_message = f"工具 '{request.tool_name}' 需要您的确认后方可执行。"
+    elif sensitivity == "dangerous":
+        confirm_message = f"\u26a0 危险操作 '{request.tool_name}'，请二次确认后执行。"
+
+    return ToolCallWsMessage(
+        call_id=request.call_id,
+        tool_name=request.tool_name,
+        arguments=request.arguments,
+        timeout_ms=int(request.timeout * 1000),
+        sensitivity=sensitivity,  # type: ignore[arg-type]
+        mode=mode,  # type: ignore[arg-type]
+        confirm_message=confirm_message,
+    )
 
 
 class PendingCallTable:
@@ -79,9 +113,7 @@ class PendingCallTable:
         self._pending[call_id] = future
         return future
 
-    def add_listener(
-        self, call_id: str, callback: Any
-    ) -> None:
+    def add_listener(self, call_id: str, callback: Any) -> None:
         """
         注册异步工具的结果监听器
 
@@ -119,9 +151,7 @@ class PendingCallTable:
         listener = self._async_listeners.pop(call_id, None)
         if listener is not None:
             # 异步调用监听器（不阻塞当前线程，使用 create_task）
-            asyncio.create_task(
-                listener(result), name=f"async_listener_{call_id}"
-            )
+            asyncio.create_task(listener(result), name=f"async_listener_{call_id}")
             return True
 
         return False
@@ -149,9 +179,7 @@ class PendingCallTable:
             return True
         return False
 
-    def cancel_all_for_session(
-        self, session_id: str, error_message: str
-    ) -> int:
+    def cancel_all_for_session(self, session_id: str, error_message: str) -> int:
         """
         取消指定会话的所有待处理调用
 
@@ -272,15 +300,8 @@ class ClientSyncExecutor(BaseExecutor):
 
         # 通过 WebSocket 下发工具调用
         try:
-            message = {
-                "type": "tool:call",
-                "call_id": request.call_id,
-                "tool_name": request.tool_name,
-                "arguments": request.arguments,
-                "timeout_ms": int(request.timeout * 1000),
-                "sensitivity": request.sensitivity.value,
-            }
-            await self._ws_manager.send(request.session_id, message)
+            message = _build_tool_call_message(request, mode="sync")
+            await self._ws_manager.send(request.session_id, message.model_dump())
         except Exception as e:
             self._pending_table.remove(request.call_id)
             return self._wrap_error(
@@ -403,16 +424,8 @@ class ClientAsyncExecutor(BaseExecutor):
 
         # 下发工具调用
         try:
-            message = {
-                "type": "tool:call",
-                "call_id": request.call_id,
-                "tool_name": request.tool_name,
-                "arguments": request.arguments,
-                "timeout_ms": int(request.timeout * 1000),
-                "sensitivity": request.sensitivity.value,
-                "mode": "async",
-            }
-            await self._ws_manager.send(request.session_id, message)
+            message = _build_tool_call_message(request, mode="async")
+            await self._ws_manager.send(request.session_id, message.model_dump())
         except Exception as e:
             self._pending_table.remove(request.call_id)
             return self._wrap_error(

@@ -6,15 +6,14 @@
 核心设计:
     1. 连接建立 → 注册 WebSocketManager
     2. chat:send → 调用 V3ChatService.chat() → 转译为 WS JSON 消息
-    3. ToolCallIntegration 共享: handler._integration 注入 V3ChatService，
-       确保 tool:result 回调能正确匹配到 pending call
+    3. 工具系统注入: handler 持有 ToolCallIntegration（含 ws_manager），
     4. 心跳检测 → 断线清理 pending calls
     5. 多任务支持: 允许多个 chat:send 并行执行
 
 与现有代码的关系:
-    - V3ChatService: 核心聊天服务（复用 v3_motion.py）
+    - V3ChatService: 核心聊天服务（chat() 方法纯粹，通过 integration 属性按需配置工具）
     - V3MotionChatContext: 结果分发处理器（文本/音频/动作/工具）
-    - ToolCallIntegration: 工具调用执行器（handler 与 V3ChatService 共享实例）
+    - ToolCallIntegration: 工具调用执行器（由 handler 持有，注入 V3ChatService）
     - WebSocketManager: 连接管理 + 客户端工具通信通道
 """
 
@@ -31,9 +30,18 @@ from models.dto.response.ChatResponse import ErrorResponse
 from my_utils.log import logger
 from api.ws.chat_protocol import ChatWSMessageType
 from tool_system.integration import ToolCallIntegration
+from models.dto.response.ToolWsResponse import (
+    ToolResultWsMessage,
+    ToolProgressWsMessage,
+    ToolConfirmWsMessage,
+)
+from api.ws.ws_manager import get_ws_manager
 import shortuuid
 
 v3_service = V3ChatService()
+
+# ── 模块级 WebSocketManager 单例 ──
+ws_manager = get_ws_manager()
 
 
 class ChatWebSocketHandler:
@@ -62,12 +70,14 @@ class ChatWebSocketHandler:
 
         Args:
             websocket: 客户端 WebSocket 连接
+            ws_manager: WebSocket 连接管理器（模块级单例，用于客户端工具通信）
         """
         self._websocket = websocket
         self._integration = ToolCallIntegration()
 
-        # 心跳间隔（秒）: 服务端定期发送 PONG 消息
-        self._heartbeat_interval: float = 15.0
+        # 将 WS 管理器注入工具系统（使客户端工具和混合工具可工作）
+        self._integration.set_ws_manager(ws_manager)
+
         # 读取超时（秒）: 超过此时间未收到客户端消息则断开连接
         self._read_timeout: float = 120.0
 
@@ -76,23 +86,20 @@ class ChatWebSocketHandler:
         主处理循环
 
         流程:
-        1. 等待 identity 消息进行身份绑定
-        2. 注册到 WebSocketManager
-        3. 进入消息接收循环
-        4. 断线时清理资源
+        1. 注册到 WebSocketManager
+        2. 进入消息接收循环（客户端应定期发 ping 保活，超时 120s 断连）
+        3. 断线时清理资源
         """
 
         self._session_id = shortuuid.uuid()
+
+        # 注册连接 → WebSocketManager（客户端工具通信通道）
+        await ws_manager.register(self._session_id, self._websocket)
 
         # 同步session_id 到 工具调用集成
         self._integration.set_session_id(self._session_id)
 
         logger.info(f"[ChatWS] 客户端已连接: session={self._session_id}")
-
-        # ── 启动心跳任务 ──
-        heartbeat_task = asyncio.create_task(
-            self._heartbeat_loop(), name=f"chat_heartbeat_{self._session_id}"
-        )
 
         # ── 消息接收循环 ──
         try:
@@ -121,7 +128,9 @@ class ChatWebSocketHandler:
 
         finally:
             # ── 清理资源 ──
-            heartbeat_task.cancel()
+
+            # 从 WS 管理器注销连接
+            await ws_manager.unregister(self._session_id)
 
             # 取消待处理的客户端工具调用
             self._integration.cancel_session(self._session_id)
@@ -165,27 +174,20 @@ class ChatWebSocketHandler:
     # ── 连接管理 ──
 
     async def _handle_ping(self) -> None:
-        """处理心跳 PING"""
+        """
+        处理心跳 PING
+
+        客户端定期发送 ping，服务端回复 pong 并更新心跳时间。
+        客户端必须每 _read_timeout 秒内发送一条消息（ping 或任何消息），
+        否则服务端判定连接僵死并断开。
+        """
+        await ws_manager.update_heartbeat(self._session_id)
         await self._websocket.send_json(
             {
                 "type": ChatWSMessageType.PONG.value,
                 "server_time": time.time(),
             }
         )
-
-    async def _heartbeat_loop(self) -> None:
-        """服务端心跳发送循环"""
-        while True:
-            await asyncio.sleep(self._heartbeat_interval)
-            try:
-                await self._websocket.send_json(
-                    {
-                        "type": ChatWSMessageType.PONG.value,
-                        "server_time": time.time(),
-                    }
-                )
-            except Exception:
-                break
 
     # ── 聊天处理 ──
 
@@ -225,24 +227,22 @@ class ChatWebSocketHandler:
         - TaskScheduler 注册 text/motion/bilingual 任务
         - V3MotionChatContext 分发处理结果
         - TTS 音频合成 + 动作引擎
-        - 工具调用支持
+        - 工具调用支持（通过 integration 参数注入）
         - 对话历史自动保存
 
         将 V3ChatService 产出的 FullChatResponse 逐条序列化为 JSON 发送至 WebSocket。
 
-        ToolCallIntegration 共享:
-            handler 持有的 _integration 注入 V3ChatService 实例，
-            确保 WS 客户端发来的 tool:result 能正确匹配到 pending call。
+        ToolCallIntegration 通过 chat() 方法的 integration 参数注入 V3ChatService，
+        handler 持有的 _integration 与 V3ChatService 共享同一个实例，
+        确保 WS 客户端发来的 tool:result 能正确匹配到 pending call。
 
         Args:
             chat_data: 聊天数据对象
         """
         try:
 
-            v3_service._integration = (
-                self._integration
-            )  # 共享实例，确保 tool:result 回调匹配
-            v3_service.set_session_id(self._session_id)
+            self._integration.set_session_id(self._session_id)
+            v3_service.set_integration(self._integration)
 
             async for response in v3_service.chat(chat_data):
                 await self._websocket.send_json(response.model_dump())
@@ -278,45 +278,62 @@ class ChatWebSocketHandler:
         将 tool:result 转交给共享的 ToolCallIntegration.on_client_result()，
         内部通过 PendingCallTable 唤醒 Orchestrator 等待的 Future。
 
+        使用 ToolResultWsMessage 进行严格类型验证后再处理。
+
         Args:
-            data: 客户端 tool:result 消息
+            data: 客户端 tool:result 消息的原始字典
         """
+        try:
+            msg = ToolResultWsMessage.model_validate(data)
+        except Exception as e:
+            logger.warning(f"[ChatWS] tool:result 消息格式无效: {e}")
+            return
+
         resolved = self._integration.on_client_result(
             session_id=self._session_id,
-            payload=data,
+            payload=msg.model_dump(),
         )
         if not resolved:
-            logger.warning(
-                f"[ChatWS] 未匹配到 tool:result: call_id={data.get('call_id')}"
-            )
+            logger.warning(f"[ChatWS] 未匹配到 tool:result: call_id={msg.call_id}")
 
     async def _handle_tool_progress(self, data: dict[str, Any]) -> None:
         """
         处理工具执行进度
 
-        当前仅做日志记录，后续可扩展为 WS 推送 UI 进度条。
+        使用 ToolProgressWsMessage 进行严格类型验证后记录日志。
 
         Args:
-            data: 客户端 tool:progress 消息
+            data: 客户端 tool:progress 消息的原始字典
         """
+        try:
+            msg = ToolProgressWsMessage.model_validate(data)
+        except Exception as e:
+            logger.warning(f"[ChatWS] tool:progress 消息格式无效: {e}")
+            return
+
         logger.debug(
-            f"[ChatWS] tool progress: {data.get('tool_name')} "
-            f"status={data.get('status')} "
-            f"progress={data.get('progress', -1)}"
+            f"[ChatWS] tool progress: tool={msg.tool_name} "
+            f"status={msg.status} progress={msg.progress} "
+            f"message={msg.message}"
         )
 
     async def _handle_tool_confirm(self, data: dict[str, Any]) -> None:
         """
         处理用户对敏感工具的确认/拒绝
 
-        Args:
-            data: 客户端 tool:confirm 消息
-        """
-        confirmed = data.get("confirmed", False)
-        call_id = data.get("call_id", "")
+        使用 ToolConfirmWsMessage 进行严格类型验证后处理确认结果。
 
-        if not confirmed:
+        Args:
+            data: 客户端 tool:confirm 消息的原始字典
+        """
+        try:
+            msg = ToolConfirmWsMessage.model_validate(data)
+        except Exception as e:
+            logger.warning(f"[ChatWS] tool:confirm 消息格式无效: {e}")
+            return
+
+        if not msg.confirmed:
             self._integration.cancel_session(self._session_id)
-            logger.info(f"[ChatWS] 用户拒绝工具调用: call_id={call_id}")
+            logger.info(f"[ChatWS] 用户拒绝工具调用: call_id={msg.call_id}")
         else:
-            logger.info(f"[ChatWS] 用户确认工具调用: call_id={call_id}")
+            logger.info(f"[ChatWS] 用户确认工具调用: call_id={msg.call_id}")

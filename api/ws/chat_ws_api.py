@@ -38,7 +38,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
 
         ws.onmessage = (e) => {
             const msg = JSON.parse(e.data);
-            if (msg.type === "chat:token") {
+            if (msg.type === "chat:text") {
                 process.stdout.write(msg.content);
             } else if (msg.type === "tool:call") {
                 // 执行客户端工具 → 回复 tool:result
@@ -52,5 +52,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
         };
     """
     await websocket.accept()
-    handler = ChatWebSocketHandler(websocket=websocket)
+    handler = ChatWebSocketHandler(
+        websocket=websocket,
+    )
     await handler.handle()

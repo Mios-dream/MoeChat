@@ -7,7 +7,7 @@ class TextResponse(BaseModel):
     聊天响应数据模型
     """
 
-    type: Literal["text"] = "text"
+    type: Literal["chat:text"] = "chat:text"
     sentence_id: int  # 句子 ID
     message: str
 
@@ -17,7 +17,7 @@ class MotionResponse(BaseModel):
     动作响应数据模型
     """
 
-    type: Literal["motion"] = "motion"  # 固定为 "motion"
+    type: Literal["chat:motion"] = "chat:motion"  # 固定为 "chat:motion"
     sentence_id: int  # 句子 ID
     source_text: str  # 原始句子文本
     motions: list[dict]  # 动作数据列表
@@ -29,7 +29,7 @@ class AudioResponse(BaseModel):
     音频响应数据模型
     """
 
-    type: Literal["audio"] = "audio"  # 固定为 "audio"
+    type: Literal["chat:audio"] = "chat:audio"  # 固定为 "chat:audio"
     sentence_id: int  # 句子 ID
     message: str  # 音频消息文本
     source_text: str  # 原始句子文本
@@ -41,7 +41,7 @@ class DoneResponse(BaseModel):
     聊天完成后的响应数据模型，表示聊天已结束
     """
 
-    type: Literal["done"] = "done"  # 固定为 "done"
+    type: Literal["chat:done"] = "chat:done"  # 固定为 "chat:done"
     full_text: str  # 完整文本
     done: bool = True  # 聊天是否完成，固定为 True
 

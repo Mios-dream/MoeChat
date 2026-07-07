@@ -357,22 +357,21 @@ class V3ChatService:
     V3 聊天服务
 
     提供 V3 版本的聊天流式输出接口。
-    支持 Function Calling 工具调用：传入 ws_manager 后，LLM 可在对话中自主调用工具。
+    支持 Function Calling 工具调用。
     """
 
     def __init__(self):
-        """
-        初始化 V3 聊天服务
-
-        参数：
-        - ws_manager: WebSocket 管理器（可选，用于客户端工具调用）
-        """
+        """初始化 V3 聊天服务"""
         self.assistant_service = AssistantService()
-        self._integration = ToolCallIntegration()
+        self.integration: ToolCallIntegration | None = None
 
-    def set_session_id(self, session_id: str) -> None:
-        """设置当前会话 ID（用于工具调用的会话关联）"""
-        self._integration.set_session_id(session_id)
+    def set_integration(self, integration: ToolCallIntegration):
+        """
+        设置工具调用集成
+
+        允许外部注入 ToolCallIntegration 实例，使 V3ChatService 支持工具调用。
+        """
+        self.integration = integration
 
     def create_scheduler(self) -> TaskScheduler:
         """
@@ -515,8 +514,11 @@ class V3ChatService:
 
         使用信息调度中心，单次 LLM 调用同时生成文本和动作标签。
 
-        参数：
-        - params: 聊天请求参数
+        工具调用: 若 self.integration 已被设置（调用前由外部注入），
+        LLM 可在对话中自主调用工具；未设置则不启用工具。
+
+        Args:
+            params: 聊天请求参数
         """
         start_time = time.time()
 
@@ -527,24 +529,26 @@ class V3ChatService:
             return
 
         user_message = params.msg[-1]["content"]
-        # history_messages: list[ChatCompletionMessageParam] = [
-        #     {
-        #         "role": "system",
-        #         "content": await agent.get_context(
-        #             msg=user_message, is_sleep_mode=params.is_sleep_mode
-        #         ),
-        #     },
-        #     *agent.get_history(),
-        # ]
-        history_messages = []
+        history_messages: list[ChatCompletionMessageParam] = [
+            {
+                "role": "system",
+                "content": await agent.get_context(
+                    msg=user_message, is_sleep_mode=params.is_sleep_mode
+                ),
+            },
+            *agent.get_history(),
+        ]
+        # history_messages = []
 
         scheduler = self.create_scheduler()
         pipeline = scheduler.create_task_pipeline(
             system_context=agent.prompt,
             history_messages=history_messages,
             user_message=user_message,
-            tools=self._integration.get_tools() or None,
-            tool_handler=self._integration.process_tool_calls,
+            tools=self.integration.get_tools() if self.integration else None,
+            tool_handler=(
+                self.integration.process_tool_calls if self.integration else None
+            ),
         )
 
         ctx = V3MotionChatContext(tts_lang=agent.agent_config.gsvSetting.textLang)

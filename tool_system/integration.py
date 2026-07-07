@@ -77,6 +77,18 @@ class ToolCallIntegration:
         """
         self._session_id = session_id
 
+    def set_ws_manager(self, ws_manager: Any) -> None:
+        """
+        设置 WebSocket 连接管理器
+
+        将 ws_manager 注入内部 ToolRouter，使客户端工具和混合工具
+        执行器能够通过 WebSocket 与客户端通信。
+
+        Args:
+            ws_manager: WebSocketManager 实例
+        """
+        self._router.set_ws_manager(ws_manager)
+
     async def process_tool_calls(
         self,
         tool_calls: list[ChatCompletionMessageFunctionToolCallParam],
