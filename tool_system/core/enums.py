@@ -2,7 +2,7 @@
 工具系统枚举定义模块
 
 定义工具系统的所有枚举类型，包括：
-- ExecutionDomain: 工具执行域（服务端/客户端/混合）
+- ExecutionDomain: 工具执行域（服务端/客户端）
 - ExecutionMode: 工具执行模式（同步/异步）
 - ToolSensitivity: 工具敏感度等级
 """
@@ -18,18 +18,14 @@ class ExecutionDomain(str, Enum):
 
     Attributes:
         SERVER: 工具逻辑在服务端进程内执行
-        CLIENT: 工具逻辑在客户端设备上执行
-        HYBRID: 工具逻辑分两阶段分别在客户端和服务端执行
+        CLIENT: 工具逻辑在客户端设备上执行（支持可选的 server_postprocess 服务端后处理）
     """
 
     SERVER = "server"
     """服务端执行：工具代码在 Python 服务端进程中运行"""
 
     CLIENT = "client"
-    """客户端执行：工具代码通过 WebSocket 下发给客户端执行"""
-
-    HYBRID = "hybrid"
-    """混合执行：先客户端后服务端，两阶段协作完成"""
+    """客户端执行：工具代码通过 WebSocket 下发给客户端执行，支持可选 server_postprocess 回执处理"""
 
 
 class ExecutionMode(str, Enum):

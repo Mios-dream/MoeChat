@@ -9,28 +9,28 @@
     维护所有"已下发但尚未收到客户端响应"的调用。
 
 客户端同步工具 (ClientSyncExecutor):
-    1. 创建 asyncio.Future 存入 Pending Call Table
-    2. 通过 WebSocketManager 发送 tool:call 消息
-    3. await Future（带超时）
-    4. 客户端返回结果 → Future.set_result() → 返回
+    1. 检查工具是否有 client_instruction() → 生成客户端指令并合并到 arguments
+    2. 创建 asyncio.Future 存入 Pending Call Table
+    3. 通过 WebSocketManager 发送 tool:call 消息
+    4. await Future（带超时）
+    5. 客户端返回结果 → Future.set_result() → 返回
+    6. 检查工具是否有 server_postprocess() → 服务端后处理 → 返回最终结果
 
 客户端异步工具 (ClientAsyncExecutor):
-    1. 通过 WebSocketManager 发送 tool:call 消息
-    2. 立即返回占位结果（不等待）
-    3. 注册异步回调监听
-    4. 客户端结果到达时通过 ResultNotifier 通知
+    1. 检查工具是否有 client_instruction() → 生成客户端指令
+    2. 通过 WebSocketManager 发送 tool:call 消息
+    3. 立即返回占位结果（不等待）
+    4. 注册异步回调监听
+    5. 客户端结果到达时通过 ResultNotifier 通知
+    6. 如有 server_postprocess → 异步回调中执行后处理
 """
-
-from __future__ import annotations
 
 import asyncio
 import json
 import time
 from typing import Any
 
-from tool_system.core.enums import ExecutionMode
 from tool_system.core.errors import (
-    ToolTimeoutError,
     ClientDisconnectedError,
 )
 from tool_system.core.types import (
@@ -38,6 +38,7 @@ from tool_system.core.types import (
     ToolCallResult,
 )
 from tool_system.executors.base_executor import BaseExecutor
+from tool_system.core.base import ClientTool
 from models.dto.response.ToolWsResponse import ToolCallWsMessage
 
 
@@ -274,11 +275,18 @@ class ClientSyncExecutor(BaseExecutor):
         """
         同步执行客户端工具（阻塞等待客户端结果）
 
+        1. 获取工具类并实例化
+        2. 校验参数
+        3. 如工具重写了 client_instruction() → 合并客户端指令到 arguments
+        4. WebSocket 下发 tool:call → 等待客户端返回
+        5. 如工具重写了 server_postprocess() → 服务端后处理 → 最终结果
+        6. 未重写 server_postprocess → 客户端返回直接传 LLM
+
         Args:
             request: 工具调用请求
 
         Returns:
-            ToolCallResult: 客户端返回的结果或超时错误
+            ToolCallResult: 最终执行结果
         """
         if self._ws_manager is None:
             return self._wrap_error(
@@ -287,7 +295,6 @@ class ClientSyncExecutor(BaseExecutor):
                 error_code="TOOL_EXEC_ERROR",
             )
 
-        # 检查客户端连接状态
         if not await self._ws_manager.is_connected(request.session_id):
             return self._wrap_error(
                 request,
@@ -295,12 +302,58 @@ class ClientSyncExecutor(BaseExecutor):
                 error_code="CLIENT_DISCONNECTED",
             )
 
-        # 创建 Future 并注册
+        tool_name = request.tool_name
+        start_time = time.perf_counter()
+
+        # ── 获取工具类并实例化 ──
+        tool_class = self._registry.get_class(tool_name)
+        if tool_class is None:
+            return self._wrap_error(
+                request,
+                f"客户端工具 '{tool_name}' 未注册",
+                error_code="TOOL_NOT_FOUND",
+            )
+
+        try:
+            tool_instance = tool_class()
+        except Exception as e:
+            return self._wrap_error(
+                request,
+                f"客户端工具 '{tool_name}' 实例化失败: {e}",
+                error_code="TOOL_EXEC_ERROR",
+            )
+
+        # ── 校验参数 ──
+        try:
+            validated_args = tool_instance.validate_arguments(request.arguments)
+        except Exception as e:
+            return self._wrap_error(
+                request,
+                f"参数校验失败: {e}",
+                error_code="INVALID_ARGUMENTS",
+            )
+
+        # ── 检查 client_instruction（原 client_phase 的替代） ──
+        ws_arguments = dict(validated_args)
+        if type(tool_instance).client_instruction is not ClientTool.client_instruction:
+            try:
+                instruction = await tool_instance.client_instruction(**validated_args)
+                if instruction:
+                    ws_arguments["_client_instruction"] = instruction
+            except Exception as e:
+                return self._wrap_error(
+                    request,
+                    f"客户端指令生成失败: {e}",
+                    error_code="TOOL_EXEC_ERROR",
+                )
+
+        # ── 通过 WebSocket 下发工具调用 ──
         future = self._pending_table.add_future(request.call_id)
 
-        # 通过 WebSocket 下发工具调用
         try:
             message = _build_tool_call_message(request, mode="sync")
+            # 合并经 client_instruction 增强的 arguments
+            message.arguments = ws_arguments
             await self._ws_manager.send(request.session_id, message.model_dump())
         except Exception as e:
             self._pending_table.remove(request.call_id)
@@ -310,23 +363,17 @@ class ClientSyncExecutor(BaseExecutor):
                 error_code="TOOL_EXEC_ERROR",
             )
 
-        # 等待客户端返回结果
-        start_time = time.perf_counter()
+        # ── 等待客户端返回结果 ──
         try:
-            result = await asyncio.wait_for(
+            client_result = await asyncio.wait_for(
                 future,
                 timeout=request.timeout,
             )
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            result.duration_ms = round(duration_ms, 2)
-            result.session_id = request.session_id
-            return result
         except asyncio.TimeoutError:
-            # 超时：移除 Future 并返回错误
             self._pending_table.remove(request.call_id)
             return self._wrap_error(
                 request,
-                f"客户端工具 '{request.tool_name}' 执行超时（{request.timeout}s）",
+                f"客户端工具 '{tool_name}' 执行超时（{request.timeout}s）",
                 error_code="TOOL_TIMEOUT",
             )
         except ClientDisconnectedError as e:
@@ -340,9 +387,57 @@ class ClientSyncExecutor(BaseExecutor):
             self._pending_table.remove(request.call_id)
             return self._wrap_error(
                 request,
-                f"客户端工具 '{request.tool_name}' 执行异常: {e}",
+                f"客户端工具 '{tool_name}' 执行异常: {e}",
                 error_code="TOOL_EXEC_ERROR",
             )
+
+        # 客户端执行失败时直接返回
+        if not client_result.success:
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            client_result.duration_ms = round(duration_ms, 2)
+            client_result.session_id = request.session_id
+            return client_result
+
+        # ── 检查 server_postprocess（原 server_phase 的替代） ──
+        has_postprocess = (
+            type(tool_instance).server_postprocess is not ClientTool.server_postprocess
+        )
+
+        if not has_postprocess:
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            client_result.duration_ms = round(duration_ms, 2)
+            client_result.session_id = request.session_id
+            return client_result
+
+        # ── 解析客户端返回数据并执行服务端后处理 ──
+        client_data: dict[str, Any] = {}
+        try:
+            content_parsed = json.loads(client_result.content)
+            client_data = content_parsed if isinstance(content_parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            client_data = {"raw_result": client_result.content}
+
+        try:
+            final_content = await tool_instance.server_postprocess(
+                client_data,
+                **validated_args,
+            )
+        except Exception as e:
+            return self._wrap_error(
+                request,
+                f"客户端工具服务端后处理失败: {e}",
+                error_code="TOOL_EXEC_ERROR",
+            )
+
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        return ToolCallResult(
+            call_id=request.call_id,
+            tool_name=tool_name,
+            content=final_content,
+            success=True,
+            duration_ms=round(duration_ms, 2),
+            session_id=request.session_id,
+        )
 
 
 class ClientAsyncExecutor(BaseExecutor):
@@ -397,7 +492,10 @@ class ClientAsyncExecutor(BaseExecutor):
         """
         异步执行客户端工具（fire-and-forget）
 
-        下发工具调用后立即返回占位结果。
+        1. 检查工具是否有 client_instruction() → 合并指令到 arguments
+        2. 下发工具调用后立即返回占位结果
+        3. 注册异步回调：
+           - 客户端结果到达 → 检查 server_postprocess → 后处理 → 通知
 
         Args:
             request: 工具调用请求
@@ -412,19 +510,79 @@ class ClientAsyncExecutor(BaseExecutor):
                 error_code="TOOL_EXEC_ERROR",
             )
 
-        # 注册异步回调
+        tool_name = request.tool_name
+
+        # ── 获取工具类并检查扩展方法 ──
+        tool_class = self._registry.get_class(tool_name)
+        has_postprocess = False
+        validated_args = dict(request.arguments)
+
+        if tool_class is not None:
+            try:
+                tool_instance = tool_class()
+            except Exception:
+                tool_instance = None
+            else:
+                try:
+                    validated_args = tool_instance.validate_arguments(request.arguments)
+                except Exception:
+                    pass
+
+                has_postprocess = (
+                    type(tool_instance).server_postprocess
+                    is not ClientTool.server_postprocess
+                )
+
+        # ── client_instruction 增强 arguments ──
+        ws_arguments = dict(validated_args)
+        if tool_class is not None:
+            try:
+                tmp_instance = tool_class()
+                if (
+                    type(tmp_instance).client_instruction
+                    is not ClientTool.client_instruction
+                ):
+                    instruction = await tmp_instance.client_instruction(
+                        **validated_args
+                    )
+                    if instruction:
+                        ws_arguments["_client_instruction"] = instruction
+            except Exception:
+                pass
+
+        # ── 注册异步回调（含 server_postprocess） ──
         if self._on_complete is not None:
 
             async def _on_result(result: ToolCallResult) -> None:
                 result.is_async_result = True
                 result.session_id = request.session_id
+
+                if has_postprocess and result.success and tool_class is not None:
+                    try:
+                        post_instance = tool_class()
+                        client_data: dict[str, Any] = {}
+                        try:
+                            parsed = json.loads(result.content)
+                            client_data = parsed if isinstance(parsed, dict) else {}
+                        except (json.JSONDecodeError, TypeError):
+                            client_data = {"raw_result": result.content}
+
+                        final_content = await post_instance.server_postprocess(
+                            client_data,
+                            **validated_args,
+                        )
+                        result.content = final_content
+                    except Exception:
+                        pass
+
                 await self._on_complete(result)
 
             self._pending_table.add_listener(request.call_id, _on_result)
 
-        # 下发工具调用
+        # ── 下发工具调用 ──
         try:
             message = _build_tool_call_message(request, mode="async")
+            message.arguments = ws_arguments
             await self._ws_manager.send(request.session_id, message.model_dump())
         except Exception as e:
             self._pending_table.remove(request.call_id)
@@ -434,7 +592,7 @@ class ClientAsyncExecutor(BaseExecutor):
                 error_code="TOOL_EXEC_ERROR",
             )
 
-        # 生成占位结果
+        # ── 生成占位结果 ──
         meta = self._registry.get(request.tool_name)
         placeholder_text = (
             meta.placeholder

@@ -11,7 +11,7 @@ ResultNotifier 负责处理异步工具执行完成后的结果分发。
 3. 防抖聚合: 短时间内多个异步结果合并通知
 
 与外部模块的关系:
-    - 被 ServerAsyncExecutor / ClientAsyncExecutor / HybridAsyncExecutor 回调
+    - 被 ServerAsyncExecutor / ClientAsyncExecutor 回调
     - 通过回调函数通知 Chat Orchestrator 注入上下文
 """
 

@@ -18,6 +18,7 @@
 """
 
 import asyncio
+import json
 import time
 import traceback
 from typing import Any
@@ -33,11 +34,16 @@ from my_utils.log import logger
 from api.ws.chat_protocol import ChatWSMessageType
 from tool_system.integration import ToolCallIntegration
 from models.dto.response.ToolWsResponse import (
+    ToolQueryWsMessage,
     ToolResultWsMessage,
     ToolProgressWsMessage,
     ToolConfirmWsMessage,
+    ToolDefinitionsWsMessage,
+    ComponentToolGroup,
+    ClientToolDefEntry,
 )
 from api.ws.ws_manager import get_ws_manager
+from tool_system.core.types import ClientToolDef
 import shortuuid
 
 v3_service = V3ChatService()
@@ -103,6 +109,9 @@ class ChatWebSocketHandler:
 
         logger.info(f"[ChatWS] 客户端已连接: session={self._session_id}")
 
+        # ── 查询客户端工具能力 ──
+        await self._query_client_tools()
+
         # ── 消息接收循环 ──
         try:
             while True:
@@ -167,6 +176,9 @@ class ChatWebSocketHandler:
 
         elif msg_type == ChatWSMessageType.TOOL_CONFIRM.value:
             await self._handle_tool_confirm(data)
+
+        elif msg_type == ChatWSMessageType.TOOL_DEFINITIONS.value:
+            await self._handle_tool_definitions(data)
 
         elif msg_type == ChatWSMessageType.INTERACTION_SEND.value:
             await self._handle_interaction_send(data)
@@ -403,3 +415,73 @@ class ChatWebSocketHandler:
             logger.info(f"[ChatWS] 用户拒绝工具调用: call_id={msg.call_id}")
         else:
             logger.info(f"[ChatWS] 用户确认工具调用: call_id={msg.call_id}")
+
+    # ── 工具定义协商 ──
+
+    async def _query_client_tools(self) -> None:
+        """
+        向客户端发送工具能力查询
+
+        连接建立后立即发送 tool:query，
+        触发客户端上报已注册的客户端工具定义。
+        """
+        try:
+            query_msg = ToolQueryWsMessage()
+            await self._websocket.send_json(query_msg.model_dump())
+        except Exception as e:
+            logger.warning(
+                f"[ChatWS] 发送 tool:query 失败: {e}, " f"session={self._session_id}"
+            )
+
+    async def _handle_tool_definitions(self, data: dict[str, Any]) -> None:
+        """
+        处理客户端上报的工具定义
+
+        客户端收到 tool:query 后回复 tool:definitions，
+        按组件分组列出所有已注册的客户端工具定义。
+        服务端逐条校验后写入该会话的 SessionToolTable。
+
+        Args:
+            data: 客户端 tool:definitions 消息的原始字典
+        """
+        print(f"[ChatWS] 收到 tool:definitions: {json.dumps(data, ensure_ascii=False)}")
+        try:
+            msg = ToolDefinitionsWsMessage.model_validate(data)
+        except Exception as e:
+            logger.warning(
+                f"[ChatWS] tool:definitions 消息格式无效: {e}, "
+                f"session={self._session_id}"
+            )
+            return
+
+        # ── 提取所有工具定义为 ClientToolDef 列表 ──
+        definitions: list[ClientToolDef] = []
+        for comp_group in msg.components:
+            component = comp_group.component
+            version = comp_group.version
+            for entry in comp_group.tools:
+                client_tool_def = ClientToolDef(
+                    name=entry.name,
+                    description=entry.description,
+                    parameters=entry.parameters,
+                    component=component,
+                    component_version=version,
+                )
+                definitions.append(client_tool_def)
+
+        # ── 校验并注册 ──
+        count, mismatches = self._integration.register_client_tools(
+            session_id=self._session_id,
+            definitions=definitions,
+        )
+
+        comp_summary = ", ".join(
+            f"{g.component}({len(g.tools)})" for g in msg.components
+        )
+        logger.info(
+            f"[ChatWS] tool:definitions 接收完毕: "
+            f"session={self._session_id}, "
+            f"components=[{comp_summary}], "
+            f"上报 {len(definitions)} 个工具, "
+            f"校验通过 {count} 个"
+        )

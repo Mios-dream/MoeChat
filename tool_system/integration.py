@@ -2,16 +2,19 @@
 工具系统集成模块
 
 ToolCallIntegration 封装 LLM 工具调用"接收 → 执行 → 聚合 → 返回"的完整流程，
-作为 middleware 注入到 Pipeline 和 ChatContext 之间。
+作为 middleware 注入到 Pipeline 和 ChatContext 之间。同时管理会话级客户端工具表。
 
 使用方式:
     from tool_system.integration import ToolCallIntegration
 
-    integration = ToolCallIntegration(ws_manager)
+    integration = ToolCallIntegration()
     integration.set_session_id(session_id)
 
-    # 获取工具定义
-    tools = integration.get_tools()
+    # 客户端连接后协商工具定义
+    integration.register_client_tools(session_id, tool_definitions)
+
+    # 获取该会话可用的工具定义（SERVER + 校验通过的 CLIENT）
+    tools = integration.get_session_tools(session_id)
 
     # 作为 tool_handler 注入 Pipeline
     pipeline = Pipeline(
@@ -30,7 +33,13 @@ from typing import Any
 from tool_system.core.registry import get_registry
 from tool_system.core.router import ToolRouter
 from tool_system.core.aggregator import ResultAggregator
-from tool_system.core.types import ToolCallRequest, ToolCallResult
+from tool_system.core.types import (
+    ToolCallRequest,
+    ToolCallResult,
+    ClientToolDef,
+    SessionToolTable,
+    ToolMeta,
+)
 from tool_system.core.enums import ExecutionDomain, ExecutionMode
 from core.scheduler.task import ToolCallEvent, ToolResultEvent, ToolExecutionResult
 from openai.types.chat import (
@@ -41,32 +50,30 @@ from openai.types.chat import (
 
 class ToolCallIntegration:
     """
-    工具调用集成 - 完整的一次工具调用处理
+    工具调用集成 - 完整的一次工具调用处理 + 会话级客户端工具管理
 
     直接组合 ToolRouter + ResultAggregator，封装
     "接收 LLM tool_calls → 并行执行 → 聚合结果 → 返回 tool 消息"的完整流程。
 
-    使用场景:
-    - 在已有的聊天流程中,LLM 决定调用工具时使用
-    - 作为 middleware 注入到 Pipeline 和 ChatContext 之间
+    管理 SessionToolTable:
+    - 客户端连接后通过 tool:query / tool:definitions 协商工具定义
+    - 每个会话独立的客户端工具视图（组件维度隔离）
+    - 构建 LLM tools 参数时合并 SERVER 工具 + 校验通过的 CLIENT 工具
 
     Attributes:
         _router: 工具路由器（负责策略路由和执行）
         _aggregator: 结果聚合器（负责转换为 OpenAI tool 消息格式）
         _session_id: 当前会话 ID（工具调用时自动注入）
-        _ws_manager: WebSocket 连接管理器引用
+        _session_tables: 会话级客户端工具表映射 {session_id: SessionToolTable}
     """
 
     def __init__(self) -> None:
-        """
-        初始化工具调用集成
-
-        Args:
-            ws_manager: WebSocketManager 实例（用于客户端工具通信）
-        """
+        """初始化工具调用集成"""
         self._router = ToolRouter()
         self._aggregator = ResultAggregator()
         self._session_id: str = "default"
+        self._session_tables: dict[str, SessionToolTable] = {}
+        """会话 ID → SessionToolTable 映射"""
 
     def set_session_id(self, session_id: str) -> None:
         """
@@ -81,13 +88,140 @@ class ToolCallIntegration:
         """
         设置 WebSocket 连接管理器
 
-        将 ws_manager 注入内部 ToolRouter，使客户端工具和混合工具
+        将 ws_manager 注入内部 ToolRouter，使客户端工具
         执行器能够通过 WebSocket 与客户端通信。
 
         Args:
             ws_manager: WebSocketManager 实例
         """
         self._router.set_ws_manager(ws_manager)
+
+    # ── 会话级客户端工具管理 ──
+
+    def register_client_tools(
+        self,
+        session_id: str,
+        definitions: list[ClientToolDef],
+    ) -> tuple[int, list[str]]:
+        """
+        从客户端上报的工具定义校验并注册到会话工具表
+
+        逐条比对 ToolRegistry 中已注册的 CLIENT 域工具定义，
+        只有 name + parameters schema 完全匹配的才会写入 SessionToolTable。
+
+        Args:
+            session_id: 会话 ID
+            definitions: 客户端上报的 ClientToolDef 列表
+
+        Returns:
+            (校验通过的工具数量, 不匹配记录列表)
+        """
+        registry = get_registry()
+        table = self._get_or_create_table(session_id)
+        count = table.register_from_client(definitions, registry)
+
+        from my_utils.log import logger
+        mismatches = table.get_mismatch_log()
+        for log_line in mismatches:
+            logger.warning(f"[ToolSystem] {log_line}")
+
+        logger.info(
+            f"[ToolSystem] session={session_id}: "
+            f"客户端上报 {len(definitions)} 个工具, "
+            f"校验通过 {count} 个"
+        )
+        return count, mismatches
+
+    def get_session_tools(
+        self,
+        session_id: str,
+    ) -> list[ChatCompletionFunctionToolParam]:
+        """
+        获取该会话可用的全部工具定义（SERVER + 校验通过的 CLIENT）
+
+        构建 LLM 请求中的 tools 参数。
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            OpenAI function calling 格式的工具定义列表
+        """
+        registry = get_registry()
+
+        # ── SERVER 工具：始终可用 ──
+        server_tools = registry.build_openai_tools(
+            domains=[ExecutionDomain.SERVER],
+        )
+
+        # ── CLIENT 工具：仅会话表中校验通过的 ──
+        table = self._session_tables.get(session_id)
+        if table is None or len(table) == 0:
+            return server_tools
+
+        client_metas = table.get_tools()
+        client_tools: list[ChatCompletionFunctionToolParam] = []
+        for meta in client_metas:
+            client_tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": meta.name,
+                        "description": meta.description,
+                        "parameters": meta.parameters,
+                    },
+                }
+            )
+
+        return server_tools + client_tools
+
+    def get_all_tools(self) -> list[ChatCompletionFunctionToolParam]:
+        """
+        获取所有已注册工具的 OpenAI 格式定义（SERVER + 所有已注册 CLIENT）
+
+        用于 HTTP API 等无会话上下文的场景。
+
+        Returns:
+            OpenAI function calling 格式的工具定义列表
+        """
+        return get_registry().build_openai_tools()
+
+    def get_session_table(self, session_id: str) -> SessionToolTable | None:
+        """
+        获取指定会话的客户端工具表
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            SessionToolTable 实例，未初始化返回 None
+        """
+        return self._session_tables.get(session_id)
+
+    def remove_session(self, session_id: str) -> None:
+        """
+        移除会话工具表（客户端断开时调用）
+
+        Args:
+            session_id: 会话 ID
+        """
+        self._session_tables.pop(session_id, None)
+
+    def _get_or_create_table(self, session_id: str) -> SessionToolTable:
+        """
+        获取或创建会话工具表
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            SessionToolTable 实例
+        """
+        if session_id not in self._session_tables:
+            self._session_tables[session_id] = SessionToolTable()
+        return self._session_tables[session_id]
+
+    # ── 工具调用处理 ──
 
     async def process_tool_calls(
         self,
@@ -181,6 +315,8 @@ class ToolCallIntegration:
         """
         获取所有已注册工具的 OpenAI 格式定义
 
+        用于向后兼容。推荐使用 get_session_tools() 获取会话级工具集。
+
         Returns:
             OpenAI function calling 格式的工具定义列表
         """
@@ -188,7 +324,7 @@ class ToolCallIntegration:
 
     def cancel_session(self, session_id: str) -> int:
         """
-        取消指定会话的所有待处理调用
+        取消指定会话的所有待处理调用 + 清理会话工具表
 
         客户端断开时调用。
 
@@ -198,6 +334,7 @@ class ToolCallIntegration:
         Returns:
             取消的调用数量
         """
+        self.remove_session(session_id)
         return self._router.cancel_all_for_session(session_id)
 
     def on_client_result(self, session_id: str, payload: dict[str, Any]) -> bool:

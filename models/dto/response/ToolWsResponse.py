@@ -39,6 +39,21 @@ from pydantic import BaseModel, Field
 # ═══════════════════════════════════════════════════════════════
 
 
+class ToolQueryWsMessage(BaseModel):
+    """
+    服务端查询客户端工具能力
+
+    客户端连接成功后服务端立即发送此消息，
+    客户端需回复 ToolDefinitionsWsMessage 列出所有已注册的客户端工具。
+
+    协议字段:
+        type: 固定 "tool:query"
+    """
+
+    type: Literal["tool:query"] = "tool:query"
+    """消息类型标识，固定值"""
+
+
 class ToolCallWsMessage(BaseModel):
     """
     下发工具调用给客户端
@@ -268,17 +283,100 @@ class ToolConfirmWsMessage(BaseModel):
 
 
 # ═══════════════════════════════════════════════════════════════
+# 客户端 → 服务端：工具定义上报
+# ═══════════════════════════════════════════════════════════════
+
+
+class ClientToolDefEntry(BaseModel):
+    """
+    客户端单个工具定义条目（扁平格式，兼容客户端直接发送）
+
+    客户端发送格式示例:
+        {
+            "name": "set_weather_location",
+            "description": "设置天气查询的目标城市",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string", "description": "..."}},
+                "required": ["city"]
+            }
+        }
+
+    协议字段:
+        name: 工具名称，必须与 ToolRegistry 注册名一致
+        description: 工具描述
+        parameters: JSON Schema 参数定义
+    """
+
+    name: str
+    """工具名称"""
+
+    description: str = ""
+    """工具描述"""
+
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    """JSON Schema 参数定义"""
+
+
+class ComponentToolGroup(BaseModel):
+    """
+    客户端组件维度工具组
+
+    一个客户端组件（如 weather 天气组件）可能注册多个工具。
+    按组件分组上报，服务端校验后写入 SessionToolTable 的组件映射。
+
+    协议字段:
+        component: 组件标识（如 'weather' / 'todo' / 'file'）
+        version: 组件版本号
+        tools: 该组件注册的工具定义列表
+    """
+
+    component: str
+    """组件标识，如 'weather' / 'todo'"""
+
+    version: str = "1.0.0"
+    """组件版本号"""
+
+    tools: list[ClientToolDefEntry] = Field(default_factory=list)
+    """该组件注册的工具定义列表"""
+
+
+class ToolDefinitionsWsMessage(BaseModel):
+    """
+    客户端上报工具定义（按组件分组）
+
+    客户端收到服务端 tool:query 后回复此消息，
+    列出所有已注册的客户端工具定义。
+    服务端逐条校验 name + parameters schema，
+    校验通过的写入该会话的 SessionToolTable。
+
+    协议字段:
+        type: 固定 "tool:definitions"
+        components: 按组件分组的工具定义列表
+    """
+
+    type: Literal["tool:definitions"] = "tool:definitions"
+    """消息类型标识，固定值"""
+
+    components: list[ComponentToolGroup] = Field(default_factory=list)
+    """按组件分组的工具定义列表"""
+
+
+# ═══════════════════════════════════════════════════════════════
 # 类型导出汇总
 # ═══════════════════════════════════════════════════════════════
 
 # 服务端 → 客户端
 ServerToClientToolMessage = (
-    ToolCallWsMessage | ToolCancelWsMessage | ToolAsyncResultWsMessage
+    ToolQueryWsMessage | ToolCallWsMessage | ToolCancelWsMessage | ToolAsyncResultWsMessage
 )
 
 # 客户端 → 服务端
 ClientToServerToolMessage = (
-    ToolResultWsMessage | ToolProgressWsMessage | ToolConfirmWsMessage
+    ToolResultWsMessage
+    | ToolProgressWsMessage
+    | ToolConfirmWsMessage
+    | ToolDefinitionsWsMessage
 )
 
 # 全部 WS 工具消息
@@ -286,6 +384,7 @@ WsToolMessage = ServerToClientToolMessage | ClientToServerToolMessage
 
 __all__ = [
     # 服务端 → 客户端
+    "ToolQueryWsMessage",
     "ToolCallWsMessage",
     "ToolCancelWsMessage",
     "ToolAsyncResultWsMessage",
@@ -293,6 +392,10 @@ __all__ = [
     "ToolResultWsMessage",
     "ToolProgressWsMessage",
     "ToolConfirmWsMessage",
+    # 客户端 → 服务端：工具定义上报
+    "ClientToolDefEntry",
+    "ComponentToolGroup",
+    "ToolDefinitionsWsMessage",
     # 类型别名
     "ServerToClientToolMessage",
     "ClientToServerToolMessage",

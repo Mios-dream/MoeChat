@@ -100,6 +100,28 @@ class ChatWSMessageType(str, Enum):
     }
     """
 
+    TOOL_DEFINITIONS = "tool:definitions"
+    """
+    客户端上报已注册的工具定义（按组件分组）: {
+        type,
+        components: [
+            {
+                component: str,      组件标识（如 'weather' / 'todo'）
+                version: str,        组件版本号
+                tools: [
+                    {
+                        type: "function",
+                        function: { name, description, parameters }
+                    }
+                ]
+            }
+        ]
+    }
+
+    客户端收到 tool:query 后立即回复此消息，
+    服务端逐条校验 name + parameters schema 后写入会话级 SessionToolTable。
+    """
+
     # ═══════════════════════════════════════════════════════════
     # 服务端 → 客户端
     # ═══════════════════════════════════════════════════════════
@@ -172,7 +194,15 @@ class ChatWSMessageType(str, Enum):
     等价于原 SSE: data: {"type": "error", "data": "...", "done": true}
     """
 
-    # ── 工具系统 ──
+    # ── 工具系统（服务端 → 客户端） ──
+    TOOL_QUERY = "tool:query"
+    """
+    服务端查询客户端可用的工具定义: {type}
+
+    客户端连接成功后服务端立即发送此消息，
+    客户端应回复 tool:definitions 列出所有已注册的客户端工具定义。
+    """
+
     TOOL_CALL = "tool:call"
     """
     下发工具调用给客户端: {

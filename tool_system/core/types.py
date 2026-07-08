@@ -9,8 +9,6 @@
 - ToolConfirmResponse: 用户确认响应（敏感工具确认流程）
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -141,6 +139,17 @@ class ToolMeta:
     内容应包含迁移指引，告诉使用者替代工具的名称或使用方式。
 
     示例: "该工具已废弃，请使用 'screenshot_v2' 替代"
+    """
+
+    # ── 组件归属 ──
+    component: str = ""
+    """
+    工具归属的客户端组件标识，如 'weather' / 'todo' / 'file'。
+    
+    仅用于 CLIENT 域工具。客户端通过 tool:definitions 上报工具时
+    按组件维度组织，服务端校验后写入 SessionToolTable 的组件映射。
+    
+    为空字符串表示未指定组件（视为全局通用工具）。
     """
 
     # ── 内部使用 ──
@@ -344,3 +353,236 @@ class ToolConfirmResponse:
 
     deny_reason: str = ""
     """用户拒绝执行的原因（如 '用户取消了操作'）"""
+
+
+@dataclass(slots=True)
+class ClientToolDef:
+    """
+    客户端上报的单个工具定义
+
+    客户端通过 tool:definitions 消息上报正在使用的工具定义，
+    每条定义必须包含完整的 OpenAI function calling schema 和所属组件。
+
+    Attributes:
+        name: 工具名称，必须与 ToolRegistry 中的注册名一致
+        description: 工具描述
+        parameters: JSON Schema 参数定义
+        component: 所属组件标识（如 'weather' / 'todo'）
+        component_version: 组件版本号
+    """
+
+    name: str
+    """工具名称，必须与服务端 ToolRegistry 中注册的名称一致"""
+
+    description: str
+    """工具功能描述"""
+
+    parameters: dict[str, Any] = field(default_factory=dict)
+    """OpenAI function calling 兼容的 JSON Schema 参数定义"""
+
+    component: str = ""
+    """所属客户端组件标识，如 'weather' / 'todo' / 'file'"""
+
+    component_version: str = "1.0.0"
+    """客户端组件版本号"""
+
+
+class SessionToolTable:
+    """
+    会话级客户端工具表
+
+    管理单个会话中校验通过的客户端工具集。
+    客户端通过 WebSocket 连接后上报支持的客户端工具定义，
+    服务端按 name + parameters schema 逐条校验，
+    只有完全匹配的才会写入本表。
+
+    内部数据结构:
+        _tools: dict[name, ToolMeta] - 校验通过的工具元信息
+        _component_map: dict[component, set[name]] - 组件 → 工具名称集合
+        _definition_map: dict[name, ClientToolDef] - 客户端原始定义
+
+    生命周期:
+        - 客户端连接 → tool:query 触发上报
+        - 收到 tool:definitions → 逐条校验 → 写入本表
+        - 客户端断开 → clear()
+    """
+
+    def __init__(self) -> None:
+        """初始化空的会话工具表"""
+        self._tools: dict[str, ToolMeta] = {}
+        """name → ToolMeta（校验通过的客户端工具元信息）"""
+
+        self._component_map: dict[str, set[str]] = {}
+        """component → {tool_name, ...}（组件维度索引）"""
+
+        self._definition_map: dict[str, ClientToolDef] = {}
+        """name → ClientToolDef（客户端原始定义，用于校验和调试）"""
+
+        self._mismatch_log: list[str] = []
+        """校验不通过的记录列表"""
+
+    def register_from_client(
+        self,
+        definitions: list[ClientToolDef],
+        registry: Any,
+    ) -> int:
+        """
+        从客户端上报的工具定义批量校验并注册
+
+        逐条比对服务端 ToolRegistry 中已注册的 CLIENT 域工具：
+        1. name 必须匹配已注册工具
+        2. parameters.required 字段名集合必须一致
+        3. parameters.properties 的 key 不能少于服务端定义
+
+        校验通过的写入内部索引。
+
+        Args:
+            definitions: 客户端上报的 ClientToolDef 列表
+            registry: ToolRegistry 全局单例引用
+
+        Returns:
+            校验通过并成功注册的工具数量
+        """
+        self.clear()
+        count = 0
+
+        for client_tool_def in definitions:
+            tool_name = client_tool_def.name
+            component = client_tool_def.component or ""
+
+            meta = registry.get(tool_name)
+            if meta is None:
+                self._mismatch_log.append(f"[SKIP] '{tool_name}': 服务端未注册此工具")
+                continue
+
+            if meta.domain.name != "CLIENT":
+                self._mismatch_log.append(
+                    f"[SKIP] '{tool_name}': 服务端注册域为 {meta.domain.value}，非 CLIENT"
+                )
+                continue
+
+            if not self._validate_parameters(meta, client_tool_def):
+                continue
+
+            self._tools[tool_name] = meta
+            self._definition_map[tool_name] = client_tool_def
+
+            if component:
+                if component not in self._component_map:
+                    self._component_map[component] = set()
+                self._component_map[component].add(tool_name)
+
+            count += 1
+
+        return count
+
+    def _validate_parameters(
+        self,
+        server_meta: ToolMeta,
+        client_def: ClientToolDef,
+    ) -> bool:
+        """
+        校验客户端工具参数 schema 是否与服务端定义一致
+
+        校验项：
+        1. required 字段名集合必须一致
+        2. properties key 集必须一致（不允许缺失，允许客户端多）
+
+        Args:
+            server_meta: 服务端注册的 ToolMeta
+            client_def: 客户端上报的 ClientToolDef
+
+        Returns:
+            校验通过 True / 不通过 False
+        """
+        tool_name = client_def.name
+        server_params = server_meta.parameters or {}
+        client_params = client_def.parameters or {}
+
+        server_props = server_params.get("properties", {})
+        client_props = client_params.get("properties", {})
+
+        server_required = set(server_params.get("required", []))
+        client_required = set(client_params.get("required", []))
+
+        if server_required != client_required:
+            missing_in_client = server_required - client_required
+            extra_in_client = client_required - server_required
+            parts = []
+            if missing_in_client:
+                parts.append(f"缺少 required: {list(missing_in_client)}")
+            if extra_in_client:
+                parts.append(f"多余 required: {list(extra_in_client)}")
+            self._mismatch_log.append(f"[MISMATCH] '{tool_name}': {', '.join(parts)}")
+            return False
+
+        server_keys = set(server_props.keys())
+        client_keys = set(client_props.keys())
+        missing_keys = server_keys - client_keys
+        if missing_keys:
+            self._mismatch_log.append(
+                f"[MISMATCH] '{tool_name}': " f"缺少 properties: {list(missing_keys)}"
+            )
+            return False
+
+        return True
+
+    def get_tools(self) -> list[ToolMeta]:
+        """
+        获取该会话所有校验通过的客户端工具元信息
+
+        Returns:
+            ToolMeta 列表
+        """
+        return list(self._tools.values())
+
+    def get_component_tools(self, component: str) -> list[ToolMeta]:
+        """
+        按组件获取工具
+
+        Args:
+            component: 组件标识
+
+        Returns:
+            该组件下的 ToolMeta 列表
+        """
+        names = self._component_map.get(component, set())
+        return [self._tools[n] for n in names if n in self._tools]
+
+    def get_component_names(self) -> list[str]:
+        """
+        获取所有已注册的组件名称
+
+        Returns:
+            组件名称列表
+        """
+        return list(self._component_map.keys())
+
+    def get_mismatch_log(self) -> list[str]:
+        """
+        获取校验不通过记录
+
+        Returns:
+            日志行列表
+        """
+        return list(self._mismatch_log)
+
+    def clear(self) -> None:
+        """清空所有会话工具数据（客户端断开时调用）"""
+        self._tools.clear()
+        self._component_map.clear()
+        self._definition_map.clear()
+        self._mismatch_log.clear()
+
+    def __contains__(self, name: str) -> bool:
+        """检查工具是否在会话表中（支持 'name' in table 语法）"""
+        return name in self._tools
+
+    def __len__(self) -> int:
+        """已注册的客户端工具数量"""
+        return len(self._tools)
+
+    def __repr__(self) -> str:
+        """可读的会话工具表状态"""
+        comps = ", ".join(f"{c}:{len(v)}" for c, v in self._component_map.items())
+        return f"<SessionToolTable: {len(self._tools)} tools " f"[{comps}]>"

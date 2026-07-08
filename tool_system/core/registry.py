@@ -85,7 +85,7 @@ def register_tool(
     工具注册装饰器
 
     声明式定义工具元信息，将普通类标记为可被 LLM 调用的工具。
-    被装饰的类必须继承 BaseTool / ServerTool / ClientTool / HybridTool 之一。
+     被装饰的类必须继承 BaseTool / ServerTool / ClientTool 之一。
 
     装饰器内部自动完成:
     1. 从类的 name/description/parameters 属性合并元信息
@@ -216,7 +216,6 @@ class ToolRegistry:
         self._domain_index: dict[ExecutionDomain, set[str]] = {
             ExecutionDomain.SERVER: set(),
             ExecutionDomain.CLIENT: set(),
-            ExecutionDomain.HYBRID: set(),
         }
         """域索引: ExecutionDomain → 该域下的工具名称集合"""
 
@@ -557,7 +556,6 @@ class ToolRegistry:
         self._domain_index = {
             ExecutionDomain.SERVER: set(),
             ExecutionDomain.CLIENT: set(),
-            ExecutionDomain.HYBRID: set(),
         }
         self._tag_index.clear()
 
@@ -574,6 +572,5 @@ class ToolRegistry:
         return (
             f"<ToolRegistry: {len(self._tools)} tools "
             f"(server={len(self._domain_index[ExecutionDomain.SERVER])}, "
-            f"client={len(self._domain_index[ExecutionDomain.CLIENT])}, "
-            f"hybrid={len(self._domain_index[ExecutionDomain.HYBRID])})>"
+            f"client={len(self._domain_index[ExecutionDomain.CLIENT])})>"
         )

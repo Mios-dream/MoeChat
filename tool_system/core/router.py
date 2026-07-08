@@ -4,7 +4,7 @@
 ToolRouter 是整个工具系统的核心调度组件。
 
 根据 ToolCallRequest 中的 (domain, mode) 组合，
-将工具调用路由到对应的执行器（共 6 种策略）。
+将工具调用路由到对应的执行器（共 4 种策略）。
 
 策略路由表:
     +------------------+------------------+------------------+
@@ -12,13 +12,12 @@ ToolRouter 是整个工具系统的核心调度组件。
     +------------------+------------------+------------------+
     |    SERVER        | ServerSyncExec   | ServerAsyncExec  |
     |    CLIENT        | ClientSyncExec   | ClientAsyncExec  |
-    |    HYBRID        | HybridSyncExec   | HybridAsyncExec  |
     +------------------+------------------+------------------+
 
 主要功能:
 - 单工具调用: route() → 返回 ToolCallResult
 - 批量并行调用: route_batch() → 返回 list[ToolCallResult]
-- 执行器管理: 统一管理 6 种执行器的生命周期
+- 执行器管理: 统一管理 4 种执行器的生命周期
 """
 
 from __future__ import annotations
@@ -46,10 +45,6 @@ from tool_system.executors.client_executor import (
     ClientAsyncExecutor,
     PendingCallTable,
 )
-from tool_system.executors.hybrid_executor import (
-    HybridSyncExecutor,
-    HybridAsyncExecutor,
-)  # 意外类型，包装为错误
 import json
 
 
@@ -98,14 +93,6 @@ class ToolRouter:
             pending_table=self._pending_table,
         )
 
-        # ── 混合执行器 ──
-        self._hybrid_sync = HybridSyncExecutor(
-            pending_table=self._pending_table,
-        )
-        self._hybrid_async = HybridAsyncExecutor(
-            pending_table=self._pending_table,
-        )
-
     def set_ws_manager(self, ws_manager: Any) -> None:
         """
         设置/更新 WebSocket 连接管理器
@@ -117,8 +104,6 @@ class ToolRouter:
         """
         self._client_sync.set_ws_manager(ws_manager)
         self._client_async.set_ws_manager(ws_manager)
-        self._hybrid_sync.set_ws_manager(ws_manager)
-        self._hybrid_async.set_ws_manager(ws_manager)
 
     def set_complete_callback(self, callback: Any) -> None:
         """
@@ -131,7 +116,6 @@ class ToolRouter:
         """
         self._server_async.set_complete_callback(callback)
         self._client_async.set_complete_callback(callback)
-        self._hybrid_async.set_complete_callback(callback)
 
     def _get_executor(self, domain: ExecutionDomain, mode: ExecutionMode) -> Any:
         """
@@ -156,9 +140,6 @@ class ToolRouter:
             # ── 客户端 ──
             (ExecutionDomain.CLIENT, ExecutionMode.SYNC): self._client_sync,
             (ExecutionDomain.CLIENT, ExecutionMode.ASYNC): self._client_async,
-            # ── 混合 ──
-            (ExecutionDomain.HYBRID, ExecutionMode.SYNC): self._hybrid_sync,
-            (ExecutionDomain.HYBRID, ExecutionMode.ASYNC): self._hybrid_async,
         }
 
         executor = strategy_map.get((domain, mode))

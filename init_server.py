@@ -92,7 +92,6 @@ async def initialize_tools():
     scan_paths = [
         "plugins/server_plugins",
         "plugins/client_plugins",
-        "plugins/hybrid_plugins",
     ]
     for scan_path in scan_paths:
         try:

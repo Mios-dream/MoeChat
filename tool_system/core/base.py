@@ -5,7 +5,10 @@
 - BaseTool:     所有工具的根抽象基类
 - ServerTool:   服务端工具基类（逻辑在服务端进程内执行）
 - ClientTool:   客户端工具基类（逻辑通过 WebSocket 下发给客户端执行）
-- HybridTool:   混合工具基类（两阶段协作：客户端阶段 + 服务端阶段）
+
+ClientTool 支持两个可选扩展方法:
+- client_instruction(): 将 LLM 参数翻译为客户端操作指令（替代原 HybridTool.client_phase）
+- server_postprocess(): 对客户端返回的数据进行服务端后处理（替代原 HybridTool.server_phase）
 
 所有新工具必须继承对应基类并通过 @register_tool 装饰器声明元信息。
 """
@@ -211,8 +214,16 @@ class ClientTool(BaseTool, ABC):
     工具逻辑完全在客户端设备上执行。框架通过 WebSocket 将调用下发给客户端，
     execute() 方法不会被服务端调用。
 
-    继承 ClientTool 的工具类不需要实现 execute() 方法，
-    而是由客户端侧注册对应的处理函数。
+    可选扩展方法:
+    - client_instruction(**kwargs) → dict:
+      将 LLM 参数翻译为客户端操作指令，合并到下发的 arguments 中。
+      如 FileUploadTool 将 file_type 翻译为 {"action": "file_select", "accept": [...]}。
+      未实现时直接使用原始 arguments。
+
+    - server_postprocess(client_result, **kwargs) → str:
+      客户端返回结果后，在服务端进行后处理（如文件解析），
+      处理结果作为最终 tool 消息返回给 LLM。
+      未实现时客户端返回内容直接传给 LLM。
 
     客户端必须实现以下协议:
     1. 接收 WebSocket 消息: {"type": "tool:call", "call_id": "...", "tool_name": "...", "arguments": {...}}
@@ -220,23 +231,33 @@ class ClientTool(BaseTool, ABC):
     3. 返回 WebSocket 消息: {"type": "tool:result", "call_id": "...", "success": true, "result": "..."}
 
     使用示例:
+
+    # 纯客户端工具（无需服务端后处理）:
         @register_tool(domain=CLIENT, mode=SYNC, timeout=10.0, tags=["ui", "settings"])
         class SetWeatherLocationTool(ClientTool):
             name = "set_weather_location"
             description = "设置天气显示的城市"
-            parameters = {
-                "type": "object",
-                "properties": {
-                    "city": {"type": "string", "description": "城市名称"}
-                },
-                "required": ["city"]
-            }
+            parameters = { ... }
 
         # 客户端侧注册:
         # toolSystem.registerClientTool("set_weather_location", async (args) => {
         #     await weatherWidget.setLocation(args.city);
         #     return { success: true, result: `天气已设置为${args.city}` };
         # });
+
+    # 客户端工具 + 服务端后处理:
+        @register_tool(domain=CLIENT, mode=SYNC, timeout=120.0, tags=["file"])
+        class FileUploadTool(ClientTool):
+            name = "upload_file"
+            description = "上传文件到服务端处理"
+            parameters = { ... }
+
+            async def client_instruction(self, **kwargs) -> dict:
+                return {"action": "file_select", "accept": [".pdf"]}
+
+            async def server_postprocess(self, client_result, **kwargs) -> str:
+                content = await parse_file(client_result["file_path"])
+                return self.result_json({"summary": content[:500]})
     """
 
     async def execute(self, **kwargs: Any) -> str:
@@ -244,7 +265,7 @@ class ClientTool(BaseTool, ABC):
         客户端工具的 execute() 方法不会被实际调用
 
         ClientExecutor 会拦截并改为通过 WebSocket 下发给客户端。
-        如果此方法被直接调用，说明出现了配置错误（应该使用 ServerTool 或 HybridTool）。
+        如果此方法被直接调用，说明出现了配置错误（应该使用 ServerTool）。
 
         Raises:
             NotImplementedError: 始终抛出，提示使用方式错误
@@ -255,96 +276,41 @@ class ClientTool(BaseTool, ABC):
             "如果工具逻辑在服务端，请继承 ServerTool。"
         )
 
-
-class HybridTool(BaseTool, ABC):
-    """
-    混合工具基类
-
-    工具逻辑分两个阶段执行:
-    1. client_phase(): 生成下发给客户端的操作指令（如打开文件选择器）
-    2. server_phase():  处理客户端返回的数据（如解析上传的文件）
-
-    HybridExecutor 将两个阶段编排为一个完整流程。
-
-    使用示例:
-        @register_tool(domain=HYBRID, mode=SYNC, timeout=120.0, tags=["file"], sensitivity=SENSITIVE)
-        class FileUploadTool(HybridTool):
-            name = "upload_file"
-            description = "上传文件到服务端处理"
-            parameters = {
-                "type": "object",
-                "properties": {
-                    "file_type": {
-                        "type": "string",
-                        "enum": ["document", "image"],
-                        "description": "文件类型",
-                        "default": "document"
-                    }
-                }
-            }
-
-            async def client_phase(self, file_type: str = "document") -> dict:
-                # 生成下发给客户端的操作指令
-                return {"action": "file_select", "accept": [".pdf", ".txt"]}
-
-            async def server_phase(self, client_result: dict, file_type: str = "document") -> str:
-                # 处理客户端返回的文件
-                content = await parse_file(client_result["file_path"])
-                return self.result_json({"summary": content[:500]})
-    """
-
-    @abstractmethod
-    async def client_phase(self, **kwargs: Any) -> dict[str, Any]:
+    async def client_instruction(self, **kwargs: Any) -> dict[str, Any]:
         """
-        客户端阶段: 生成需要下发给客户端的操作指令
+        生成客户端操作指令（可选）
 
-        此方法在服务端运行，但不执行实际工具逻辑。
-        它返回一个字典，框架通过 WebSocket 发送给客户端。
-        客户端根据字典中的指令执行第一阶段操作。
+        将 LLM 传入的参数翻译为客户端能理解的指令字典，
+        ClientExecutor 在通过 WebSocket 下发调用前调用此方法，
+        返回值合并到 arguments 中发送。
+
+        未重写的默认实现返回空 dict，表示直接使用原始 arguments。
 
         Args:
             **kwargs: LLM 传入的参数
 
         Returns:
-            需要发送给客户端的结构化指令字典。
-            客户端根据此字典决定执行什么操作。
-
-        示例返回:
-            {"action": "file_select", "accept": [".pdf", ".txt"], "multiple": False}
+            客户端操作指令字典，合并到 arguments._client_instruction
         """
-        ...
+        return {}
 
-    @abstractmethod
-    async def server_phase(self, client_result: dict[str, Any], **kwargs: Any) -> str:
+    async def server_postprocess(
+        self,
+        client_result: dict[str, Any],
+        **kwargs: Any,
+    ) -> str:
         """
-        服务端阶段: 处理客户端返回的数据
+        服务端后处理客户端返回的数据（可选）
 
-        客户端完成第一阶段操作后，将结果回传给服务端。
-        此方法处理客户端数据，完成最终的业务逻辑。
+        客户端返回结果后，ClientExecutor 检查此方法是否存在。
+        如果存在，调用此方法处理客户端数据，处理结果作为最终 tool 消息返回 LLM。
+        如果不存在（默认），客户端返回内容直接传给 LLM。
 
         Args:
-            client_result: 客户端返回的结构化结果数据
+            client_result: 客户端返回的结构化数据
             **kwargs: LLM 传入的原始参数
 
         Returns:
             JSON 格式字符串，作为 tool 角色消息返回给 LLM
         """
-        ...
-
-    async def execute(self, **kwargs: Any) -> str:
-        """
-        混合工具的 execute() 方法由 HybridExecutor 编排调用
-
-        此方法提供了一个完整的双阶段执行示例，
-        但实际使用中 HybridExecutor 会分别调用 client_phase 和 server_phase。
-        如果需要自定义编排逻辑，可重写此方法。
-
-        Args:
-            **kwargs: LLM 传入的参数
-
-        Returns:
-            JSON 格式字符串
-        """
-        # 默认实现：不做任何事，实际由 HybridExecutor 编排
-        # 子类可重写此方法以实现自定义编排逻辑
-        return self.result_json({"status": "executed"})
+        return json.dumps(client_result, ensure_ascii=False, default=str)
