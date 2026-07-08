@@ -25,7 +25,9 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 
 from core.chat.v3_motion import V3ChatService
+from core.interaction_core import generate_interaction_message
 from models.dto.request.chat_request import ChatData
+from models.dto.request.interaction_request import InteractionMessageRequest
 from models.dto.response.ChatResponse import ErrorResponse
 from my_utils.log import logger
 from api.ws.chat_protocol import ChatWSMessageType
@@ -166,6 +168,9 @@ class ChatWebSocketHandler:
         elif msg_type == ChatWSMessageType.TOOL_CONFIRM.value:
             await self._handle_tool_confirm(data)
 
+        elif msg_type == ChatWSMessageType.INTERACTION_SEND.value:
+            await self._handle_interaction_send(data)
+
         else:
             logger.warning(
                 f"[ChatWS] 未知消息类型: {msg_type}, session={self._session_id}"
@@ -268,6 +273,67 @@ class ChatWebSocketHandler:
                 id: 要取消的消息 ID（可选，不传则取消所有）
         """
         pass
+
+    # ── 交互事件处理 ──
+
+    async def _handle_interaction_send(self, data: dict[str, Any]) -> None:
+        """
+        处理 interaction:send 消息
+
+        创建后台任务，执行交互消息生成管道。
+        响应经 WS JSON 发送，格式与 chat:send 完全一致
+        （chat:text / chat:audio / chat:motion / chat:done）。
+
+        Args:
+            data: 客户端发来的交互事件请求
+                event_type: 事件类型（如 sleep.talk）
+                scene: 场景描述
+                context: 上下文信息
+                generation_motion: 是否生成动作
+                include_history: 是否包含历史
+                history_limit: 历史条数上限
+        """
+        try:
+            params = InteractionMessageRequest(**data)
+        except Exception as e:
+            await self._websocket.send_json(
+                ErrorResponse(
+                    error_code="INVALID_REQUEST",
+                    data=f"交互请求参数无效: {e}",
+                ).model_dump()
+            )
+            return
+
+        asyncio.create_task(
+            self._run_interaction_generation(params=params),
+            name=f"interaction_gen_{self._session_id}",
+        )
+
+    async def _run_interaction_generation(
+        self, params: InteractionMessageRequest
+    ) -> None:
+        """
+        执行交互消息生成（在后台 Task 中运行）
+
+        调用 generate_interaction_message_ws() 获取 FullChatResponse 流，
+        逐条序列化为 JSON 发送至 WebSocket。
+
+        Args:
+            params: 交互请求参数
+        """
+        try:
+            async for response in generate_interaction_message(params):
+                await self._websocket.send_json(response.model_dump())
+
+        except asyncio.CancelledError:
+            logger.info(f"[ChatWS] 交互生成已取消: session={self._session_id}")
+
+        except Exception as e:
+            logger.error(f"[ChatWS] 交互生成失败: {e}")
+            logger.error(traceback.format_exc())
+            await self._websocket.send_json(
+                ErrorResponse(error_code="INTERACTION_ERROR", data=str(e)).model_dump()
+            )
 
     # ── 工具调用处理 ──
 

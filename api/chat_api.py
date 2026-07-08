@@ -21,7 +21,7 @@ from models.dto.request.chat_request import ChatData
 from my_utils import config_manager as CConfig
 
 # 导入基础组件
-from core.chat.base import assistant_service, to_sse
+from core.chat.base import assistant_service, to_sse_stream
 
 # 导入各版本的聊天服务
 from core.chat import (
@@ -29,8 +29,7 @@ from core.chat import (
     V2ChatService,  # V2 版本
     V3ChatService,  # V3 版本
 )
-from models.dto.response.ChatResponse import FullChatResponse
-from collections.abc import AsyncGenerator
+
 from tool_system.integration import ToolCallIntegration
 
 chat_api = APIRouter()
@@ -43,22 +42,6 @@ v3_service = V3ChatService()
 v3_service.set_integration(
     ToolCallIntegration()
 )  # HTTP API 仅支持服务端工具，无 WS 连接
-
-
-async def to_sse_stream(
-    generator: AsyncGenerator[FullChatResponse, None],
-) -> AsyncGenerator[str, None]:
-    """
-    将模型对象异步生成器统一转换为 SSE 格式流
-
-    参数：
-    - generator: 产出 FullChatResponse 模型对象的异步生成器
-
-    返回：
-    - 产出 SSE 格式字符串的异步生成器
-    """
-    async for payload in generator:
-        yield to_sse(payload)
 
 
 def _get_motion_version() -> str:

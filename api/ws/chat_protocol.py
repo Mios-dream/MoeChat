@@ -60,6 +60,21 @@ class ChatWSMessageType(str, Enum):
     CHAT_CANCEL = "chat:cancel"
     """取消当前生成: {type, id(要取消的消息ID)}"""
 
+    # ── 自动聊天/交互事件 ──
+    INTERACTION_SEND = "interaction:send"
+    """
+    发送交互事件消息: {
+        type, id,
+        event_type: str,              事件类型（如 sleep.talk）
+        scene: str,                   场景描述
+        context: InteractionContext,  上下文信息
+        generation_motion: bool,      是否生成 Live2D 动作
+        include_history: bool,        是否包含历史
+        history_limit: int,           历史消息条数上限
+    }
+    回复格式与 chat:send 完全一致（chat:text / chat:audio / chat:motion / chat:done）
+    """
+
     # ── 工具系统 ──
     TOOL_RESULT = "tool:result"
     """

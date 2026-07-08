@@ -12,14 +12,11 @@
 - 所有事件格式统一，便于前端处理
 """
 
-import json
 import os
 import time
 import asyncio
 import base64
 import re
-from typing import Any
-
 from Config import Config
 from models.dto.response.ChatResponse import AudioResponse, ChatResponse, TextResponse
 from services.tts_service import ttsService
@@ -27,6 +24,8 @@ from my_utils import config_manager as CConfig
 from my_utils.log import logger
 from services.assistant_service import AssistantService
 from pydantic import BaseModel
+from models.dto.response.ChatResponse import FullChatResponse
+from collections.abc import AsyncGenerator
 
 assistant_service = AssistantService()
 
@@ -255,14 +254,17 @@ def drain_ready_sentence_events(
     return expected_sentence_id, ready_payloads
 
 
-def to_sse(payload: BaseModel) -> str:
+async def to_sse_stream(
+    generator: AsyncGenerator[FullChatResponse, None],
+) -> AsyncGenerator[str, None]:
     """
-    将 Pydantic 模型转换为 SSE 格式
+    将模型对象异步生成器统一转换为 SSE 格式流
 
     参数：
-    - payload: Pydantic 模型
+    - generator: 产出 FullChatResponse 模型对象的异步生成器
 
     返回：
-    - SSE 格式字符串
+    - 产出 SSE 格式字符串的异步生成器
     """
-    return f"data: {payload.model_dump_json(ensure_ascii=False)}\n\n"
+    async for payload in generator:
+        yield "data: " + payload.model_dump_json(ensure_ascii=False)

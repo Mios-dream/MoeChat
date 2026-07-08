@@ -41,7 +41,6 @@ from core.chat.base import (
     # 事件聚合
     store_sentence_event,
     drain_ready_sentence_events,
-    to_sse,
 )
 
 from core.chat.v1 import BaseChatContext, V1ChatService
@@ -56,7 +55,6 @@ __all__ = [
     "tts_wrapper",
     "store_sentence_event",
     "drain_ready_sentence_events",
-    "to_sse",
     # 上下文
     "BaseChatContext",
     # V1 版本

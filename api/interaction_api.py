@@ -2,6 +2,8 @@ from fastapi import APIRouter
 
 from fastapi.responses import StreamingResponse
 
+# 导入基础组件
+from core.chat.base import to_sse_stream
 from models.dto.request.interaction_request import InteractionMessageRequest
 from core.interaction_core import generate_interaction_message
 
@@ -15,6 +17,6 @@ async def interaction_message(params: InteractionMessageRequest):
     响应格式：SSE 流 (text/event-stream)，与 /api/chat 完全一致。
     """
     return StreamingResponse(
-        generate_interaction_message(params),
+        to_sse_stream(generate_interaction_message(params)),
         media_type="text/event-stream",
     )

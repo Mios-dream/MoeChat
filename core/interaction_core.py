@@ -1,18 +1,26 @@
 from datetime import datetime
 import time
+from collections.abc import AsyncGenerator
+from typing import Any, Generator
+
 from core.scheduler.builtin_tasks import (
     create_motion_task,
     create_text_task,
     create_bilingual_task,
 )
 from models.dto.request.interaction_request import InteractionMessageRequest
+from models.dto.response.ChatResponse import (
+    DoneResponse,
+    ErrorResponse,
+    FullChatResponse,
+)
 from my_utils import prompt as prompt_templates
 from my_utils.log import logger
 from services.assistant_service import AssistantService
-from core.chat.base import to_sse
 from core.chat.v1 import BaseChatContext
 from core.chat.v3_motion import V3MotionChatContext
 from core.scheduler import TaskScheduler
+from openai.types.chat import ChatCompletionMessageParam
 
 assistant_service = AssistantService()
 
@@ -50,7 +58,7 @@ def _build_interaction_system_prompt(params: InteractionMessageRequest) -> str:
 
 def _build_interaction_message_list(
     params: InteractionMessageRequest,
-) -> list[dict[str, str]]:
+) -> list[ChatCompletionMessageParam]:
     """构建交互事件的 LLM 消息列表。
 
     1. 包含历史消息
@@ -60,7 +68,7 @@ def _build_interaction_message_list(
     agent = assistant_service.get_current_assistant()
     if not agent:
         raise RuntimeError("当前没有加载助手")
-    msg_list: list[dict[str, str]] = []
+    msg_list: list[ChatCompletionMessageParam] = []
     # 添加对话历史
     if params.include_history:
         try:
@@ -129,99 +137,79 @@ def _create_interaction_scheduler(
 
 async def generate_interaction_message(
     params: InteractionMessageRequest,
-):
+) -> AsyncGenerator[FullChatResponse]:
     """
-    执行交互事件管道（统一实现）
+    WebSocket 版交互消息生成管道
+
+    与 generate_interaction_message 逻辑一致，但直接产出 FullChatResponse
+    Pydantic 模型（TextResponse / AudioResponse / MotionResponse / DoneResponse），
+    供 ChatWebSocketHandler 直接序列化为 WebSocket JSON 发送。
+
+    响应格式与 V3ChatService.chat() 完全一致，客户端可按相同方式消费。
 
     参数：
     - params: 交互请求参数
-    - with_motion: 是否包含动作帧
 
     产出：
-    - SSE 格式的事件流
+    - FullChatResponse 模型的异步生成器
     """
     agent = assistant_service.get_current_assistant()
     if not agent:
-        logger.error("[交互] 当前没有加载助手")
+        logger.error("[交互WS] 当前没有加载助手")
+        yield ErrorResponse(error_code="NO_ASSISTANT", data="当前没有加载助手")
         return
 
     try:
         msg_list_for_llm = _build_interaction_message_list(params)
     except Exception as e:
-        logger.error(f"[交互] 构建消息列表失败: {e}")
-        yield to_sse(
-            {
-                "type": "error",
-                "timestamp_ms": time.time() * 1000,
-                "data": str(e),
-                "done": True,
-            }
+        logger.error(f"[交互WS] 构建消息列表失败: {e}")
+        yield ErrorResponse(
+            error_code="INTERACTION_BUILD_ERROR",
+            data=f"构建消息列表失败: {e}",
         )
         return
 
-    # 获取 GSV 合成语言配置
     tts_lang = agent.agent_config.gsvSetting.textLang
 
-    # 创建调度器（根据是否需要动作和语言配置）
     scheduler = _create_interaction_scheduler(
         with_motion=params.generation_motion,
         tts_lang=tts_lang,
     )
-    # 创建管道
-    # 注意：系统提示词通过 system_context 传入，历史消息和用户消息通过 history_messages 传入
+
     pipeline = scheduler.create_task_pipeline(
+        user_message="",
         system_context=_build_interaction_system_prompt(params),
         history_messages=msg_list_for_llm,
     )
 
-    # 初始化上下文（根据是否需要动作选择不同的 Context）
     if params.generation_motion:
         chat_context = V3MotionChatContext(tts_lang=tts_lang)
     else:
         chat_context = BaseChatContext(event_order=("text", "audio"))
 
     try:
-        # 流式执行管道
         async for result in pipeline.execute():
-            # 处理结果
             await chat_context.handle_result(result)
 
-            # 输出就绪的句子事件
             for payload in chat_context.drain_ready_events():
-                yield to_sse(payload)
+                yield payload
 
-        # 等待所有异步任务完成（语音合成）
         await chat_context.wait_for_completion()
 
-        # 输出剩余事件
         for payload in chat_context.drain_ready_events():
-            yield to_sse(payload)
+            yield payload
 
-        # 输出完成信号
         full_text = chat_context.get_full_text()
-        yield to_sse(
-            {
-                "type": "done",
-                "timestamp_ms": time.time() * 1000,
-                "full_text": full_text,
-                "done": True,
-            }
-        )
+        yield DoneResponse(full_text=full_text)
 
-        # 保存到助手上下文
         await agent.add_interaction_msg(full_text)
 
     except Exception as e:
-        # 取消所有待处理的任务
         for task in list(chat_context.pending_tasks):
             task.cancel()
 
-        logger.error(f"[交互] 处理数据时出错: {e}", exc_info=True)
-        yield to_sse(
-            {
-                "type": "error",
-                "timestamp_ms": time.time() * 1000,
-                "data": str(e),
-                "done": True,
-            }
+        logger.error(f"[交互WS] 处理数据时出错: {e}", exc_info=True)
+        yield ErrorResponse(
+            error_code="INTERACTION_ERROR",
+            data=f"处理数据时出错: {e}",
         )
