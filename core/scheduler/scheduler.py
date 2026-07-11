@@ -155,7 +155,7 @@ class TaskScheduler:
         fragments.append("""【工具调用规则 - 最高优先级】
 如果你判断当前对话需要调用外部工具（如搜索、查询、截图、OCR等）：
 1. 可以先用一行 JSON 输出一句简短提示文本，
-   如 {"text": "让我帮你搜索一下...", "actions": []}
+   如 {"text": "让我帮你搜索一下..."}
 2. 然后使用函数调用（function calling）机制实际调用工具
 3. 工具结果返回后，继续以 JSON 格式逐句输出包含结果的完整回复
 4. 绝对不要在 JSON 文本中表演或模拟工具执行过程，应实际调用工具后根据真实结果回复
@@ -196,9 +196,13 @@ class TaskScheduler:
             return []
 
         # 根据注册的任务构建完整 JSON 模板的默认值
+        # 数组类型字段（如 actions）用 []，字符串类型字段用 ""
         field_defaults: dict[str, object] = {}
         for task in self._tasks.values():
-            field_defaults[task.field_name] = ""
+            if task.field_name == "actions":
+                field_defaults[task.field_name] = []
+            else:
+                field_defaults[task.field_name] = ""
 
         formatted = []
         for msg in history_messages:

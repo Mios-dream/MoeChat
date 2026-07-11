@@ -19,6 +19,8 @@ from my_utils.log import logger
 from services.assistant_service import AssistantService
 from core.chat.v1 import BaseChatContext
 from core.chat.v3_motion import V3MotionChatContext
+from core.expression_generator.motion_engine_v3 import ACTION_DESCRIPTIONS
+from core.expression_generator.utils.expression_loader import load_expressions
 from core.scheduler import TaskScheduler
 from openai.types.chat import ChatCompletionMessageParam
 
@@ -56,30 +58,44 @@ def _build_interaction_system_prompt(params: InteractionMessageRequest) -> str:
     return system_prompt
 
 
+def _compress_history(history: list[ChatCompletionMessageParam]) -> str:
+    """将历史对话压缩为纯文本段落，避免独立消息作为 few-shot 示例。"""
+    lines: list[str] = []
+    for msg in history:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        label = "用户" if role == "user" else "你"
+        lines.append(f"{label}: {content.strip()}")
+    return "\n".join(lines)
+
+
 def _build_interaction_message_list(
     params: InteractionMessageRequest,
 ) -> list[ChatCompletionMessageParam]:
     """构建交互事件的 LLM 消息列表。
 
-    1. 包含历史消息
-    2. 随机注入风格提示以增加回复多样性
-    3. 睡眠模式下追加疲倦语调提示
+    1. 将历史对话压缩为单条 system 消息注入，避免独立 user/assistant 轮次
+       作为 few-shot 示例影响动作生成
+    2. 追加事件描述作为当前 user 消息
     """
     agent = assistant_service.get_current_assistant()
     if not agent:
         raise RuntimeError("当前没有加载助手")
     msg_list: list[ChatCompletionMessageParam] = []
-    # 添加对话历史
+    # 添加对话历史（压缩为纯文本，避免 few-shot 干扰）
     if params.include_history:
         try:
-            recent_turns = agent.memoryEngine.get_recent_chat_turns(
+            raw_history = agent.memoryEngine.get_recent_chat_turns(
                 params.history_limit
             )
-            for turn in recent_turns:
+            compressed = _compress_history(raw_history)
+            if compressed:
                 msg_list.append(
                     {
-                        "role": turn["role"],
-                        "content": turn["content"],
+                        "role": "system",
+                        "content": f"最近对话记录：\n{compressed}",
                     }
                 )
         except Exception as e:
@@ -108,6 +124,7 @@ def _build_interaction_message_list(
 def _create_interaction_scheduler(
     with_motion: bool = False,
     tts_lang: str = "zh",
+    available_actions: str | None = None,
 ) -> TaskScheduler:
     """
     创建交互事件调度器
@@ -115,6 +132,7 @@ def _create_interaction_scheduler(
     参数：
     - with_motion: 是否包含动作任务
     - tts_lang: GSV 合成目标语言代码（"zh"/"en"/"ja"），非中文时注册双语翻译任务
+    - available_actions: 可用动作和表情列表描述，传入 create_motion_task
 
     返回：
     - 配置好的 TaskScheduler 实例
@@ -130,7 +148,9 @@ def _create_interaction_scheduler(
 
     # 根据需要注册动作任务
     if with_motion:
-        scheduler.add_task(create_motion_task(priority=200))
+        scheduler.add_task(
+            create_motion_task(available_actions=available_actions, priority=200)
+        )
 
     return scheduler
 
@@ -171,9 +191,21 @@ async def generate_interaction_message(
 
     tts_lang = agent.agent_config.gsvSetting.textLang
 
+    # 构建可用动作和表情列表，传入动作任务
+    action_prompt = None
+    if params.generation_motion:
+        expressions = load_expressions(agent.agent_name)
+        action_prompt = (
+            f"可用动作标签：\n"
+            f"{', '.join([f'{action}: {desc}' for action, desc in ACTION_DESCRIPTIONS.items()])}\n"
+            f"可用表情：\n"
+            f"{[expr.name for expr in expressions]}"
+        )
+
     scheduler = _create_interaction_scheduler(
         with_motion=params.generation_motion,
         tts_lang=tts_lang,
+        available_actions=action_prompt,
     )
 
     pipeline = scheduler.create_task_pipeline(

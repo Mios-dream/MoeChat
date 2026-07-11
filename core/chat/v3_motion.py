@@ -88,26 +88,24 @@ from openai.types.chat import ChatCompletionMessageParam
 async def _create_motion_event(
     sentence_id: int,
     text: str,
-    actions: list[str],
+    motions: list[dict],
+    expression: str | None,
     engine: MotionEngineService,
-    expressions: list[ExpressionInfo] | None = None,
 ) -> MotionResponse:
     """
     创建动作事件
 
-    使用 V3 动作引擎：语义检索预录制动作 → 特殊动作覆盖 → 表情覆盖 → 混合 → 输出逐帧曲线。
-
-    hold/exit 阶段由前端根据音频实际播放时长自行处理。
+    使用 V3 动作引擎：语义检索 → anchor 定位 → 跨句子释放 → 覆盖混合 → 输出逐帧曲线。
 
     参数：
     - sentence_id: 句子 ID
-    - text: 原始文本（同时用于语义检索和时长估算）
-    - actions: LLM 输出的特殊动作标签列表（如 ["smile", "wink_left"]），
-                可同时包含动作名和表情名
-    - expressions: 可用表情列表（ExpressionInfo 列表），用于解析表情名称
+    - text: 原始文本（用于语义检索和 anchor 定位）
+    - motions: LLM 输出的动作列表 [{"name": str, "anchor": str, "intensity": float}, ...]
+    - expression: 整句表情名（用于面部渲染），None 表示沿用上一句
+    - engine: MotionEngineService 实例
 
     返回：
-    - 动作事件字典，含逐帧曲线 (curves) + exit_ms
+    - MotionResponse，含逐帧曲线 (curves) + expression
     """
 
     # 估算文本时长
@@ -119,13 +117,12 @@ async def _create_motion_event(
     # 在线程池中执行动作处理（SentenceTransformer 编码是 CPU 密集型操作）
     motion_data = await loop.run_in_executor(
         None,
-        lambda: engine.process(text, actions, text_duration, expressions),
+        lambda: engine.process(text, motions, expression, text_duration),
     )
 
     duration_ms = int((motion_data.duration if motion_data else text_duration) * 1000)
 
     if motion_data is None:
-        # 无匹配结果，返回空动作事件
         return MotionResponse(
             sentence_id=sentence_id,
             source_text=text,
@@ -133,16 +130,18 @@ async def _create_motion_event(
             duration=0,
         )
 
+    motion_dict: dict = {
+        "duration": duration_ms,
+        "curves": motion_data.curves,
+        "fps": motion_data.fps,
+    }
+    if motion_data.expression:
+        motion_dict["expression"] = motion_data.expression
+
     return MotionResponse(
         sentence_id=sentence_id,
         source_text=text,
-        motions=[
-            {
-                "duration": duration_ms,
-                "curves": motion_data.curves,
-                "fps": motion_data.fps,
-            }
-        ],
+        motions=[motion_dict],
         duration=duration_ms,
     )
 
@@ -162,13 +161,16 @@ class V3MotionChatContext(BaseChatContext):
       - tool_result → handle_tool_result_result（工具结果事件）
     """
 
-    def __init__(self, tts_lang: str = "zh"):
+    def __init__(
+        self, tts_lang: str = "zh", expressions: list[ExpressionInfo] | None = None
+    ):
         """
         初始化 V3Motion 聊天上下文
 
         参数：
         - tts_lang: GSV 合成目标语言代码（"zh"/"en"/"ja"）
                      当不为 "zh" 时，启用双语翻译模式
+        - expressions: 可用表情列表，用于解析表情名称并传递给动作引擎
         """
         super().__init__(
             event_order=("text", "audio", "motion_frame"),
@@ -176,7 +178,8 @@ class V3MotionChatContext(BaseChatContext):
         )
         self.tts_lang: str = tts_lang
         self.text_cache: dict[int, str] = {}
-        self.motion_cache: dict[int, list[str]] = {}
+        self.motion_cache: dict[int, list[dict]] = {}
+        self.expressions: list[ExpressionInfo] = expressions or []
 
         # 全局严格排序输出机制
         # 全局输出序号。每调用一次 +=1
@@ -238,17 +241,25 @@ class V3MotionChatContext(BaseChatContext):
         - result: 动作任务结果
         """
         sentence_id = result.sentence_id
-        actions = result.data
+        motion_data: dict = result.data
+
+        motions: list[dict] = motion_data.get("motions", [])
+        expression: str | None = motion_data.get("expression")
+
+        print(
+            f"[V3] 动作结果: sentence_id={sentence_id}, motions={motions}, expression={expression}"
+        )
 
         # 缓存动作
-        self.motion_cache[sentence_id] = actions
+        self.motion_cache[sentence_id] = motions
 
         # 如果已有对应的文本，立即创建动作事件
         if sentence_id in self.text_cache:
             motion_event = await _create_motion_event(
                 sentence_id=sentence_id,
                 text=self.text_cache[sentence_id],
-                actions=actions,
+                motions=motions,
+                expression=expression,
                 engine=self.motion_engine,
             )
             store_sentence_event(
@@ -402,10 +413,10 @@ class V3ChatService:
         expressions = load_expressions(current_assistant.agent_name)
 
         action_prompt = f"""
-    可用动作标签：
-    {', '.join([f"{action}: {desc}" for action, desc in ACTION_DESCRIPTIONS.items()])}
-    可用表情：
+    可用表情（优先使用）：
     {[expr.name for expr in expressions]}
+    可用动作标签（表情中无匹配时再考虑使用）：
+    {', '.join([f"{action}: {desc}" for action, desc in ACTION_DESCRIPTIONS.items()])}
     """
 
         scheduler.add_task(
@@ -508,6 +519,31 @@ class V3ChatService:
             if not feed_task.done():
                 feed_task.cancel()
 
+    @staticmethod
+    def _compress_history(history: list[ChatCompletionMessageParam]) -> str:
+        """
+        将历史对话压缩为纯文本段落
+
+        把多条 user/assistant 轮次拼接为"用户: ...\n你: ..."格式的连续文本，
+        作为一条 system 消息传入，避免每条历史分别被 normalize 为 JSON
+        而产生大量空动作 few-shot 示例。
+
+        参数：
+        - history: 原始历史消息列表
+
+        返回：
+        - 压缩后的纯文本段落（空列表返回空字符串）
+        """
+        lines: list[str] = []
+        for msg in history:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            label = "用户" if role == "user" else "你"
+            lines.append(f"{label}: {content.strip()}")
+        return "\n".join(lines)
+
     async def chat(self, params: ChatData) -> AsyncGenerator[FullChatResponse]:
         """
         V3 版本聊天流式输出
@@ -529,6 +565,13 @@ class V3ChatService:
             return
 
         user_message = params.msg[-1]["content"]
+
+        # 压缩历史对话：将原始 user/assistant 配对拼接为一条 system 消息，
+        # 避免 20-40 条独立历史消息全部被 normalize 为 {"actions": []}，
+        # 从而消除 LLM 看到大量空动作 few-shot 示例的问题。
+        raw_history = agent.get_history()
+        compressed_history = self._compress_history(raw_history)
+
         history_messages: list[ChatCompletionMessageParam] = [
             {
                 "role": "system",
@@ -536,9 +579,14 @@ class V3ChatService:
                     msg=user_message, is_sleep_mode=params.is_sleep_mode
                 ),
             },
-            *agent.get_history(),
         ]
-        # history_messages = []
+        if compressed_history:
+            history_messages.append(
+                {
+                    "role": "system",
+                    "content": f"最近对话记录：\n{compressed_history}",
+                }
+            )
 
         scheduler = self.create_scheduler()
         pipeline = scheduler.create_task_pipeline(
@@ -551,7 +599,12 @@ class V3ChatService:
             ),
         )
 
-        ctx = V3MotionChatContext(tts_lang=agent.agent_config.gsvSetting.textLang)
+        expressions = load_expressions(agent.agent_name)
+
+        ctx = V3MotionChatContext(
+            tts_lang=agent.agent_config.gsvSetting.textLang,
+            expressions=expressions,
+        )
 
         try:
             # 异步迭代管道结果，产出有序事件

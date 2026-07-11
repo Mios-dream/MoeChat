@@ -73,9 +73,9 @@ def create_motion_task(
     """
     创建动作标签任务
 
-    提示词：指导 LLM 为每个句子生成动作标签
-    字段名：actions
-    解析逻辑：提取 JSON 中的 actions 字段
+    提示词：指导 LLM 为每个句子生成动作和表情
+    字段名：actions（对象格式）
+    解析逻辑：提取 actions.motions + actions.expression
 
     参数：
     - callback: 完成回调（可选）
@@ -83,27 +83,38 @@ def create_motion_task(
 
     返回：
     - Task 实例
-
-    示例：
-    ```python
-    task = create_motion_task()
-    # task.prompt = "为每个句子生成动作标签"
-    # task.field_name = "actions"
-    # task.parse({"actions": ["smile", "nod"]}) -> ["smile", "nod"]
-    ```
     """
     return Task(
         name="motion_generation",
         type="motion",
-        prompt=f"助手应做出的动作或表情（从下方【可用动作列表】中选择）。【可用动作列表】\n{available_actions}",
-        parse_fn=lambda data: data.get("actions", []),
+        prompt=(
+            f"动作和表情。从下方【可用动作列表】中选择。\n"
+            f"{available_actions}\n"
+            f"应该优先考虑使用表情而不是使用动作\n"
+            f"输出格式：actions 是对象，包含 motions 数组和 expression 字段。\n"
+            f"- motions 中的每个动作需指定 name 和 anchor（文本中的连续子串，标记该动作发生的位置）。\n"
+            f"  短促动作（wink_left/wink_right/close_eyes/surprise）在 anchor 位置触发一次。\n"
+            f"  持续动作（blush/pout）从 anchor 位置开始持续至句尾自然消退。\n"
+            f"  anchor 必须是 text 中的连续子串，不可拼接或改写。\n"
+            f"  intensity 可选 [0.0~1.0]，控制动作强度（默认 1.0）。\n"
+            f"- expression 是整句情感基调，用于面部渲染。不变化时可设为 null 或省略。"
+        ),
+        parse_fn=lambda data: {
+            "motions": data.get("actions", {}).get("motions", []),
+            "expression": data.get("actions", {}).get("expression"),
+        },
         field_name="actions",
         priority=priority,
-        example='{"text": "你好呀~", "actions": ["blush"]}',
+        example=(
+            '{"text": "你怎么来了呀，我好开心", '
+            '"actions": {"motions": [{"name": "blush", "anchor": "我好开心"}], '
+            '"expression": "happy"}}'
+        ),
         rules=[
-            "动作标签和表情必须从【可用动作列表】中选择，不要自创动作名",
-            "每句话建议 0-2 个动作，仅在必要时使用非必需",
-            "动作标签和表情都应放在 actions 数组中",
+            "动作和表情必须从【可用动作列表】中选择，不要自创名称",
+            "motions 的 anchor 必须是 text 中的连续子串，不可拼接或改写",
+            "每句话 motions 数量建议 0-2 个",
+            "expression 对应的是表情文件名，所以必须从可用表情列表中选择，不允许自创名称",
         ],
     )
 

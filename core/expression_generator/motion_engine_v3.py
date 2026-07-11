@@ -21,30 +21,32 @@ Live2D 动作引擎 V3 — 服务端适配器
     engine = get_motion_engine()
     motion_data = engine.process(
         text="你好呀~",
-        actions=["smile", "wink_left"],
+        motions=[{"name": "blush", "anchor": "你好呀"}],
+        expression="happy",
         max_duration=3.0,
     )
     # motion_data.curves: {"ParamAngleX": [-2.0, -1.9, ...], ...}
+    # motion_data.expression: ["happy"]
 """
 
 import sqlite3
 from dataclasses import dataclass
-from core.expression_generator.utils.expression_loader import ExpressionInfo
 from my_utils import embedding
 from my_utils.log import logger as Log
 import numpy as np
 
-# 特殊动作定义: {param_id: [(time_offset_seconds, target_value), ...]}
+# 特殊动作定义: {param_id: [(relative_time, target_value), ...]}
+# relative_time 范围 [0.0, 1.0]，相对于动作段时长
 SIMPLE_ACTIONS: dict[str, dict[str, list[tuple[float, float]]]] = {
     "close_eyes": {
-        "ParamEyeLOpen": [(1, 0.0)],
-        "ParamEyeROpen": [(1, 0.0)],
+        "ParamEyeLOpen": [(0.0, 0.0)],
+        "ParamEyeROpen": [(0.0, 0.0)],
     },
     "wink_left": {
-        "ParamEyeLOpen": [(1, 0.0), (1.3, 1.0)],
+        "ParamEyeLOpen": [(0.0, 0.0), (1.0, 1.0)],
     },
     "wink_right": {
-        "ParamEyeROpen": [(1, 0.0), (1.3, 1.0)],
+        "ParamEyeROpen": [(0.0, 0.0), (1.0, 1.0)],
     },
     "blush": {
         "ParamCheek": [(0.0, 0.8)],
@@ -61,6 +63,18 @@ SIMPLE_ACTIONS: dict[str, dict[str, list[tuple[float, float]]]] = {
         "ParamMouthForm": [(0.0, -0.4)],
         "ParamMouthOpenY": [(0.0, 0.2)],
     },
+}
+
+# 动作元数据
+# type: sustained（持续整段）/ punctual（短促单次）
+# natural_duration: 动作自然时长（秒），仅 punctual 类型需要
+ACTION_METADATA: dict[str, dict] = {
+    "close_eyes": {"type": "punctual", "natural_duration": 0.4},
+    "wink_left": {"type": "punctual", "natural_duration": 0.15},
+    "wink_right": {"type": "punctual", "natural_duration": 0.15},
+    "blush": {"type": "sustained"},
+    "surprise": {"type": "punctual", "natural_duration": 0.6},
+    "pout": {"type": "sustained"},
 }
 
 ACTION_DESCRIPTIONS = {
@@ -395,42 +409,82 @@ class SemanticMatcher:
 
 
 # ============================================================================
-# ActionOverlay — 特殊动作覆盖
+# 缓动函数
+# ============================================================================
+
+
+def _smoothstep(t: float) -> float:
+    """
+    三次 smoothstep 缓动函数
+
+    比线性插值更自然的加速/减速曲线。
+
+    Args:
+        t: 输入 [0.0, 1.0]
+
+    Returns:
+        float: 缓动后的值 [0.0, 1.0]
+    """
+    t = max(0.0, min(1.0, t))
+    return t * t * (3.0 - 2.0 * t)
+
+
+# ============================================================================
+# ActionOverlay — 动作覆盖引擎
 # ============================================================================
 
 
 class ActionOverlay:
     """
-    特殊动作 → 参数帧数组生成器
+    特殊动作 → 在基底动作曲线上做插值覆盖
 
-    根据 SIMPLE_ACTIONS 定义，将多个特殊动作（如 smile、wink）
-    转换为 A 组表情参数的帧级值数组。
+    核心设计：
+    1. 使用 anchor（文本子串）定位动作位置，而非均匀分摊
+    2. 支持 intensity 缩放参数值，强度可控
+    3. 使用 smoothstep 过渡替代线性 ease，消除边界跳跃
+    4. 短促动作（punctual）单实例播放，不重复
+    5. 持续动作（sustained）从 anchor 位置持续至句尾
     """
 
+    EASE_DURATION: float = 0.12  # 过渡时长（秒）
+
     @staticmethod
-    def _generate_param_curve(
+    def _resolve_position(text: str, anchor: str) -> float:
+        """
+        将 anchor 文本子串解析为句中相对位置 [0.0, 1.0]
+
+        Args:
+            text: 完整句子文本
+            anchor: 标记动作位置的文本子串
+
+        Returns:
+            float: 相对位置 [0.0, 1.0]，找不到 anchor 返回 0.0
+        """
+        idx = text.find(anchor)
+        if idx < 0 or not text:
+            return 0.0
+        return idx / len(text)
+
+    @staticmethod
+    def _generate_segment(
         keyframes: list[tuple[float, float]],
-        duration: float,
+        seg_duration: float,
         fps: float = 60.0,
         default_value: float = 0.0,
     ) -> list[float]:
         """
-        从关键帧生成帧级值数组
-
-        keyframes 是相对于动作起始时间的偏移序列。
-        在第一个关键帧之前使用 default_value（避免外推到负值）。
-        最后一个关键帧的值在整个剩余时长保持。
+        从关键帧生成动作段的帧值数组
 
         Args:
-            keyframes: [(时间偏移, 值), ...]
-            duration: 动作总时长
+            keyframes: [(相对时间 0.0~1.0, 值), ...]
+            seg_duration: 动作段时长（秒）
             fps: 帧率
-            default_value: 第一个关键帧之前的默认值
+            default_value: 段起始前的默认值
 
         Returns:
-            list[float]: 每帧参数值
+            list[float]: 动作段每帧参数值
         """
-        num_frames = int(duration * fps) + 1
+        num_frames = int(seg_duration * fps) + 1
         dt = 1.0 / fps
         values: list[float] = []
 
@@ -440,9 +494,8 @@ class ActionOverlay:
         kf_idx = 0
 
         for f in range(num_frames):
-            t = float(f) * dt
+            t = float(f) * dt / seg_duration if seg_duration > 0 else 1.0
 
-            # 在第一个关键帧之前，使用默认值避免外推到异常范围
             if t < keyframes[0][0]:
                 values.append(default_value)
                 continue
@@ -463,41 +516,121 @@ class ActionOverlay:
         return values
 
     @classmethod
-    def generate_all(
+    def _blend_segment(
         cls,
-        action_names: list[str],
-        duration: float,
-        fps: float = 60.0,
-    ) -> dict[str, list[float]]:
+        base_curve: list[float],
+        seg_values: list[float],
+        start_frame: int,
+        fps: float,
+    ) -> list[float]:
         """
-        为多个特殊动作生成合并后的参数帧数组
+        将动作段 blend 到基底曲线上，带 smoothstep 过渡
 
-        当多个动作作用于同一参数时，后续动作覆盖先前的。
+        过渡区内做平滑插值：base * (1 - alpha) + seg * alpha
 
         Args:
-            action_names: 特殊动作名列表（如 ["smile", "wink_left"]）
-            duration: 动作总时长
+            base_curve: 完整基底曲线
+            seg_values: 动作段帧值
+            start_frame: 动作段起始帧索引
             fps: 帧率
 
         Returns:
-            dict[str, list[float]]: {param_id: [frame_values]}
+            list[float]: blend 后的完整曲线
         """
-        overlay: dict[str, list[float]] = {}
+        ease_frames = max(2, int(cls.EASE_DURATION * fps))
+        result = list(base_curve)
+        seg_len = len(seg_values)
 
-        for action_name in action_names:
-            if action_name not in SIMPLE_ACTIONS:
+        for i in range(seg_len):
+            idx = start_frame + i
+            if idx >= len(result):
+                break
+
+            if i < ease_frames:
+                raw_alpha = i / ease_frames
+                alpha = _smoothstep(raw_alpha)
+            elif seg_len - i <= ease_frames:
+                raw_alpha = (seg_len - i) / ease_frames
+                alpha = _smoothstep(raw_alpha)
+            else:
+                alpha = 1.0
+
+            result[idx] = base_curve[idx] * (1.0 - alpha) + seg_values[i] * alpha
+
+        return result
+
+    @classmethod
+    def generate_all(
+        cls,
+        motion_items: list[dict],
+        base_curves: dict[str, list[float]],
+        total_duration: float,
+        fps: float = 60.0,
+    ) -> dict[str, list[float]]:
+        """
+        在基底曲线上叠加特殊动作覆盖，返回 blend 后的完整曲线
+
+        对每个 motion_item 按 position 单实例定位（不自动重复），
+        同一参数的多动作按顺序叠加。
+
+        Args:
+            motion_items: [{"name": str, "position": float, "intensity": float}, ...]
+            base_curves: 基底曲线 {param_id: [frame_values]}
+            total_duration: 总时长（秒）
+            fps: 帧率
+
+        Returns:
+            dict[str, list[float]]: blend 后的完整曲线
+        """
+        num_frames = int(total_duration * fps) + 1
+        result: dict[str, list[float]] = {
+            pid: list(curve) for pid, curve in base_curves.items()
+        }
+
+        for item in motion_items:
+            name: str = item["name"]
+            position: float = item.get("position", 0.0)
+            intensity: float = item.get("intensity", 1.0)
+
+            if name not in SIMPLE_ACTIONS:
                 continue
-            action_def = SIMPLE_ACTIONS[action_name]
-            for param_id, keyframes in action_def.items():
-                curve = cls._generate_param_curve(
-                    keyframes,
-                    duration,
-                    fps,
-                    default_value=PARAM_DEFAULTS.get(param_id, 0.0),
-                )
-                overlay[param_id] = curve
 
-        return overlay
+            action_def = SIMPLE_ACTIONS[name]
+            metadata = ACTION_METADATA.get(name, {})
+            action_type = metadata.get("type", "punctual")
+
+            # 计算动作段起止时间
+            if action_type == "sustained":
+                seg_start = position * total_duration
+                seg_end = total_duration
+            else:
+                natural_dur = metadata.get("natural_duration", 0.3)
+                seg_start = position * total_duration
+                seg_end = min(seg_start + natural_dur, total_duration)
+
+            seg_duration = seg_end - seg_start
+            if seg_duration <= 0:
+                continue
+
+            start_frame = int(seg_start * fps)
+
+            for param_id, keyframes in action_def.items():
+                default_val = PARAM_DEFAULTS.get(param_id, 0.0)
+
+                if param_id not in result:
+                    result[param_id] = [default_val] * num_frames
+
+                # intensity 缩放关键帧值
+                scaled_keyframes = [(t, v * intensity) for t, v in keyframes]
+
+                seg_values = cls._generate_segment(
+                    scaled_keyframes, seg_duration, fps, default_val
+                )
+                result[param_id] = cls._blend_segment(
+                    result[param_id], seg_values, start_frame, fps
+                )
+
+        return result
 
 
 def estimate_text_duration(text: str) -> float:
@@ -538,18 +671,20 @@ class MotionEngineService:
     服务端动作引擎入口
 
     串联完整管线：
-        文本 + 动作标签 → 语义检索 → 从 DB 加载预解析动作 →
-        特殊动作覆盖 → 混合 → 产出 MotionData
+        文本 + motions + expression → 语义检索 → 从 DB 加载预解析动作 →
+        anchor 解析 → 跨句子持续动作释放 → 特殊动作覆盖 → 产出 MotionData
 
-    与 MotionEngine 的区别：
-    - 不包含 MotionPlayer（无需实时播放）
-    - 不依赖 PySide6
-    - 输出为 MotionData（逐帧曲线），由调用方决定如何消费
+    跨句子状态：
+        内部维护 _active_sustained 和 _active_expression，
+        每句处理后更新，下一句处理时自动对未延续的持续动作做渐出。
 
     Attributes:
         database: MotionDatabase 实例（含预计算 embedding）
-        matcher: SemanticMatcher 实例（延迟初始化）
+        matcher: SemanticMatcher 实例
     """
+
+    # 跨句子持续动作渐出时长（秒）
+    SUSTAINED_RELEASE_DURATION: float = 0.3
 
     def __init__(self, db_path: str | None = None) -> None:
         """
@@ -560,31 +695,80 @@ class MotionEngineService:
         """
         self.database = MotionDatabase(db_path)
         self.matcher: SemanticMatcher | None = None
-        self.matcher = SemanticMatcher(self.database)
+        if self.database.num_entries > 0:
+            self.matcher = SemanticMatcher(self.database)
+
+        # 跨句子持续动作状态：{动作名: {参数名: 目标值}}
+        self._active_sustained: dict[str, dict[str, list[tuple[float, float]]]] = {}
+        # 跨句子表情状态
+        self._active_expression: str | None = None
+
+    def _apply_sustained_release(
+        self,
+        curves: dict[str, list[float]],
+        fps: float,
+    ) -> dict[str, list[float]]:
+        """
+        对上一句活跃但本句未延续的持续动作做渐出
+
+        在句首 release_duration 秒内，从持续动作的目标值平滑过渡到新基底曲线值。
+
+        Args:
+            curves: 当前句的基底曲线
+            fps: 帧率
+
+        Returns:
+            dict[str, list[float]]: 渐出处理后的曲线
+        """
+        if not self._active_sustained:
+            return curves
+
+        release_frames = int(self.SUSTAINED_RELEASE_DURATION * fps)
+        result: dict[str, list[float]] = {
+            pid: list(vals) for pid, vals in curves.items()
+        }
+
+        for action_name, params in self._active_sustained.items():
+            for param_id, keyframes in params.items():
+                if param_id not in result:
+                    continue
+                # 获取持续动作的目标值（最后一个关键帧的值）
+                target_val = keyframes[-1][1] if keyframes else 0.0
+                vals = result[param_id]
+                max_frames = min(release_frames, len(vals))
+                for i in range(max_frames):
+                    t = i / release_frames
+                    alpha = _smoothstep(t)
+                    vals[i] = target_val + (curves[param_id][i] - target_val) * alpha
+
+        return result
 
     def process(
         self,
         text: str,
-        actions: list[str],
+        motions: list[dict],
+        expression: str | None = None,
         max_duration: float | None = None,
-        expressions: list[ExpressionInfo] | None = None,
     ) -> MotionData | None:
         """
-        处理语义输入：检索 + 覆盖 + 混合
+        处理语义输入：检索 + anchor 解析 + 跨句子释放 + 覆盖混合
+
+        motions 中的动作通过 anchor（文本子串）定位到句中位置，
+        expression 跨越句子保持，无需在每个句子重复指定。
 
         Args:
-            text: 语义描述文本（用于检索匹配的预录制动作）
-            actions: 特殊动作名列表（如 ["smile", "wink_left"]）
-            max_duration: 动作最大时长（秒），用于匹配语音时长。
-            expressions: 可用表情列表（ExpressionInfo 列表），用于解析表情名称
+            text: 对话文本（用于语义检索和 anchor 定位）
+            motions: 动作列表 [{"name": str, "anchor": str, "intensity": float}, ...]
+            expression: 整句表情名（None 表示沿用上一句）
+            max_duration: 动作最大时长（秒），用于匹配语音时长
 
         Returns:
-            MotionData | None: 混合后的动作数据，无匹配结果返回 None
+            MotionData | None: 混合后的动作数据
         """
         if self.matcher is None or self.database.num_entries == 0:
             return None
 
-        # 1. 从数据库进行，语义检索，然后按时长优选
+        # 1. 语义检索，按时长优选
         if max_duration and max_duration > 0:
             result = self.matcher.search_with_duration(text, max_duration, k=5)
         else:
@@ -597,80 +781,77 @@ class MotionEngineService:
         matched_text, motion_id, score = result
         Log.info(f"[MotionEngineService] 检索匹配 [{score:.3f}]: {matched_text}")
 
-        # 2. 从 DB 加载预解析的动作曲线
+        # 2. 从 DB 加载预解析动作曲线
         meta = self.database.get_motion_meta(motion_id)
         if meta is None:
-            Log.warning(f"[MotionEngineService] motion_id={motion_id} 元数据缺失")
             return None
 
         curves = self.database.get_motion_curves(motion_id)
         if not curves:
-            Log.warning(f"[MotionEngineService] motion_id={motion_id} 曲线数据缺失")
             return None
 
-        base_motion = MotionData(
-            curves=curves,
-            duration=meta.duration,
-            fps=meta.fps,
-        )
-
-        # 3. 分离特殊动作和表情：表情不覆盖动作曲线，由前端单独处理
-        # 简单动作
-        simple_actions: list[str] = []
-        # 表情动作
-        expression_names: list[str] = []
-
-        expression_map = [expr.name for expr in (expressions if expressions else {})]
-
-        for action_name in actions:
-            if action_name in SIMPLE_ACTIONS:
-                simple_actions.append(action_name)
-
-            if action_name in expression_map:
-                expression_names.append(action_name)
-
-        # 4. 生成特殊动作覆盖（仅对 SIMPLE_ACTIONS 中的动作）
-        overlays = ActionOverlay.generate_all(
-            simple_actions, base_motion.duration, base_motion.fps
-        )
-
-        # 5. 混合: overlay 覆盖
-        mixed_curves: dict[str, list[float]] = {}
-        for param_id, values in base_motion.curves.items():
-            if param_id in overlays:
-                mixed_curves[param_id] = overlays[param_id]
+        # 3. 解析 motions：anchor → position
+        resolved_motions: list[dict] = []
+        for m in motions:
+            name: str = m["name"]
+            anchor: str = m.get("anchor", "")
+            intensity: float = m.get("intensity", 1.0)
+            if anchor:
+                position = ActionOverlay._resolve_position(text, anchor)
             else:
-                mixed_curves[param_id] = values
+                position = 0.0
+            resolved_motions.append(
+                {
+                    "name": name,
+                    "position": position,
+                    "intensity": intensity,
+                }
+            )
 
-        # 添加 overlay 中存在但 base_motion 中不存在的参数
-        for param_id, overlay_curve in overlays.items():
-            if param_id not in mixed_curves:
-                mixed_curves[param_id] = overlay_curve
+        # 4. 跨句子持续动作释放：上一句的持续动作渐出
+        curves = self._apply_sustained_release(curves, meta.fps)
 
-        # 5. 时长截断
-        effective_duration = base_motion.duration
+        # 5. 生成并混合特殊动作覆盖
+        mixed_curves = ActionOverlay.generate_all(
+            resolved_motions, curves, meta.duration, meta.fps
+        )
 
-        if max_duration and 0 < max_duration < base_motion.duration:
+        # 6. 更新跨句子持续动作状态
+        new_sustained: dict[str, dict[str, list[tuple[float, float]]]] = {}
+        for m in resolved_motions:
+            name = m["name"]
+            if name in SIMPLE_ACTIONS:
+                action_type = ACTION_METADATA.get(name, {}).get("type", "punctual")
+                if action_type == "sustained":
+                    new_sustained[name] = dict(SIMPLE_ACTIONS[name])
+        self._active_sustained = new_sustained
+
+        # 7. 更新跨句子表情状态
+        if expression is not None:
+            self._active_expression = expression
+
+        # 8. 构造输出 expression 列表
+        expression_output: list[str] | None = None
+        if self._active_expression is not None:
+            expression_output = [self._active_expression]
+
+        # 9. 时长截断
+        effective_duration = meta.duration
+        if max_duration and 0 < max_duration < meta.duration:
             effective_duration = max_duration
-            max_frame = int(effective_duration * base_motion.fps) + 1
+            max_frame = int(effective_duration * meta.fps) + 1
             for param_id in list(mixed_curves.keys()):
                 vals = mixed_curves[param_id]
                 if len(vals) > max_frame:
                     mixed_curves[param_id] = vals[:max_frame]
             Log.info(
-                f"[MotionEngineService] 截断动作: {base_motion.duration:.2f}s → "
+                f"[MotionEngineService] 截断动作: {meta.duration:.2f}s → "
                 f"{effective_duration:.2f}s"
             )
-            return MotionData(
-                curves=mixed_curves,
-                duration=effective_duration,
-                fps=base_motion.fps,
-                expression=expression_names,
-            )
-        else:
-            return MotionData(
-                curves=mixed_curves,
-                duration=base_motion.duration,
-                fps=base_motion.fps,
-                expression=expression_names,
-            )
+
+        return MotionData(
+            curves=mixed_curves,
+            duration=effective_duration,
+            fps=meta.fps,
+            expression=expression_output,
+        )
