@@ -37,7 +37,8 @@ import time
 import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
-from models.dto.request.chat_request import ChatData
+from models.dto.request.chat_request import ChatRequest
+from core.chat.multimodal_processor import build_user_message_content
 from models.dto.response.ChatResponse import (
     DoneResponse,
     ErrorResponse,
@@ -257,7 +258,7 @@ class V2ChatService:
             logger.warning(f"[V2Motion] 获取动作生成器失败: {e}")
             return None
 
-    async def chat(self, params: ChatData) -> AsyncGenerator[FullChatResponse]:
+    async def chat(self, params: ChatRequest) -> AsyncGenerator[FullChatResponse]:
         """
         V2 版本聊天流式输出
 
@@ -286,23 +287,27 @@ class V2ChatService:
             logger.warning("[动作规划] 未找到可用 Live2D 参数，将输出空动作事件")
 
         ctx = V2MotionChatContext(self.motion_generator)
-        ctx.user_message = params.msg[-1]["content"] if params.msg else ""
 
+        # 从 ChatRequest 构建用户消息内容和完整文本
+        user_message_raw, user_text = build_user_message_content(params)
+        ctx.user_message = user_text
+
+        raw_history = agent.get_history()
         history_messages = [
             {
                 "role": "system",
                 "content": await agent.get_context(
-                    msg=ctx.user_message, is_sleep_mode=params.is_sleep_mode
+                    msg=user_text, is_sleep_mode=params.is_sleep_mode
                 ),
             },
-            *agent.get_history(),
+            *raw_history,
         ]
 
         scheduler = TaskScheduler()
         pipeline = scheduler.create_text_pipeline(
             system_context=agent.prompt,
             history_messages=history_messages,
-            user_message=ctx.user_message,
+            user_message=user_message_raw,
         )
 
         try:
@@ -326,7 +331,7 @@ class V2ChatService:
             # 保存到助手上下文
             asyncio.create_task(
                 agent.add_msg(
-                    user_msg=ctx.user_message,
+                    user_msg=user_text,
                     assistant_msg=ctx.get_full_text(),
                 )
             )

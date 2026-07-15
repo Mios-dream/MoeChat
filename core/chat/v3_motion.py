@@ -49,7 +49,8 @@ data: {"type": "motion_frame", "sentence_id": 1, "motions": [...], ...}
 from collections.abc import AsyncGenerator
 import time
 import asyncio
-from models.dto.request.chat_request import ChatData
+from models.dto.request.chat_request import ChatRequest
+from core.chat.multimodal_processor import build_user_message_content
 from models.dto.response.ChatResponse import (
     ChatResponse,
     DoneResponse,
@@ -525,8 +526,7 @@ class V3ChatService:
         将历史对话压缩为纯文本段落
 
         把多条 user/assistant 轮次拼接为"用户: ...\n你: ..."格式的连续文本，
-        作为一条 system 消息传入，避免每条历史分别被 normalize 为 JSON
-        而产生大量空动作 few-shot 示例。
+        作为一条 system 消息传入。
 
         参数：
         - history: 原始历史消息列表
@@ -537,14 +537,23 @@ class V3ChatService:
         lines: list[str] = []
         for msg in history:
             role = msg.get("role", "")
-            content = msg.get("content", "")
+            raw_content = msg.get("content", "")
+            if isinstance(raw_content, list):
+                texts = [
+                    p.get("text", "")
+                    for p in raw_content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                content = "\n".join(texts)
+            else:
+                content = raw_content or ""
             if not isinstance(content, str) or not content.strip():
                 continue
             label = "用户" if role == "user" else "你"
             lines.append(f"{label}: {content.strip()}")
         return "\n".join(lines)
 
-    async def chat(self, params: ChatData) -> AsyncGenerator[FullChatResponse]:
+    async def chat(self, params: ChatRequest) -> AsyncGenerator[FullChatResponse]:
         """
         V3 版本聊天流式输出
 
@@ -564,11 +573,10 @@ class V3ChatService:
             yield ErrorResponse(error_code="NO_ASSISTANT", data="当前没有加载助手")
             return
 
-        user_message = params.msg[-1]["content"]
+        # 从 ChatRequest 构建用户消息内容和完整文本
+        user_message_raw, user_text = build_user_message_content(params)
 
-        # 压缩历史对话：将原始 user/assistant 配对拼接为一条 system 消息，
-        # 避免 20-40 条独立历史消息全部被 normalize 为 {"actions": []}，
-        # 从而消除 LLM 看到大量空动作 few-shot 示例的问题。
+        # 压缩历史对话
         raw_history = agent.get_history()
         compressed_history = self._compress_history(raw_history)
 
@@ -576,23 +584,23 @@ class V3ChatService:
             {
                 "role": "system",
                 "content": await agent.get_context(
-                    msg=user_message, is_sleep_mode=params.is_sleep_mode
+                    msg=user_text, is_sleep_mode=params.is_sleep_mode
                 ),
             },
         ]
-        if compressed_history:
-            history_messages.append(
-                {
-                    "role": "system",
-                    "content": f"最近对话记录：\n{compressed_history}",
-                }
-            )
+        # if compressed_history:
+        #     history_messages.append(
+        #         {
+        #             "role": "system",
+        #             "content": f"最近对话记录：\n{compressed_history}",
+        #         }
+        #     )
 
         scheduler = self.create_scheduler()
         pipeline = scheduler.create_task_pipeline(
             system_context=agent.prompt,
             history_messages=history_messages,
-            user_message=user_message,
+            user_message=user_message_raw,
             tools=self.integration.get_tools() if self.integration else None,
             tool_handler=(
                 self.integration.process_tool_calls if self.integration else None
@@ -623,9 +631,9 @@ class V3ChatService:
             full_text = ctx.get_full_text()
             # 输出最终的 DoneResponse，包含完整文本
             yield DoneResponse(full_text=full_text)
-            # 将用户消息和助手完整文本存入数据库，异步执行，不阻塞主流程
+            # 将用户消息和助手完整文本存入数据库
             asyncio.create_task(
-                agent.add_msg(user_msg=user_message, assistant_msg=full_text)
+                agent.add_msg(user_msg=user_text, assistant_msg=full_text)
             )
 
         except Exception as e:

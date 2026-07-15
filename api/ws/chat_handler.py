@@ -27,7 +27,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from core.chat.v3_motion import V3ChatService
 from core.interaction_core import generate_interaction_message
-from models.dto.request.chat_request import ChatData
+from models.dto.request.chat_request import ChatRequest
 from models.dto.request.interaction_request import InteractionMessageRequest
 from models.dto.response.ChatResponse import ErrorResponse
 from my_utils.log import logger
@@ -39,8 +39,6 @@ from models.dto.response.ToolWsResponse import (
     ToolProgressWsMessage,
     ToolConfirmWsMessage,
     ToolDefinitionsWsMessage,
-    ComponentToolGroup,
-    ClientToolDefEntry,
 )
 from api.ws.ws_manager import get_ws_manager
 from tool_system.core.types import ClientToolDef
@@ -215,28 +213,22 @@ class ChatWebSocketHandler:
 
         Args:
             data: 客户端发来的聊天请求
-                id: 消息 ID（用于取消和多任务索引）
-                msg: 消息列表（最后一条为用户输入）
+                id: 消息 ID
+                text: 用户文本消息
+                images: Base64 图片列表
+                files: 文件附件列表
                 generation_motion: 是否生成动作
                 is_sleep_mode: 是否睡眠模式
         """
-        chat_data = ChatData(**data)
-
-        if not chat_data.msg:
-            await self._websocket.send_json(
-                ErrorResponse(
-                    error_code="INVALID_REQUEST", data="消息内容不能为空"
-                ).model_dump()
-            )
-            return
+        chat_request = ChatRequest(**data)
 
         # 创建后台任务（不取消其他任务，允许多任务并行）
         asyncio.create_task(
-            self._run_chat_generation(chat_data=chat_data),
+            self._run_chat_generation(chat_request=chat_request),
             name=f"chat_gen_{self._session_id}",
         )
 
-    async def _run_chat_generation(self, chat_data: ChatData) -> None:
+    async def _run_chat_generation(self, chat_request: ChatRequest) -> None:
         """
         执行 V3 模式聊天生成（在后台 Task 中运行）
 
@@ -261,7 +253,7 @@ class ChatWebSocketHandler:
             self._integration.set_session_id(self._session_id)
             v3_service.set_integration(self._integration)
 
-            async for response in v3_service.chat(chat_data):
+            async for response in v3_service.chat(chat_request):
                 await self._websocket.send_json(response.model_dump())
 
         except asyncio.CancelledError:

@@ -11,6 +11,7 @@
         "mktime",
         "modelscope",
         "moechat",
+        "multimodal",
         "pysilero",
         "qwen",
         "scalarstring",
