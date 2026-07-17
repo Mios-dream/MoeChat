@@ -104,7 +104,7 @@ async def tts_api(params: ChatRequest):
     POST 方式聊天接口
 
     参数：
-    - params: 聊天请求参数（text + images + files）
+    - params: 聊天请求参数（text + images + files + session_id）
     """
 
     if params.generation_motion:

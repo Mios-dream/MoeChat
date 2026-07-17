@@ -288,7 +288,7 @@ class V2ChatService:
 
         ctx = V2MotionChatContext(self.motion_generator)
 
-        # 从 ChatRequest 构建用户消息内容和完整文本
+        # 从 ChatRequest 构建用户消息内容
         user_message_raw, user_text = build_user_message_content(params)
         ctx.user_message = user_text
 
@@ -328,7 +328,10 @@ class V2ChatService:
             # 输出完成信号
             yield DoneResponse(full_text=ctx.get_full_text())
 
-            # 保存到助手上下文
+            # 追加到上下文（user_message_raw 已是 OpenAI 原生格式）
+            agent.chat_history.extend(user_message_raw)
+            agent.chat_history.append({"role": "assistant", "content": ctx.get_full_text()})
+            # 持久化 + 好感度
             asyncio.create_task(
                 agent.add_msg(
                     user_msg=user_text,

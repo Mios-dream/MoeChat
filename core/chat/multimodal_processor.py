@@ -6,16 +6,18 @@
 
 - 启用多模态：images 转为 image_url content part，text 原样保留
 - 未启用多模态：images OCR 识别，files 读取文本，与原 text 合并
+
+返回 (user_message_content, user_text, attachment_messages) 三元组：
+- user_message_content: list[ChatCompletionMessageParam]，供管道使用（含附件信息）
+- user_text: 用户原始输入的纯文本，不含 OCR/文件内容，供存档和检索
+- attachment_messages: list[dict]，附件解析结果的 system 消息，供追加到 chat_history
 """
 
 import base64
 from io import BytesIO
-from typing import Any
-
 from models.dto.request.chat_request import ChatRequest
 from my_utils import config_manager as CConfig
 from my_utils.log import logger
-from models.dto.request.chat_request import ChatRequest
 from openai.types.chat import (
     ChatCompletionContentPartImageParam,
     ChatCompletionContentPartTextParam,
@@ -75,18 +77,15 @@ def _read_txt_content(data: str) -> str:
 def build_user_message_content(
     request: ChatRequest,
     model_key: str = "ChatLLM",
-) -> list[ChatCompletionMessageParam]:
+) -> tuple[list[ChatCompletionMessageParam], str]:
     """
-    从 ChatRequest 构建用户消息内容
+    从 ChatRequest 构建用户消息内容。
 
-    参数：
-    - request: 聊天请求
-    - model_key: 模型配置键名
-
-    返回：
-    - (user_message_content, full_text)
-        - user_message_content: str 或 list[ContentPart]，供管道使用
-        - full_text: 完整文本（含 OCR 结果），供上下文检索和存库
+    返回 (user_message_content, user_text)：
+    - user_message_content: list[ChatCompletionMessageParam]，OpenAI 原生格式
+      多模态：{"role": "user", "content": [{"type": "text", ...}, {"type": "image_url", ...}]}
+      非多模态：{"role": "user", "content": "文本"}
+    - user_text: 用户原始输入的纯文本（不含 OCR/文件内容），供存档和检索
     """
 
     config = CConfig.config.get(model_key, {})
@@ -98,6 +97,12 @@ def build_user_message_content(
     ocr_count = 0
 
     user_message_content: list[ChatCompletionMessageParam] = []
+    # 用户原始输入，不含附件解析内容
+    user_text = request.text or ""
+
+    # 如果用户有输入文本，先加入
+    if request.text:
+        text_parts.append({"type": "text", "text": request.text})
 
     # 处理图片
     for img_data in request.images:
@@ -134,9 +139,21 @@ def build_user_message_content(
             label = f"[文件 {file.name or '未命名'} 内容]"
             ocr_texts.append(f"{label}:\n{text}")
 
-    # 多模态模式：返回 content parts
+    # 组装 user_message_content（OpenAI 原生格式）
     if enable_multimodal and image_parts:
+        content_parts: list[ChatCompletionMessageParam] = []
+        if text_parts:
+            content_parts.extend(text_parts)
+        content_parts.extend(image_parts)
+        user_message_content.append({"role": "user", "content": content_parts})
+    else:
+        # 非多模态：合并文本 + OCR + 文件内容
+        combined_parts = []
+        if request.text:
+            combined_parts.append(request.text)
+        if ocr_texts:
+            combined_parts.extend(ocr_texts)
+        combined_text = "\n".join(combined_parts) or ""
+        user_message_content.append({"role": "user", "content": combined_text})
 
-        user_message_content.append({"role": "user", "content": image_parts})
-
-    return user_message_content
+    return user_message_content, user_text

@@ -7,11 +7,10 @@ V4 信息调度中心
 3. 管道（Pipeline）负责执行 LLM 调用和流式解析
 """
 
-import json
 from collections.abc import AsyncGenerator, Awaitable, Callable
 import time
 import asyncio
-from typing import Any, Literal
+from typing import Literal
 from openai.types.chat import (
     ChatCompletionFunctionToolParam,
     ChatCompletionMessageFunctionToolCallParam,
@@ -105,12 +104,14 @@ class TaskScheduler:
         tools: list[ChatCompletionFunctionToolParam] | None = None,
         tool_handler: ToolCallHandler | None = None,
         max_tool_rounds: int = 10,
+        on_tool_event: Callable[[ChatCompletionMessageParam], None] | None = None,
     ) -> "Pipeline":
         """
         创建多行json返回处理管道
 
         支持 Function Calling 工具调用。
         user_message 支持字符串或多模态内容部分列表。
+        on_tool_event: 工具调用/结果实时回调（用于追加到 chat_history）
         """
         task_system_prompt = self._build_task_system_prompt()
 
@@ -121,8 +122,6 @@ class TaskScheduler:
 
         if history_messages:
             messages.extend(history_messages)
-
-        # format_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
 
         messages.extend(user_message)
 
@@ -139,6 +138,7 @@ class TaskScheduler:
             tools=tools,
             tool_handler=tool_handler,
             max_tool_rounds=max_tool_rounds,
+            on_tool_event=on_tool_event,
         )
 
     def create_text_pipeline(
@@ -180,8 +180,10 @@ class Pipeline:
     1. 调用 LLM 获取流式响应
     2. 将响应传递给解析器
     3. 产出解析后的结果
-    4. 支持 Function Calling 工具调用循环
+    4. 工具调用内部闭环，不对外暴露工具 TaskResult
     """
+
+    ToolEventCallback = Callable[[ChatCompletionMessageParam], None]
 
     def __init__(
         self,
@@ -194,6 +196,7 @@ class Pipeline:
         tools: list[ChatCompletionFunctionToolParam] | None = None,
         tool_handler: ToolCallHandler | None = None,
         max_tool_rounds: int = 10,
+        on_tool_event: ToolEventCallback | None = None,
     ):
         self.messages: list[ChatCompletionMessageParam] = messages
         self.llm_parser = llm_parser
@@ -205,6 +208,7 @@ class Pipeline:
         self.tools = tools
         self.tool_handler = tool_handler
         self.max_tool_rounds = max_tool_rounds
+        self.on_tool_event = on_tool_event
 
     def _build_retry_messages(
         self, messages: list[ChatCompletionMessageParam]
@@ -271,29 +275,8 @@ class Pipeline:
 
         Log.warning(f"[管道] 重试 {self.max_retries} 次后仍未产出任何任务结果")
 
-    def _build_tool_call_result(
-        self,
-        tool_calls: list[ChatCompletionMessageFunctionToolCallParam],
-    ) -> TaskResult:
-        """从原始 LLM tool_calls 构建 tool_call TaskResult"""
-        events: list[ToolCallEvent] = []
-        for tc in tool_calls:
-            func = tc.get("function", {})
-            events.append(
-                ToolCallEvent(
-                    call_id=tc.get("id", ""),
-                    tool_name=func.get("name", ""),
-                    arguments=func.get("arguments", "{}"),
-                )
-            )
-        return TaskResult(
-            task_name="tool_call",
-            task_type="tool_call",
-            data=events,
-        )
-
     async def execute(self) -> AsyncGenerator[TaskResult]:
-        """执行管道（顶层编排）"""
+        """执行管道（顶层编排），工具调用内部闭环"""
         start_time = time.time()
         result_count = 0
         current_messages: list[ChatCompletionMessageParam] = list(self.messages)
@@ -307,27 +290,38 @@ class Pipeline:
             ):
                 result_count += 1
                 yield task_result
+
             if round_state["tool_calls"] and self.tool_handler:
                 total_tool_rounds = tool_round + 1
 
-                yield self._build_tool_call_result(round_state["tool_calls"])
+                tool_calls = round_state["tool_calls"]
 
-                exec_result = await self.tool_handler(round_state["tool_calls"])
-
-                if exec_result.tool_result_events:
-                    yield TaskResult(
-                        task_name="tool_result",
-                        task_type="tool_result",
-                        data=exec_result.tool_result_events,
+                # 回调：通知外部工具调用事件
+                if self.on_tool_event:
+                    self.on_tool_event(
+                        {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": tool_calls,
+                        }
                     )
 
-                # 注入工具消息到上下文
+                exec_result = await self.tool_handler(tool_calls)
+
+                # 回调：通知外部工具结果事件
+                if self.on_tool_event and exec_result.tool_result_events:
+                    for event in exec_result.tool_result_events:
+                        self.on_tool_event(
+                            {
+                                "role": "tool",
+                                "tool_call_id": event.call_id,
+                                "content": event.content,
+                            }
+                        )
+
+                # 注入工具消息到上下文（内部闭环）
                 current_messages.append(
-                    {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": round_state["tool_calls"],
-                    }
+                    {"role": "assistant", "content": "", "tool_calls": tool_calls}
                 )
                 current_messages.extend(exec_result.context_messages)
 
@@ -345,8 +339,3 @@ class Pipeline:
             f"工具轮次: {total_tool_rounds}, "
             f"耗时 {elapsed:.2f}s"
         )
-
-    @property
-    def sentence_count(self) -> int:
-        """已处理的句子数量"""
-        return self.task_parser.sentence_count

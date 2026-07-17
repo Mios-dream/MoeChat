@@ -66,7 +66,7 @@ class Assistant:
         # 助手名称
         self.agent_name = agent_name
         # 聊天记录
-        self.chat_history = []
+        self.chat_history: list[ChatCompletionMessageParam] = []
         # 线程池执行器，用于处理同步的 CPU 密集任务
         self._executor = ThreadPoolExecutor(max_workers=4)
         # 用户私有状态（好感度、首次相遇时间等）
@@ -75,23 +75,11 @@ class Assistant:
         self._llm_client = LLMClient(model_key="LLM")
 
         self.load_config()
-        self._init_history()
-
-    def _init_history(self):
-        """初始化历史记录（从 SQLite 读取最近上下文）"""
-        try:
-            self.chat_history = self.memoryEngine.get_recent_chat_turns(
-                self.agent_config.settings.contextLength
-            )
-            Log.logger.info(f"当前上下文长度：{len(self.chat_history)}")
-        except Exception as e:
-            Log.logger.error(f"加载上下文失败：{self.agent_name}, 错误: {e}")
 
         # 添加起始对话
-        if self.agent_config.startWith and not self.chat_history:
-            for i, content in enumerate(self.agent_config.startWith):
-                role = "user" if i % 2 == 0 else "assistant"
-                self.chat_history.append({"role": role, "content": content})
+        if self.agent_config.startWith:
+            for content in self.agent_config.startWith:
+                self.chat_history.append({"role": "system", "content": content})
 
     def _load_config(self):
         """加载配置文件"""
@@ -575,36 +563,43 @@ class Assistant:
         """
         return self.chat_history.copy()
 
+    def update_history(self, chat_turns: list[ChatCompletionMessageParam]):
+        """
+        追加或更新聊天历史
+        """
+        self.chat_history.extend(chat_turns)
+
     async def add_msg(self, user_msg: str, assistant_msg: str) -> None:
         """
-        添加助手回复到上下文,保存聊天历史,更新长期记忆,更新好感度
+        添加用户和助手的对话到上下文，更新长期记忆和好感度。
+
+        chat_history 由调用方管理（调用前已追加完整序列），
+        本方法只负责持久化（chat_turns）、好感度计算、核心记忆提取。
 
         Parameters:
             user_msg: 用户输入的消息
             assistant_msg: 助手回复的消息
         """
-        self.chat_history.append({"role": "user", "content": user_msg})
-        self.chat_history.append({"role": "assistant", "content": assistant_msg})
-
-        previous_assistant_msg = (
-            self.chat_history[-3]["content"] if len(self.chat_history) >= 3 else ""
-        )
-
         self.chat_history = self.chat_history[
             -self.agent_config.settings.contextLength :
         ]
 
         await asyncio.gather(
-            self.insert_core_mem(user_msg, assistant_msg, previous_assistant_msg),
+            self.insert_core_mem(user_msg, assistant_msg, ""),
             self.update_love_level(user_msg, assistant_msg),
-            self._task_add_long_memory(self.chat_history[-2:]),
+            self._task_add_long_memory(
+                [
+                    {"role": "user", "content": user_msg},
+                    {"role": "assistant", "content": assistant_msg},
+                ]
+            ),
         )
 
     async def add_interaction_msg(self, msg: str) -> None:
         """
         保存交互事件消息到上下文,保存聊天历史,更新长期记忆
         Parameters:
-            msg: 交互事件消息
+            msg: 助手回复消息
         """
         # 添加交互事件消息到上下文
         self.chat_history.append({"role": "assistant", "content": msg})

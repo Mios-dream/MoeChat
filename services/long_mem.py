@@ -19,6 +19,7 @@ from models.types.assistant_info import AssistantInfo
 from my_utils import embedding
 from my_utils import log as Log
 from core.llm.llm_client import LLMClient
+from openai.types.chat import ChatCompletionMessageParam
 
 
 class Memory:
@@ -57,7 +58,7 @@ class Memory:
 
     def _init_db(self):
         """
-        初始化最小表结构：仅两张核心表。
+        初始化表结构：聊天历史表 + 日记表。
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -112,8 +113,12 @@ class Memory:
         """
         写入一轮对话到 chat_turns。
 
+        存储所有角色（user、assistant、tool、system 等），
+        日记归档时自动跳过非 user/assistant 消息，
+        工具调用和文件信息以文本形式保留在上下文中。
+
         Parameters:
-            turn_data: 对话数据，格式为 [{"role": "user"/"assistant", "content": "..."}]
+            turn_data: 对话数据，格式为 [{"role": ..., "content": ..., ...}]
             turn_ts: 该轮对话的时间戳（秒级）
         """
         rows = []
@@ -121,9 +126,10 @@ class Memory:
         for item in turn_data:
             role = item.get("role", "")
             content = item.get("content", "")
-            if role in {"user", "assistant"} and content:
-                rows.append((turn_ts, role, content))
-                text_list.append(f"{role}: {content}")
+            if not content:
+                continue
+            rows.append((turn_ts, role, content))
+            text_list.append(f"{role}: {content}")
 
         if not rows:
             return
@@ -146,9 +152,12 @@ class Memory:
 
     def get_recent_chat_turns(
         self, limit: int, only_assistant: bool = False
-    ) -> list[dict]:
+    ) -> list[ChatCompletionMessageParam]:
         """
         获取最近历史消息，用于上下文恢复与 /chat/history 接口。
+
+        包含所有角色（user、assistant、tool、system），
+        工具调用和文件解析信息以文本形式保留，保证 LLM 多轮上下文完整。
         """
         if limit <= 0:
             return []
@@ -172,7 +181,6 @@ class Memory:
                 """
                 SELECT role, content
                 FROM chat_turns
-                WHERE role IN ('user', 'assistant')
                 ORDER BY id DESC
                 LIMIT ?
                 """,
