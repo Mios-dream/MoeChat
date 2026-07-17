@@ -47,6 +47,7 @@ data: {"type": "motion_frame", "sentence_id": 1, "motions": [...], ...}
 """
 
 from collections.abc import AsyncGenerator
+import json
 import time
 import asyncio
 from models.dto.request.chat_request import ChatRequest
@@ -165,6 +166,8 @@ class V3MotionChatContext(BaseChatContext):
         self.motion_engine: MotionEngineService = MotionEngineService(
             Config.MOTION_DB_PATH
         )
+        # 按 sentence_id 收集原始多任务 JSON 行，用于保存到 chat_history
+        self._raw_json_lines: dict[int, str] = {}
 
     async def handle_json_result(self, result: TaskResult):
         """处理文本结果"""
@@ -214,13 +217,25 @@ class V3MotionChatContext(BaseChatContext):
         )
 
     async def handle_result(self, result: TaskResult):
-        """分发任务结果：text / bilingual / motion"""
+        """分发任务结果：text / bilingual / motion，并捕获原始多任务 JSON"""
+        # 每 sentence_id 只捕获一次原始 JSON 行
+        if result.raw_data and result.sentence_id not in self._raw_json_lines:
+            self._raw_json_lines[result.sentence_id] = json.dumps(
+                result.raw_data, ensure_ascii=False
+            )
         if result.task_type == "text":
             await self.handle_json_result(result)
         elif result.task_type == "bilingual":
             await self.handle_bilingual_result(result)
         elif result.task_type == "motion":
             await self.handle_motion_result(result)
+
+    def get_raw_output(self) -> str:
+        """获取多任务 JSON 格式的完整输出"""
+        if not self._raw_json_lines:
+            return self.get_full_text()
+        sorted_ids = sorted(self._raw_json_lines.keys())
+        return "\n".join(self._raw_json_lines[sid] for sid in sorted_ids)
 
 
 class V3ChatService:
@@ -305,7 +320,9 @@ class V3ChatService:
             full_text = ctx.get_full_text()
             yield DoneResponse(full_text=full_text)
 
-            agent.chat_history.append({"role": "assistant", "content": full_text})
+            # chat_history 保存多任务 JSON 格式，让模型从历史中学习输出格式
+            raw_output = ctx.get_raw_output()
+            agent.chat_history.append({"role": "assistant", "content": raw_output})
             asyncio.create_task(
                 agent.add_msg(user_msg=user_text, assistant_msg=full_text)
             )

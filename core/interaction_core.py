@@ -1,7 +1,6 @@
 from datetime import datetime
-import time
 from collections.abc import AsyncGenerator
-from typing import Any, Generator
+from typing import Any
 
 from core.scheduler.builtin_tasks import (
     create_motion_task,
@@ -58,55 +57,35 @@ def _build_interaction_system_prompt(params: InteractionMessageRequest) -> str:
     return system_prompt
 
 
-def _compress_history(history: list[ChatCompletionMessageParam]) -> str:
-    """将历史对话压缩为纯文本段落，避免独立消息作为 few-shot 示例。"""
-    lines: list[str] = []
-    for msg in history:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-        if not isinstance(content, str) or not content.strip():
-            continue
-        label = "用户" if role == "user" else "你"
-        lines.append(f"{label}: {content.strip()}")
-    return "\n".join(lines)
-
-
-def _build_interaction_message_list(
+def _build_interaction_history(
     params: InteractionMessageRequest,
 ) -> list[ChatCompletionMessageParam]:
-    """构建交互事件的 LLM 消息列表。
+    """构建交互事件的对话历史消息列表（不含当前事件消息）
 
-    1. 将历史对话压缩为单条 system 消息注入，避免独立 user/assistant 轮次
-       作为 few-shot 示例影响动作生成
-    2. 追加事件描述作为当前 user 消息
+    使用当前内存中的聊天历史（agent.chat_history），
+    因为其中已包含多任务 JSON 格式的回复，能让模型学习输出格式。
     """
     agent = assistant_service.get_current_assistant()
     if not agent:
         raise RuntimeError("当前没有加载助手")
-    msg_list: list[ChatCompletionMessageParam] = []
-    # 添加对话历史（压缩为纯文本，避免 few-shot 干扰）
-    if params.include_history:
-        try:
-            raw_history = agent.memoryEngine.get_recent_chat_turns(
-                params.history_limit
-            )
-            compressed = _compress_history(raw_history)
-            if compressed:
-                msg_list.append(
-                    {
-                        "role": "system",
-                        "content": f"最近对话记录：\n{compressed}",
-                    }
-                )
-        except Exception as e:
-            logger.warning(f"[交互] 获取对话历史失败: {e}")
+    if not params.include_history:
+        return []
+    limit = params.history_limit
+    history = agent.get_history()
+    if limit > 0 and len(history) > limit:
+        history = history[-limit:]
+    return history
 
+
+def _build_event_user_message(
+    params: InteractionMessageRequest, agent
+) -> ChatCompletionMessageParam:
+    """构建当前事件的用户消息"""
     user_message_lines = [
         f"【事件类型】{params.event_type}",
         f"【场景】{params.scene}",
         f"【当前时间】{datetime.now().strftime('%Y-%m-%d %H:%M')}",
     ]
-
     # 梦话事件使用专用场景描述
     if params.event_type == "sleep.talk":
         dream_prompt = prompt_templates.dream_talk_prompt.format(char=agent.char)
@@ -115,10 +94,7 @@ def _build_interaction_message_list(
             f"【场景】{dream_prompt}",
             f"【当前时间】{datetime.now().strftime('%Y-%m-%d %H:%M')}",
         ]
-
-    user_message = "\n".join(user_message_lines)
-    msg_list.append({"role": "user", "content": user_message})
-    return msg_list
+    return {"role": "user", "content": "\n".join(user_message_lines)}
 
 
 def _create_interaction_scheduler(
@@ -180,12 +156,12 @@ async def generate_interaction_message(
         return
 
     try:
-        msg_list_for_llm = _build_interaction_message_list(params)
+        msg_list_for_llm = _build_interaction_history(params)
     except Exception as e:
-        logger.error(f"[交互WS] 构建消息列表失败: {e}")
+        logger.error(f"[交互WS] 构建历史消息列表失败: {e}")
         yield ErrorResponse(
             error_code="INTERACTION_BUILD_ERROR",
-            data=f"构建消息列表失败: {e}",
+            data=f"构建历史消息列表失败: {e}",
         )
         return
 
@@ -209,7 +185,7 @@ async def generate_interaction_message(
     )
 
     pipeline = scheduler.create_task_pipeline(
-        user_message="",
+        user_message=[_build_event_user_message(params, agent)],
         system_context=_build_interaction_system_prompt(params),
         history_messages=msg_list_for_llm,
     )
@@ -234,7 +210,9 @@ async def generate_interaction_message(
         full_text = chat_context.get_full_text()
         yield DoneResponse(full_text=full_text)
 
-        await agent.add_interaction_msg(full_text)
+        # chat_history 保存多任务 JSON 格式，长期记忆保存纯文本
+        raw_output = getattr(chat_context, "get_raw_output", lambda: full_text)()
+        await agent.add_interaction_msg(raw_output, plain_text=full_text)
 
     except Exception as e:
         for task in list(chat_context.pending_tasks):

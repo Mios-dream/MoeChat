@@ -147,15 +147,6 @@ class Assistant:
                 mask_prompt=self.mask, char=self.char, user=self.user
             )
             self.prompt += self.mask_prompt + "\n\n"
-        # 加入对话案例到提示词
-        if self.agent_config.messageExamples:
-            self.message_example_prompt = prompt.message_example_prompt.format(
-                message_example="\n".join(self.agent_config.messageExamples),
-                char=self.char,
-                user=self.user,
-            )
-            self.prompt += self.message_example_prompt + "\n\n"
-
         if self.agent_config.extraDescription:
             self.extra_description_prompt = prompt.extra_description_prompt.format(
                 extra_description=self.agent_config.extraDescription,
@@ -166,6 +157,15 @@ class Assistant:
         # 加入自定义提示词到提示词
         if self.agent_config.customPrompt:
             self.prompt += self.agent_config.customPrompt + "\n\n"
+        # 对话案例置于尾部——所有角色核心设定（description / personality / customPrompt）
+        # 完成后才追加风格参考，避免喧宾夺主
+        if self.agent_config.messageExamples:
+            self.message_example_prompt = prompt.message_example_prompt.format(
+                message_example="\n".join(self.agent_config.messageExamples),
+                char=self.char,
+                user=self.user,
+            )
+            self.prompt += self.message_example_prompt + "\n\n"
 
     async def _calculate_love_change(self, user_message, assistant_reply) -> int:
         """
@@ -580,9 +580,13 @@ class Assistant:
             user_msg: 用户输入的消息
             assistant_msg: 助手回复的消息
         """
-        self.chat_history = self.chat_history[
-            -self.agent_config.settings.contextLength :
-        ]
+        # 安全截断：移除孤立 tool 消息（前驱 tool_calls 被切掉时）
+        max_len = self.agent_config.settings.contextLength
+        if len(self.chat_history) > max_len:
+            truncated = self.chat_history[-max_len:]
+            while truncated and truncated[0].get("role") == "tool":
+                truncated = truncated[1:]
+            self.chat_history = truncated
 
         await asyncio.gather(
             self.insert_core_mem(user_msg, assistant_msg, ""),
@@ -595,16 +599,20 @@ class Assistant:
             ),
         )
 
-    async def add_interaction_msg(self, msg: str) -> None:
+    async def add_interaction_msg(
+        self, msg: str, plain_text: str | None = None
+    ) -> None:
         """
         保存交互事件消息到上下文,保存聊天历史,更新长期记忆
         Parameters:
-            msg: 助手回复消息
+            msg: 助手回复消息（保存到 chat_history，建议传递多任务 JSON 格式）
+            plain_text: 纯文本版本（保存到长期记忆），为 None 时使用 msg
         """
         # 添加交互事件消息到上下文
         self.chat_history.append({"role": "assistant", "content": msg})
 
-        current_turn = self.chat_history[-1:]  # 只取最新的两条消息
+        content_for_memory = plain_text or msg
+        current_turn = [{"role": "assistant", "content": content_for_memory}]
 
         await self._task_add_long_memory(current_turn)
 

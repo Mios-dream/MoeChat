@@ -62,11 +62,15 @@ class ChatWSMessageType(str, Enum):
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
         ]
 
-    txt 文件需由客户端读取后作为 text content part 传入。
+    附件统一通过 files 字段传入（不再有独立的 images 字段）：
+        files: [
+            {"data": "<base64>", "name": "photo.png"},    # 图片 → 自动 OCR 或 image_url
+            {"data": "<base64>", "name": "doc.txt"},      # txt  → 自动读取文本
+        ]
 
     处理规则（由 enable_multimodal 配置控制）:
-    - true:  原样透传，image_url 直接发给多模态 LLM
-    - false: 自动 OCR 识别 image_url 图片，替换为纯文本后再送入 LLM
+    - true:  图片原样透传 image_url，直接发给多模态 LLM
+    - false: 图片自动 OCR 识别，替换为纯文本后再送入 LLM
     """
 
     CHAT_CANCEL = "chat:cancel"
