@@ -29,8 +29,9 @@ from core.chat.v3_motion import V3ChatService
 from core.interaction_core import generate_interaction_message
 from models.dto.request.chat_request import ChatRequest
 from models.dto.request.interaction_request import InteractionMessageRequest
-from models.dto.response.ChatResponse import ErrorResponse
+from models.dto.response.ChatResponse import ErrorMessage
 from my_utils.log import logger
+from services.assistant_service import AssistantService
 from api.ws.chat_protocol import ChatWSMessageType
 from tool_system.integration import ToolCallIntegration
 from models.dto.response.ToolWsResponse import (
@@ -48,6 +49,9 @@ v3_service = V3ChatService()
 
 # ── 模块级 WebSocketManager 单例 ──
 ws_manager = get_ws_manager()
+
+# ── 助手服务单例 ──
+assistant_service = AssistantService()
 
 
 class ChatWebSocketHandler:
@@ -130,7 +134,9 @@ class ChatWebSocketHandler:
             logger.error(f"[ChatWS] 异常: {e}")
             try:
                 await self._websocket.send_json(
-                    ErrorResponse(error_code="WS_ERROR", data=str(e))
+                    ErrorMessage(error_code="WS_ERROR", data=str(e)).model_dump(
+                        exclude_none=True
+                    )
                 )
             except Exception:
                 pass
@@ -165,6 +171,9 @@ class ChatWebSocketHandler:
 
         elif msg_type == ChatWSMessageType.CHAT_CANCEL.value:
             await self._handle_chat_cancel(data)
+
+        elif msg_type == ChatWSMessageType.CHAT_CLEAR.value:
+            await self._handle_chat_clear(data)
 
         elif msg_type == ChatWSMessageType.TOOL_RESULT.value:
             await self._handle_tool_result(data)
@@ -254,7 +263,7 @@ class ChatWebSocketHandler:
             v3_service.set_integration(self._integration)
 
             async for response in v3_service.chat(chat_request):
-                await self._websocket.send_json(response.model_dump())
+                await self._websocket.send_json(response.model_dump(exclude_none=True))
 
         except asyncio.CancelledError:
             logger.info(f"[ChatWS] 聊天生成已取消: session={self._session_id}")
@@ -263,7 +272,9 @@ class ChatWebSocketHandler:
             logger.error(f"[ChatWS] 聊天生成失败: {e}")
             logger.error(traceback.format_exc())
             await self._websocket.send_json(
-                ErrorResponse(error_code="GENERATION_ERROR", data=str(e)).model_dump()
+                ErrorMessage(error_code="GENERATION_ERROR", data=str(e)).model_dump(
+                    exclude_none=True
+                )
             )
 
     async def _handle_chat_cancel(self, data: dict[str, Any]) -> None:
@@ -277,6 +288,43 @@ class ChatWebSocketHandler:
                 id: 要取消的消息 ID（可选，不传则取消所有）
         """
         pass
+
+    async def _handle_chat_clear(self, data: dict[str, Any]) -> None:
+        """
+        处理 chat:clear 消息
+
+        清除当前助手的聊天历史（仅内存，保留 system 消息），
+        SQLite 中的永久归档记录不受影响。
+
+        Args:
+            data: 客户端 chat:clear 消息
+        """
+        agent = assistant_service.get_current_assistant()
+        if not agent:
+            await self._websocket.send_json(
+                {
+                    "type": ChatWSMessageType.CHAT_ERROR.value,
+                    "error_code": "NO_ASSISTANT",
+                    "data": "当前没有加载助手",
+                }
+            )
+            return
+
+        # 清空内存历史（保留 system 消息）
+        agent.clear_history()
+
+        logger.info(
+            f"[ChatWS] 聊天记录已清除(仅内存): session={self._session_id}, "
+            f"assistant={agent.agent_name}"
+        )
+
+        await self._websocket.send_json(
+            {
+                "type": "chat:cleared",
+                "assistant": agent.agent_name,
+                "server_time": time.time(),
+            }
+        )
 
     # ── 交互事件处理 ──
 
@@ -301,7 +349,7 @@ class ChatWebSocketHandler:
             params = InteractionMessageRequest(**data)
         except Exception as e:
             await self._websocket.send_json(
-                ErrorResponse(
+                ErrorMessage(
                     error_code="INVALID_REQUEST",
                     data=f"交互请求参数无效: {e}",
                 ).model_dump()
@@ -327,7 +375,7 @@ class ChatWebSocketHandler:
         """
         try:
             async for response in generate_interaction_message(params):
-                await self._websocket.send_json(response.model_dump())
+                await self._websocket.send_json(response.model_dump(exclude_none=True))
 
         except asyncio.CancelledError:
             logger.info(f"[ChatWS] 交互生成已取消: session={self._session_id}")
@@ -336,7 +384,9 @@ class ChatWebSocketHandler:
             logger.error(f"[ChatWS] 交互生成失败: {e}")
             logger.error(traceback.format_exc())
             await self._websocket.send_json(
-                ErrorResponse(error_code="INTERACTION_ERROR", data=str(e)).model_dump()
+                ErrorMessage(error_code="INTERACTION_ERROR", data=str(e)).model_dump(
+                    exclude_none=True
+                )
             )
 
     # ── 工具调用处理 ──

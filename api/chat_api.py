@@ -15,150 +15,82 @@ MotionGenerator:
 ```
 """
 
-from fastapi.responses import StreamingResponse
+import json
+
 from fastapi import APIRouter, HTTPException, Query
-from models.dto.request.chat_request import ChatRequest
-from my_utils import config_manager as CConfig
+from openai.types.chat import ChatCompletionMessageParam
 
 # 导入基础组件
-from core.chat.base import assistant_service, to_sse_stream
-
-# 导入各版本的聊天服务
-from core.chat import (
-    V1ChatService,  # V1 版本
-    V2ChatService,  # V2 版本
-    V3ChatService,  # V3 版本
-)
-
-from tool_system.integration import ToolCallIntegration
+from core.chat.base import assistant_service
 
 chat_api = APIRouter()
-# V1 版本：基础文本 + TTS
-v1_service = V1ChatService()
-# V2 版本：文本 + TTS + 动作
-v2_service = V2ChatService()
-# V3 版本：信息调度中心（服务端工具）
-v3_service = V3ChatService()
-v3_service.set_integration(
-    ToolCallIntegration()
-)  # HTTP API 仅支持服务端工具，无 WS 连接
-
-
-def _get_motion_version() -> str:
-    """
-    获取配置中的动作生成器版本
-
-    返回：
-    - "v2", "v3"
-    """
-    motion_config = CConfig.config.get("MotionGenerator", {})
-    return motion_config.get("version", "v3")
-
-
-@chat_api.get("/chat")
-async def tts_api_get(
-    text: str = Query(..., description="用户输入的文本"),
-    generation_motion: bool = False,
-    is_sleep_mode: bool = Query(False, description="是否处于睡眠模式"),
-):
-    """
-    GET 方式聊天接口
-
-    参数：
-    - text: 用户输入文本
-    - generation_motion: 是否生成动作
-    - is_sleep_mode: 是否睡眠模式
-    """
-    if not text:
-        raise ValueError("消息内容不能为空")
-
-    params = ChatRequest(text=text, is_sleep_mode=is_sleep_mode, generation_motion=generation_motion)
-
-    if generation_motion:
-        # 根据配置选择版本
-        motion_version = _get_motion_version()
-
-        if motion_version == "v3":
-
-            return StreamingResponse(
-                to_sse_stream(v3_service.chat(params)),
-                media_type="text/event-stream",
-            )
-        else:
-            # V2 版本：基础版本
-            return StreamingResponse(
-                to_sse_stream(v2_service.chat(params)),
-                media_type="text/event-stream",
-            )
-    else:
-        # 不生成动作
-        return StreamingResponse(
-            to_sse_stream(v1_service.chat(params)),
-            media_type="text/event-stream",
-        )
-
-
-@chat_api.post("/chat")
-async def tts_api(params: ChatRequest):
-    """
-    POST 方式聊天接口
-
-    参数：
-    - params: 聊天请求参数（text + files）
-    """
-
-    if params.generation_motion:
-        # 根据配置选择版本
-        motion_version = _get_motion_version()
-
-        if motion_version == "v3":
-            # V3 版本：信息调度中心
-            return StreamingResponse(
-                to_sse_stream(v3_service.chat(params)),
-                media_type="text/event-stream",
-            )
-        else:
-            # V2 版本：基础版本
-            return StreamingResponse(
-                to_sse_stream(v2_service.chat(params)),
-                media_type="text/event-stream",
-            )
-    else:
-        # 不生成动作
-        return StreamingResponse(
-            to_sse_stream(v1_service.chat(params)),
-            media_type="text/event-stream",
-        )
 
 
 @chat_api.get("/chat/history")
-async def get_chat_history(
-    only_assistant: bool = Query(False, description="是否只返回助手消息"),
-    limit: int = Query(10, ge=1, le=50, description="最多返回的消息条数"),
-):
+async def get_chat_history():
     """
-    获取聊天历史
+    获取聊天历史（内存中的完整消息记录，包含工具调用信息）
 
     参数：
     - only_assistant: 是否只返回助手消息
-    - limit: 最多返回的消息条数
     """
     agent = assistant_service.get_current_assistant()
     if not agent:
         raise HTTPException(status_code=400, detail="当前没有加载助手")
 
-    history_list = agent.memoryEngine.get_recent_chat_turns(
-        limit=limit, only_assistant=only_assistant
-    )
+    history_list = agent.get_history()
+    history_list = _simplify_history(history_list)
 
     return {
         "msg": "Get chat history success",
         "assistant": agent.agent_name,
-        "onlyAssistant": only_assistant,
-        "source": "sqlite",
+        "onlyAssistant": history_list,
+        "source": "memory",
         "count": len(history_list),
         "data": history_list,
     }
+
+
+def _simplify_history(
+    history: list[ChatCompletionMessageParam],
+) -> list[ChatCompletionMessageParam]:
+    """
+    简化聊天历史中的助手消息。
+
+    V3 版本将多任务 JSON 存入 content（如 ``{"text": "你好", "actions": {...}}``），
+    前端直接展示需要自行解析 JSON，本函数预处理提取纯文本，方便前端直接使用。
+
+    处理规则：
+    - 对 assistant 消息，尝试解析 content 为 JSON（支持逐行解析），
+      成功则用 text 字段替换原 content；
+    - 解析失败或非 assistant 消息则原样保留。
+    """
+    simplified: list[ChatCompletionMessageParam] = []
+    for msg in history:
+        if msg.get("role") == "assistant" and isinstance(msg.get("content"), str):
+            content: str = msg["content"]  # type: ignore[assignment]
+            texts: list[str] = []
+            for line in content.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    if isinstance(data, dict) and "text" in data:
+                        texts.append(data["text"])
+                    else:
+                        # 有可解析 JSON 但无 text 字段，不做处理
+                        texts = []
+                        break
+                except json.JSONDecodeError:
+                    # 非 JSON 行（纯文本），不做处理
+                    texts = []
+                    break
+            if texts:
+                plain_text = " ".join(texts)
+                msg = {**msg, "content": plain_text}
+        simplified.append(msg)
+    return simplified
 
 
 @chat_api.get("/chat/diary")

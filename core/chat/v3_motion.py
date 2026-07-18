@@ -28,16 +28,18 @@ V3 版本聊天模块
 │     LLM: {"text": "你好", "actions": ["blush"]}                  │
 │     解析器: text → "你好", actions → ["blush"]                    │
 ├─────────────────────────────────────────────────────────────────┤
-│  5. MotionEngineService 处理动作                                  │
-│     text → 语义检索 → DB 动作曲线 → 特殊动作覆盖 → 混合 → 关键帧     │
+│  5. 句子就绪即发：text + motion 到齐 → 入队 → 后台并行 TTS + 动作检索  │
+│     _process_item: asyncio.gather(tts, motion_engine)              │
+│     → emit_ready 按入队顺序取出已就绪事件发射                        │
 └─────────────────────────────────────────────────────────────────┘
 
 调用链说明：
 - BaseChatContext: 基础上下文（v1.py）
   - handle_json_result: 处理文本结果 → text_wrapper + tts_task
 - V3MotionChatContext: 继承基础上下文，添加动作处理
-  - handle_motion_result: 处理动作结果 → _create_motion_event
-  - handle_result: 分发任务结果到对应处理方法
+  - handle_result: 分发任务结果 → 缓存数据 → 配对入队 → 后台处理
+  - _process_item: 后台并行执行 TTS + 动作检索 → 标记就绪
+  - emit_ready: 按入队顺序取出已就绪事件
 - _create_motion_event: get_motion_engine() → engine.process() → motion_to_keyframes()
 
 SSE 事件格式：
@@ -48,16 +50,17 @@ data: {"type": "motion_frame", "sentence_id": 1, "motions": [...], ...}
 
 from collections.abc import AsyncGenerator
 import json
-import time
 import asyncio
 from models.dto.request.chat_request import ChatRequest
 from core.chat.multimodal_processor import build_user_message_content
 from models.dto.response.ChatResponse import (
-    ChatResponse,
-    DoneResponse,
-    ErrorResponse,
+    AssistantMessage,
+    DoneMessage,
+    ErrorMessage,
     FullChatResponse,
-    MotionResponse,
+    ToolCallItem,
+    ToolCallFunction,
+    ToolMessage,
 )
 from my_utils.log import logger
 from core.scheduler import (
@@ -66,10 +69,14 @@ from core.scheduler import (
     create_motion_task,
     create_bilingual_task,
 )
-from core.scheduler.task import TaskResult
+from core.scheduler.task import TaskResult, ToolCallEvent, ToolResultEvent
 from core.scheduler.parsers.text_stream_parser import filter_tts_text
-from core.chat.base import store_sentence_event
+from core.chat.base import tts_wrapper
 from core.chat.v1 import BaseChatContext
+from dataclasses import dataclass, field
+from typing import Literal
+
+
 from core.expression_generator.motion_engine_v3 import (
     ACTION_DESCRIPTIONS,
     MotionEngineService,
@@ -84,22 +91,35 @@ from services.assistant_service import AssistantService
 from tool_system.integration import ToolCallIntegration
 
 
+@dataclass
+class _QueueItem:
+    """队列项：句子待处理/工具事件直接就绪"""
+
+    kind: Literal["sentence", "tool"]
+    events: list[FullChatResponse] | None = None
+    is_ready: bool = False
+    _ready_event: asyncio.Event = field(default_factory=asyncio.Event)
+
+    # 句子专用字段
+    text: str = ""
+    motions: list[dict] | None = None
+    expression: str | None = None
+
+
 async def _create_motion_event(
-    sentence_id: int,
     text: str,
     motions: list[dict],
     expression: str | None,
     engine: MotionEngineService,
-) -> MotionResponse:
+) -> dict | None:
     """
     创建动作事件
 
     使用 V3 动作引擎：语义检索 → anchor 定位 → 跨句子释放 → 覆盖混合 → 输出逐帧曲线。
 
     参数：
-    - sentence_id: 句子 ID
     - text: 原始文本（用于语义检索和 anchor 定位）
-    - motions: LLM 输出的动作列表 [{"name": str, "anchor": str, "intensity": float}, ...]
+    - motions: LLM 输出的特殊动作列表 [{"name": str, "anchor": str, "intensity": float}, ...]
     - expression: 整句表情名（用于面部渲染），None 表示沿用上一句
     - engine: MotionEngineService 实例
 
@@ -122,113 +142,229 @@ async def _create_motion_event(
     duration_ms = int((motion_data.duration if motion_data else text_duration) * 1000)
 
     if motion_data is None:
-        return MotionResponse(
-            sentence_id=sentence_id,
-            source_text=text,
-            motions=[],
-            duration=0,
-        )
+        return None
 
     motion_dict: dict = {
         "duration": duration_ms,
         "curves": motion_data.curves,
         "fps": motion_data.fps,
+        "expression": motion_data.expression,
     }
-    if motion_data.expression:
-        motion_dict["expression"] = motion_data.expression
 
-    return MotionResponse(
-        sentence_id=sentence_id,
-        source_text=text,
-        motions=[motion_dict],
-        duration=duration_ms,
-    )
+    return motion_dict
 
 
 class V3MotionChatContext(BaseChatContext):
     """
     V3Motion 聊天上下文
 
-    继承基础上下文，处理 text / bilingual / motion 三种任务结果。
+    输出策略：
+    - 句子（text+motion）就绪后立即入队并启动后台 TTS + 动作检索
+    - 工具事件直接入队标记就绪
+    - emit_ready: 按入队顺序依次取出已就绪事件
     """
 
     def __init__(
         self, tts_lang: str = "zh", expressions: list[ExpressionInfo] | None = None
     ):
-        super().__init__(
-            event_order=("text", "audio", "motion_frame"),
-            tts_concurrency=1,
-        )
+        super().__init__(tts_concurrency=1)
         self.tts_lang: str = tts_lang
         self.text_cache: dict[int, str] = {}
         self.motion_cache: dict[int, list[dict]] = {}
+        self.expression_cache: dict[int, str] = {}
         self.expressions: list[ExpressionInfo] = expressions or []
         self.motion_engine: MotionEngineService = MotionEngineService(
             Config.MOTION_DB_PATH
         )
-        # 按 sentence_id 收集原始多任务 JSON 行，用于保存到 chat_history
         self._raw_json_lines: dict[int, str] = {}
 
+        # 有序发射队列
+        self._queue: list[_QueueItem] = []
+        # 缓冲区：等待 text/motion 配对
+        self._text_buf: dict[int, str] = {}
+        self._motion_buf: dict[int, tuple[list[dict], str | None]] = {}
+
+    async def _build_motion_event(
+        self,
+        text: str,
+        motions: list[dict],
+        expression: str | None = None,
+    ) -> dict | None:
+        """调用动作引擎生成 motion 曲线字典"""
+        return await _create_motion_event(
+            text=text,
+            motions=motions,
+            expression=expression,
+            engine=self.motion_engine,
+        )
+
     async def handle_json_result(self, result: TaskResult):
-        """处理文本结果"""
+        """缓存文本"""
         sentence_id = result.sentence_id
         text = result.data
-        tts_text = filter_tts_text(text)
-
         self.text_cache[sentence_id] = text
         self.full_text_list.append(text)
 
-        await self.create_text_event(sentence_id, text)
-        if self.tts_lang == "zh":
-            self.track_task(
-                asyncio.create_task(
-                    self.create_audio_event(sentence_id, text, tts_text)
-                )
-            )
-
     async def handle_motion_result(self, result: TaskResult):
-        """处理动作结果"""
+        """缓存动作"""
         sentence_id = result.sentence_id
         motion_data: dict = result.data
         motions: list[dict] = motion_data.get("motions", [])
         expression: str | None = motion_data.get("expression")
-
         self.motion_cache[sentence_id] = motions
-
-        if sentence_id in self.text_cache:
-            motion_event = await _create_motion_event(
-                sentence_id=sentence_id,
-                text=self.text_cache[sentence_id],
-                motions=motions,
-                expression=expression,
-                engine=self.motion_engine,
-            )
-            store_sentence_event(
-                self.sentence_events, sentence_id, "motion_frame", motion_event
-            )
+        if expression:
+            self.expression_cache[sentence_id] = expression
 
     async def handle_bilingual_result(self, result: TaskResult):
-        """处理双语翻译结果"""
+        """缓存双语文本"""
         sentence_id = result.sentence_id
         text = result.data.get("text", "")
-        tts_text = result.data.get("tts_text", "")
-        self.track_task(
-            asyncio.create_task(self.create_audio_event(sentence_id, text, tts_text))
-        )
+        self.text_cache[sentence_id] = text
+        self.full_text_list.append(text)
 
     async def handle_result(self, result: TaskResult):
-        """分发任务结果：text / bilingual / motion，并捕获原始多任务 JSON"""
-        # 每 sentence_id 只捕获一次原始 JSON 行
+        """分发任务结果：缓存数据，配对入队，启动后台处理"""
         if result.raw_data and result.sentence_id not in self._raw_json_lines:
             self._raw_json_lines[result.sentence_id] = json.dumps(
                 result.raw_data, ensure_ascii=False
             )
+
         if result.task_type == "text":
             await self.handle_json_result(result)
+            self._text_buf[result.sentence_id] = result.data
         elif result.task_type == "bilingual":
             await self.handle_bilingual_result(result)
+            self._text_buf[result.sentence_id] = result.data.get("text", "")
         elif result.task_type == "motion":
             await self.handle_motion_result(result)
+            motions = result.data.get("motions", [])
+            expression = result.data.get("expression")
+            self._motion_buf[result.sentence_id] = (motions, expression)
+        elif result.task_type == "tool_call":
+            tc: ToolCallEvent = result.data
+            self._queue.append(
+                _QueueItem(
+                    kind="tool",
+                    is_ready=True,
+                    events=[
+                        AssistantMessage(
+                            tool_calls=[
+                                ToolCallItem(
+                                    id=tc.call_id,
+                                    function=ToolCallFunction(
+                                        name=tc.tool_name,
+                                        arguments=tc.arguments,
+                                    ),
+                                )
+                            ]
+                        )
+                    ],
+                )
+            )
+            return
+        elif result.task_type == "tool_result":
+            tr: ToolResultEvent = result.data
+            self._queue.append(
+                _QueueItem(
+                    kind="tool",
+                    is_ready=True,
+                    events=[ToolMessage(tool_call_id=tr.call_id, content=tr.content)],
+                )
+            )
+            return
+
+        # 尝试将已配对的句子入队
+        self._flush_sentences()
+
+    def _flush_sentences(self):
+        """将已配对的句子按 sid 顺序入队，并启动后台处理"""
+        while self._text_buf:
+            sid = min(self._text_buf)
+            if sid in self._motion_buf:
+                text = self._text_buf.pop(sid)
+                motions, expression = self._motion_buf.pop(sid)
+            elif len(self._text_buf) > 1:
+                # 更高 sid 的 text 已到达 → 本句不会再有 motion
+                text = self._text_buf.pop(sid)
+                motions, expression = None, None
+            else:
+                # 唯一待处理句子，等待 motion 到达
+                break
+
+            item = _QueueItem(
+                kind="sentence",
+                text=text,
+                motions=motions,
+                expression=expression,
+            )
+            self._queue.append(item)
+
+            # 后台处理：TTS + 动作检索
+            asyncio.create_task(self._process_item(item))
+
+    async def _process_item(self, item: _QueueItem):
+        """后台处理句子：并行 TTS + 动作检索，完成后标记就绪"""
+        try:
+            tts_text = filter_tts_text(item.text)
+
+            motion_event: dict | None = None
+            audio_file: str | None = None
+
+            if item.motions and self.tts_lang == "zh" and tts_text.strip():
+                motion_event, audio_file = await asyncio.gather(
+                    self._build_motion_event(item.text, item.motions, item.expression),
+                    tts_wrapper(self.tts_semaphore, item.text, tts_text),
+                )
+            elif item.motions:
+                motion_event = await self._build_motion_event(
+                    item.text, item.motions, item.expression
+                )
+            elif self.tts_lang == "zh" and tts_text.strip():
+                audio_file = await tts_wrapper(self.tts_semaphore, item.text, tts_text)
+
+            extras = {}
+            if motion_event:
+                extras["motion"] = motion_event
+            if audio_file:
+                extras["audio"] = audio_file
+
+            item.events = [AssistantMessage(content=item.text, extras=extras or None)]
+            item.is_ready = True
+            item._ready_event.set()
+
+        except Exception as e:
+            logger.error(f"[V3] 处理句子出错: {e}", exc_info=True)
+            item.events = [AssistantMessage(content=item.text)]
+            item.is_ready = True
+            item._ready_event.set()
+
+    def emit_ready(self) -> list[FullChatResponse]:
+        """按入队顺序取出已就绪的事件"""
+        events = []
+        while self._queue and self._queue[0].is_ready:
+            events.extend(self._queue.pop(0).events or [])
+        return events
+
+    async def finalize(self):
+        """管道结束后：将缓冲区中剩余的句子入队，等待所有后台任务完成"""
+        # 清空缓冲区：管道已结束，不再会有新的 TaskResult 到达
+        for sid in sorted(self._text_buf):
+            text = self._text_buf[sid]
+            motions, expression = self._motion_buf.pop(sid, (None, None))
+            item = _QueueItem(
+                kind="sentence",
+                text=text,
+                motions=motions,
+                expression=expression,
+            )
+            self._queue.append(item)
+            asyncio.create_task(self._process_item(item))
+        self._text_buf.clear()
+
+        # 等待所有句子项处理完成
+        for item in self._queue:
+            if item.kind == "sentence" and not item.is_ready:
+                await item._ready_event.wait()
 
     def get_raw_output(self) -> str:
         """获取多任务 JSON 格式的完整输出"""
@@ -257,6 +393,9 @@ class V3ChatService:
         self.integration = integration
 
     def _build_scheduler(self, agent) -> TaskScheduler:
+        """
+        创建调度器，注册任务
+        """
         scheduler = TaskScheduler()
         scheduler.add_task(create_text_task(priority=100))
 
@@ -275,9 +414,12 @@ class V3ChatService:
         return scheduler
 
     async def chat(self, params: ChatRequest) -> AsyncGenerator[FullChatResponse]:
+        """
+        聊天编排
+        """
         agent = self.assistant_service.get_current_assistant()
         if not agent:
-            yield ErrorResponse(error_code="NO_ASSISTANT", data="当前没有加载助手")
+            yield ErrorMessage(error_code="NO_ASSISTANT", data="当前没有加载助手")
             return
 
         user_message, user_text = build_user_message_content(params)
@@ -310,25 +452,26 @@ class V3ChatService:
         try:
             async for result in pipeline.execute():
                 await ctx.handle_result(result)
-                for event in ctx.drain_ready_events():
+                for event in ctx.emit_ready():
                     yield event
 
-            await ctx.wait_for_completion()
-            for event in ctx.drain_ready_events():
+            # 等待所有后台任务完成，按序发射剩余事件
+            await ctx.finalize()
+            for event in ctx.emit_ready():
                 yield event
 
             full_text = ctx.get_full_text()
-            yield DoneResponse(full_text=full_text)
+            yield DoneMessage(full_text=full_text)
 
             # chat_history 保存多任务 JSON 格式，让模型从历史中学习输出格式
             raw_output = ctx.get_raw_output()
             agent.chat_history.append({"role": "assistant", "content": raw_output})
             asyncio.create_task(
-                agent.add_msg(user_msg=user_text, assistant_msg=full_text)
+                agent.add_msg(user_msg=user_text, assistant_msg=ctx.get_full_text())
             )
 
         except Exception as e:
             for task in list(ctx.pending_tasks):
                 task.cancel()
             logger.error(f"[V3] 处理数据时出错: {e}", exc_info=True)
-            yield ErrorResponse(error_code="500", data=f"处理数据时出错: {e}")
+            yield ErrorMessage(error_code="500", data=f"处理数据时出错: {e}")

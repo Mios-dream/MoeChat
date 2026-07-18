@@ -1,6 +1,5 @@
 from datetime import datetime
 from collections.abc import AsyncGenerator
-from typing import Any
 
 from core.scheduler.builtin_tasks import (
     create_motion_task,
@@ -9,14 +8,13 @@ from core.scheduler.builtin_tasks import (
 )
 from models.dto.request.interaction_request import InteractionMessageRequest
 from models.dto.response.ChatResponse import (
-    DoneResponse,
-    ErrorResponse,
+    DoneMessage,
+    ErrorMessage,
     FullChatResponse,
 )
 from my_utils import prompt as prompt_templates
 from my_utils.log import logger
 from services.assistant_service import AssistantService
-from core.chat.v1 import BaseChatContext
 from core.chat.v3_motion import V3MotionChatContext
 from core.expression_generator.motion_engine_v3 import ACTION_DESCRIPTIONS
 from core.expression_generator.utils.expression_loader import load_expressions
@@ -81,24 +79,20 @@ def _build_event_user_message(
     params: InteractionMessageRequest, agent
 ) -> ChatCompletionMessageParam:
     """构建当前事件的用户消息"""
+    if params.event_type == "sleep.talk":
+        scene = prompt_templates.dream_talk_prompt.format(char=agent.char)
+    else:
+        scene = params.scene
+
     user_message_lines = [
         f"【事件类型】{params.event_type}",
-        f"【场景】{params.scene}",
+        f"【场景】{scene}",
         f"【当前时间】{datetime.now().strftime('%Y-%m-%d %H:%M')}",
     ]
-    # 梦话事件使用专用场景描述
-    if params.event_type == "sleep.talk":
-        dream_prompt = prompt_templates.dream_talk_prompt.format(char=agent.char)
-        user_message_lines = [
-            f"【事件类型】{params.event_type}",
-            f"【场景】{dream_prompt}",
-            f"【当前时间】{datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        ]
     return {"role": "user", "content": "\n".join(user_message_lines)}
 
 
 def _create_interaction_scheduler(
-    with_motion: bool = False,
     tts_lang: str = "zh",
     available_actions: str | None = None,
 ) -> TaskScheduler:
@@ -106,27 +100,19 @@ def _create_interaction_scheduler(
     创建交互事件调度器
 
     参数：
-    - with_motion: 是否包含动作任务
     - tts_lang: GSV 合成目标语言代码（"zh"/"en"/"ja"），非中文时注册双语翻译任务
     - available_actions: 可用动作和表情列表描述，传入 create_motion_task
-
-    返回：
-    - 配置好的 TaskScheduler 实例
     """
     scheduler = TaskScheduler()
 
-    # 注册文本任务
     scheduler.add_task(create_text_task(priority=100))
 
-    # 非中文输出时注册双语翻译任务
     if tts_lang != "zh" and tts_lang in ("en", "ja"):
         scheduler.add_task(create_bilingual_task(target_lang=tts_lang, priority=150))
 
-    # 根据需要注册动作任务
-    if with_motion:
-        scheduler.add_task(
-            create_motion_task(available_actions=available_actions, priority=200)
-        )
+    scheduler.add_task(
+        create_motion_task(available_actions=available_actions, priority=200)
+    )
 
     return scheduler
 
@@ -152,14 +138,14 @@ async def generate_interaction_message(
     agent = assistant_service.get_current_assistant()
     if not agent:
         logger.error("[交互WS] 当前没有加载助手")
-        yield ErrorResponse(error_code="NO_ASSISTANT", data="当前没有加载助手")
+        yield ErrorMessage(error_code="NO_ASSISTANT", data="当前没有加载助手")
         return
 
     try:
         msg_list_for_llm = _build_interaction_history(params)
     except Exception as e:
         logger.error(f"[交互WS] 构建历史消息列表失败: {e}")
-        yield ErrorResponse(
+        yield ErrorMessage(
             error_code="INTERACTION_BUILD_ERROR",
             data=f"构建历史消息列表失败: {e}",
         )
@@ -168,18 +154,15 @@ async def generate_interaction_message(
     tts_lang = agent.agent_config.gsvSetting.textLang
 
     # 构建可用动作和表情列表，传入动作任务
-    action_prompt = None
-    if params.generation_motion:
-        expressions = load_expressions(agent.agent_name)
-        action_prompt = (
-            f"可用动作标签：\n"
-            f"{', '.join([f'{action}: {desc}' for action, desc in ACTION_DESCRIPTIONS.items()])}\n"
-            f"可用表情：\n"
-            f"{[expr.name for expr in expressions]}"
-        )
+    expressions = load_expressions(agent.agent_name)
+    action_prompt = (
+        f"可用动作标签：\n"
+        f"{', '.join([f'{action}: {desc}' for action, desc in ACTION_DESCRIPTIONS.items()])}\n"
+        f"可用表情：\n"
+        f"{[expr.name for expr in expressions]}"
+    )
 
     scheduler = _create_interaction_scheduler(
-        with_motion=params.generation_motion,
         tts_lang=tts_lang,
         available_actions=action_prompt,
     )
@@ -190,36 +173,34 @@ async def generate_interaction_message(
         history_messages=msg_list_for_llm,
     )
 
-    if params.generation_motion:
-        chat_context = V3MotionChatContext(tts_lang=tts_lang)
-    else:
-        chat_context = BaseChatContext(event_order=("text", "audio"))
+    chat_context = V3MotionChatContext(tts_lang=tts_lang)
 
     try:
         async for result in pipeline.execute():
             await chat_context.handle_result(result)
 
-            for payload in chat_context.drain_ready_events():
+            for payload in chat_context.emit_ready():
                 yield payload
 
-        await chat_context.wait_for_completion()
+        await chat_context.finalize()
 
-        for payload in chat_context.drain_ready_events():
+        for payload in chat_context.emit_ready():
             yield payload
 
         full_text = chat_context.get_full_text()
-        yield DoneResponse(full_text=full_text)
+        yield DoneMessage(full_text=full_text)
 
         # chat_history 保存多任务 JSON 格式，长期记忆保存纯文本
-        raw_output = getattr(chat_context, "get_raw_output", lambda: full_text)()
-        await agent.add_interaction_msg(raw_output, plain_text=full_text)
+        await agent.add_interaction_msg(
+            chat_context.get_raw_output(), plain_text=full_text
+        )
 
     except Exception as e:
         for task in list(chat_context.pending_tasks):
             task.cancel()
 
         logger.error(f"[交互WS] 处理数据时出错: {e}", exc_info=True)
-        yield ErrorResponse(
+        yield ErrorMessage(
             error_code="INTERACTION_ERROR",
             data=f"处理数据时出错: {e}",
         )

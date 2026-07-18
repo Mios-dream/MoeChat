@@ -319,6 +319,24 @@ class Pipeline:
                             }
                         )
 
+                # 产出工具调用 TaskResult，供外层生成 SSE 事件
+                for tc in exec_result.tool_call_events:
+                    yield TaskResult(
+                        task_name="tool_call",
+                        task_type="tool_call",
+                        data=tc,
+                        sentence_id=0,
+                    )
+
+                # 产出工具结果 TaskResult，供外层生成 SSE 事件
+                for tr in exec_result.tool_result_events:
+                    yield TaskResult(
+                        task_name="tool_result",
+                        task_type="tool_result",
+                        data=tr,
+                        sentence_id=0,
+                    )
+
                 # 注入工具消息到上下文（内部闭环）
                 current_messages.append(
                     {"role": "assistant", "content": "", "tool_calls": tool_calls}

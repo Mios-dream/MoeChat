@@ -1,99 +1,98 @@
+"""
+聊天响应数据模型
+
+统一使用与 OpenAI Chat Completion API 兼容的消息格式：
+- type: "chat:result" → 聊天结果（文本/音频/动作/工具调用），role 标明角色
+- type: "tool" → 工具执行结果
+- type: "done" → 流结束
+- type: "error" → 错误
+
+设计原则：
+- 所有事件内部字段与 OpenAI 消息格式对齐（role/content/tool_calls/tool_call_id）
+- 自定义扩展字段命名简洁，便于前端使用和后续拓展
+- 前端可用同一套解析逻辑处理实时流事件和历史记录
+"""
+
 from typing import Literal, Annotated
 from pydantic import BaseModel, Field
 
 
-class TextResponse(BaseModel):
+class ToolCallFunction(BaseModel):
     """
-    聊天响应数据模型
-    """
+    OpenAI 格式函数调用信息
 
-    type: Literal["chat:text"] = "chat:text"
-    sentence_id: int  # 句子 ID
-    message: str
-
-
-class MotionResponse(BaseModel):
-    """
-    动作响应数据模型
+    与聊天历史中 tool_calls[].function 结构完全一致。
     """
 
-    type: Literal["chat:motion"] = "chat:motion"  # 固定为 "chat:motion"
-    sentence_id: int  # 句子 ID
-    source_text: str  # 原始句子文本
-    motions: list[dict]  # 动作数据列表
-    duration: int  # 动作持续时间（毫秒）
+    name: str
+    arguments: str  # JSON 字符串
 
 
-class AudioResponse(BaseModel):
+class ToolCallItem(BaseModel):
     """
-    音频响应数据模型
-    """
+    OpenAI 格式单个工具调用项
 
-    type: Literal["chat:audio"] = "chat:audio"  # 固定为 "chat:audio"
-    sentence_id: int  # 句子 ID
-    message: str  # 音频消息文本
-    source_text: str  # 原始句子文本
-    file: str  # 音频文件数据（base64 编码）
-
-
-class DoneResponse(BaseModel):
-    """
-    聊天完成后的响应数据模型，表示聊天已结束
+    与聊天历史中 tool_calls[] 结构完全一致。
     """
 
-    type: Literal["chat:done"] = "chat:done"  # 固定为 "chat:done"
-    full_text: str  # 完整文本
-    done: bool = True  # 聊天是否完成，固定为 True
+    id: str
+    type: Literal["function"] = "function"
+    function: ToolCallFunction
 
 
-# 判别联合类型：根据 `type` 字段自动选择对应的模型
-ChatResponse = Annotated[
-    TextResponse | MotionResponse | AudioResponse | DoneResponse,
-    Field(discriminator="type"),
-]
-
-
-class ToolCallResponse(BaseModel):
+class AssistantMessage(BaseModel):
     """
-    工具调用响应数据模型
+    聊天结果消息
 
-    当 LLM 决定调用工具时，产出此响应通知前端工具调用请求的完整信息。
+    覆盖三种场景：
+     1. 文本输出（可附带音频/动作）：content 非空，extras 可选
+     2. 工具调用：tool_calls 非空，无 content
+     3. 增量更新：仅携带 extras 字段，前端按 sentence_id 合并
+
+    extras 为统一扩展字段，容纳 audio / motion 等应用层数据。
     """
 
-    type: Literal["tool_call"] = "tool_call"
-    call_id: str  # 工具调用唯一 ID（OpenAI tool_call_id）
-    tool_name: str  # 工具名称
-    arguments: str  # 工具参数（JSON 字符串）
+    type: Literal["chat:result"] = "chat:result"
+    role: Literal["assistant"] = "assistant"
+    content: str | None = None
+    tool_calls: list[ToolCallItem] | None = None
+    extras: dict | None = None
 
 
-class ToolResultResponse(BaseModel):
+class ToolMessage(BaseModel):
     """
-    工具执行结果响应数据模型
+    工具执行结果消息
 
-    当工具执行完成后，产出此响应通知前端工具执行结果。
-    包含原始调用参数与执行输出，用于前端展示完整的工具调用链路。
-    """
-
-    type: Literal["tool_result"] = "tool_result"
-    tool_call_id: str  # 对应的工具调用 ID
-    tool_name: str  # 工具名称
-    arguments: dict[str, object]  # 已解析的工具参数
-    success: bool  # 执行是否成功
-    result: str  # 执行结果（已解析）
-    duration_ms: float  # 执行耗时（毫秒）
-
-
-class ErrorResponse(BaseModel):
-    """
-    错误响应数据模型
+    与 OpenAI 的 role: "tool" 消息结构完全一致。
     """
 
-    type: Literal["error"] = "error"  # 固定为 "error"
-    error_code: str  # 错误码
-    data: str  # 错误数据
+    type: Literal["chat:result"] = "chat:result"
+    role: Literal["tool"] = "tool"
+    tool_call_id: str
+    content: str
+
+
+class DoneMessage(BaseModel):
+    """
+    流结束消息
+    """
+
+    type: Literal["chat:done"] = "chat:done"
+    full_text: str
+    done: bool = True
+
+
+class ErrorMessage(BaseModel):
+    """
+    错误消息
+    """
+
+    type: Literal["error"] = "error"
+    error_code: str
+    data: str
 
 
 FullChatResponse = Annotated[
-    ChatResponse | ToolCallResponse | ToolResultResponse | ErrorResponse,
+    AssistantMessage | ToolMessage | DoneMessage | ErrorMessage,
     Field(discriminator="type"),
 ]

@@ -1,15 +1,10 @@
 """
 聊天基础组件
 
-提供所有聊天版本共享的基础组件：
+提供 V3 版本共享的基础组件：
 - TTSData: TTS 数据类
-- 事件处理函数（文本、音频事件封装）
-- 事件聚合和输出函数
-- 统一消息构建函数
-
-设计原则：
-- 基础组件与版本无关，可在 V1/V2/V3 中复用
-- 所有事件格式统一，便于前端处理
+- TTS 合成函数（tts_task / tts_wrapper）
+- SSE 流转换函数
 """
 
 import os
@@ -18,14 +13,13 @@ import asyncio
 import base64
 import re
 from Config import Config
-from models.dto.response.ChatResponse import AudioResponse, ChatResponse, TextResponse
 from services.tts_service import ttsService
 from my_utils import config_manager as CConfig
 from my_utils.log import logger
 from services.assistant_service import AssistantService
 from pydantic import BaseModel
-from models.dto.response.ChatResponse import FullChatResponse
 from collections.abc import AsyncGenerator
+from models.dto.response.ChatResponse import FullChatResponse
 
 assistant_service = AssistantService()
 
@@ -96,91 +90,9 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
         return None
 
 
-async def text_wrapper(sentence_id: int, sentence_text: str) -> TextResponse:
-    """
-    封装文本事件
-
-    参数：
-    - sentence_id: 句子 ID
-    - sentence_text: 句子文本
-
-    返回：
-    - 文本事件字典
-    """
-    return TextResponse(
-        sentence_id=sentence_id,
-        message=sentence_text,
-    )
-
-
-async def tts_wrapper(
-    tts_semaphore: asyncio.Semaphore,
-    sentence_id: int,
-    sentence_text: str,
-    tts_text: str,
-) -> AudioResponse:
-    """
-    封装音频事件
-
-    参数：
-    - tts_semaphore: TTS 并发控制信号量
-    - sentence_id: 句子 ID
-    - sentence_text: 原始句子文本
-    - tts_text: 过滤后的 TTS 文本
-
-    返回：
-    - 音频事件字典
-    """
-    audio_event: AudioResponse = AudioResponse(
-        sentence_id=sentence_id,
-        message=tts_text,
-        source_text=sentence_text,
-        file="",
-    )
-
-    async with tts_semaphore:
-        try:
-            agent = assistant_service.get_current_assistant()
-            if not agent:
-                logger.error("[错误] 当前没有加载助手")
-                return audio_event
-
-            # 查询情感标签
-            emotion = _get_emotion(sentence_text)
-            ref_audio = ""
-            ref_text = ""
-
-            if emotion:
-                agent_config = agent.agent_config.gsvSetting.extraRefAudio
-                if emotion in agent_config:
-                    ref_audio = agent_config[emotion][0]
-                    ref_text = agent_config[emotion][1]
-
-            tts_text_clean = re.sub(r"[…''" "'\"—\n\r\t\f ]", "", tts_text)
-
-            if tts_text_clean:
-                tts_data_item = TTSData(
-                    text=tts_text_clean,
-                    ref_audio=ref_audio,
-                    ref_text=ref_text,
-                )
-                audio_data = await tts_task(tts_data_item)
-                if audio_data:
-                    audio_event.file = base64.b64encode(audio_data).decode("utf-8")
-                else:
-                    logger.warning(f"[TTS] 生成空音频，sentence_id: {sentence_id}")
-            else:
-                logger.info(f"[TTS] 无可读语音内容，sentence_id: {sentence_id}")
-
-        except Exception as e:
-            logger.error(f"[TTS] 执行失败: {e}")
-
-    return audio_event
-
-
 def _get_emotion(msg: str) -> str | None:
     """
-    查询文字中的情感字段
+    从文本中提取情感标签
 
     参数：
     - msg: 消息文本
@@ -201,57 +113,59 @@ def _get_emotion(msg: str) -> str | None:
     return None
 
 
-def store_sentence_event(
-    sentence_events: dict[int, dict[str, ChatResponse]],
-    sentence_id: int,
-    event_key: str,
-    payload: ChatResponse,
-):
+async def tts_wrapper(
+    tts_semaphore: asyncio.Semaphore,
+    sentence_text: str,
+    tts_text: str,
+) -> str | None:
     """
-    按句子聚合事件
+    TTS 合成并返回 base64 音频数据
 
     参数：
-    - sentence_events: 事件存储
-    - sentence_id: 句子 ID
-    - event_key: 事件类型（"text", "audio", "motion_frame"）
-    - payload: 事件数据
-    """
-    if sentence_id not in sentence_events:
-        sentence_events[sentence_id] = {}
-    sentence_events[sentence_id][event_key] = payload
-
-
-def drain_ready_sentence_events(
-    sentence_events: dict[int, dict[str, ChatResponse]],
-    expected_sentence_id: int,
-    event_order: tuple[str, ...],
-) -> tuple[int, list[ChatResponse]]:
-    """
-    按 sentence_id 递增释放完整事件集合
-
-    参数：
-    - sentence_events: 事件存储
-    - expected_sentence_id: 预期的下一个句子 ID
-    - event_order: 事件类型顺序
+    - tts_semaphore: TTS 并发控制信号量
+    - sentence_text: 原始句子文本
+    - tts_text: 过滤后的 TTS 文本
 
     返回：
-    - (下一个预期句子 ID, 可输出的事件列表)
+    - base64 编码的音频数据，合成失败返回 None
     """
-    ready_payloads: list[ChatResponse] = []
+    async with tts_semaphore:
+        try:
+            agent = assistant_service.get_current_assistant()
+            if not agent:
+                logger.error("[错误] 当前没有加载助手")
+                return None
 
-    while True:
-        current = sentence_events.get(expected_sentence_id)
-        if not current:
-            break
-        if not all(event_type in current for event_type in event_order):
-            break
+            emotion = _get_emotion(sentence_text)
+            ref_audio = ""
+            ref_text = ""
 
-        ready_payloads.extend(current.values())
+            if emotion:
+                agent_config = agent.agent_config.gsvSetting.extraRefAudio
+                if emotion in agent_config:
+                    ref_audio = agent_config[emotion][0]
+                    ref_text = agent_config[emotion][1]
 
-        sentence_events.pop(expected_sentence_id, None)
-        expected_sentence_id += 1
+            tts_text_clean = re.sub(r"[…''" "'\"—\n\r\t\f ]", "", tts_text)
 
-    return expected_sentence_id, ready_payloads
+            if tts_text_clean:
+                tts_data_item = TTSData(
+                    text=tts_text_clean,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                )
+                audio_data = await tts_task(tts_data_item)
+                if audio_data:
+                    return base64.b64encode(audio_data).decode("utf-8")
+                else:
+                    logger.warning(f"[TTS] 生成空音频")
+            else:
+                logger.info(f"[TTS] 无可读语音内容")
+
+        except Exception as e:
+            logger.error(f"[TTS] 执行失败: {e}")
+
+    return None
 
 
 async def to_sse_stream(
@@ -267,4 +181,4 @@ async def to_sse_stream(
     - 产出 SSE 格式字符串的异步生成器
     """
     async for payload in generator:
-        yield "data: " + payload.model_dump_json(ensure_ascii=False)
+        yield "data: " + payload.model_dump_json(ensure_ascii=False, exclude_none=True)

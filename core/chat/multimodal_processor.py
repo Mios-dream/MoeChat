@@ -129,7 +129,11 @@ def build_user_message_content(
 
     返回 (user_message_content, user_text)：
     - user_message_content: list[ChatCompletionMessageParam]，OpenAI 原生格式
-      始终为 content parts list，方便前端区分用户文本和附件内容
+      content 始终为 content parts list；
+      附件以 ``[类型: 文件名]`` 标记嵌入 text part 中，前端按前缀区分：
+        ``[图片: xxx]`` — OCR 识别结果
+        ``[文件: xxx]`` — 文本文件内容
+        ``[附件: xxx]`` — 不支持的文件类型（仅展示文件名）
     - user_text: 用户原始输入的纯文本（不含附件内容），供存档和检索
     """
 
@@ -171,19 +175,25 @@ def build_user_message_content(
                     logger.error(f"[多模态处理器] 图片解码失败({file.name}): {e}")
                     ocr_text = ""
                 if ocr_text:
-                    name_tag = f"({file.name}) " if file.name else ""
                     ocr_texts.append(
-                        f"[图片 {name_tag}#{ocr_count} 中的文字]: {ocr_text}"
+                        f"[图片: {file.name or '未命名'}] {ocr_text}"
                     )
                 logger.info(
                     f"[多模态处理器] OCR 模式: 识别图片 #{ocr_count}({file.name})"
                 )
-        else:
-            # 非图片文件：当作文本读取
+        elif file.type == FileType.TEXT:
+            # 文本文件：读取内容
             text = _read_txt_content(file.data)
             if text:
-                label = f"[文件 {file.name or '未命名'} 内容]"
-                ocr_texts.append(f"{label}:\n{text}")
+                ocr_texts.append(
+                    f"[文件: {file.name or '未命名'}]\n{text}"
+                )
+        else:
+            # 不支持的文件类型：仅标记文件名，前端可展示为灰色附件卡片
+            logger.warning(f"[多模态处理器] 不支持的文件类型: {file.type}({file.name})")
+            ocr_texts.append(
+                f"[附件: {file.name or '未命名'}] 不支持的文件类型"
+            )
 
     # 组装 user_message_content（始终为 content parts list）
     content_parts: list[ChatCompletionContentPartParam] = []

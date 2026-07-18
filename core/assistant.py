@@ -569,6 +569,12 @@ class Assistant:
         """
         self.chat_history.extend(chat_turns)
 
+    def clear_history(self) -> None:
+        """
+        清除内存中的聊天历史
+        """
+        self.chat_history = []
+
     async def add_msg(self, user_msg: str, assistant_msg: str) -> None:
         """
         添加用户和助手的对话到上下文，更新长期记忆和好感度。

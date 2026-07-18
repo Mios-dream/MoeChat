@@ -76,6 +76,15 @@ class ChatWSMessageType(str, Enum):
     CHAT_CANCEL = "chat:cancel"
     """取消当前生成: {type, id(要取消的消息ID)}"""
 
+    CHAT_CLEAR = "chat:clear"
+    """
+    清除内存中的聊天记录: {type}
+
+    仅清除当前会话内存中的聊天历史（保留 system 消息），
+    不影响 SQLite 中的永久归档记录。
+    服务端回复: {type: "chat:cleared"}
+    """
+
     # ── 自动聊天/交互事件 ──
     INTERACTION_SEND = "interaction:send"
     """
