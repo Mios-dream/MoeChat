@@ -18,10 +18,10 @@ from pathlib import Path
 from typing import Union
 
 import numpy as np
-from audiolab import info, load_audio, save_audio
+import librosa
+import soundfile as sf
 from .frame_queue import FrameQueue
 from .pickable_session import silero_vad
-from pyrnnoise import RNNoise
 from tqdm import tqdm
 from .utils import get_energy
 
@@ -84,7 +84,10 @@ class SileroVAD:
         )
 
         self.segment = 0
-        self.denoiser = RNNoise(sample_rate) if denoise else None
+        self.denoiser = None
+        if denoise:
+            from pyrnnoise import RNNoise
+            self.denoiser = RNNoise(sample_rate)
 
     def reset(self):
         self.segment = 0
@@ -143,11 +146,10 @@ class SileroVAD:
         speech_probs: list of speech probabilities
         """
         self.reset()
-        audio, _ = load_audio(
-            wav_path, dtype=np.float32, rate=self.sample_rate, to_mono=True
-        )
+        y, _ = librosa.load(wav_path, sr=self.sample_rate, mono=True, dtype=np.float32)
+        audio = y[np.newaxis, :]
         progress_bar = tqdm(
-            total=math.ceil(info(wav_path).duration / 0.032),
+            total=math.ceil(len(y) / self.sample_rate / 0.032),
             desc="VAD processing",
             unit="frames",
             bar_format="{l_bar}{bar}{r_bar} | {percentage:.2f}%",
@@ -164,21 +166,22 @@ class SileroVAD:
             wav = wav[start:end]
             if self.denoiser is not None:
                 # Initial denoiser for each segments
+                from pyrnnoise import RNNoise
                 denoiser = RNNoise(self.sample_rate)
                 wav = self.denoise_chunk(denoiser, wav, True)
             if flat_layout:
-                save_audio(
+                sf.write(
                     str(save_path) + f"_{index:05d}.wav",
-                    wav[np.newaxis, :],
+                    wav,
                     self.sample_rate,
                 )
             else:
                 save_path = Path(save_path)
                 if not save_path.exists():
                     save_path.mkdir(parents=True, exist_ok=True)
-                save_audio(
+                sf.write(
                     str(save_path / f"{index:05d}.wav"),
-                    wav[np.newaxis, :],
+                    wav,
                     self.sample_rate,
                 )
         if return_seconds:
@@ -223,11 +226,11 @@ class SileroVAD:
             based on return_seconds)
         """
         self.reset()
-        audio, sample_rate = load_audio(
-            wav_path, dtype=np.float32, rate=self.sample_rate, to_mono=True
-        )
+        y, sr = librosa.load(wav_path, sr=self.sample_rate, mono=True, dtype=np.float32)
+        audio = y[np.newaxis, :]
+        sample_rate = sr
         progress_bar = tqdm(
-            total=math.ceil(info(wav_path).duration / 0.032),
+            total=math.ceil(len(y) / sample_rate / 0.032),
             desc="VAD processing",
             unit="frames",
             bar_format="{l_bar}{bar}{r_bar} | {percentage:.2f}%",

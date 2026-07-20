@@ -3,57 +3,49 @@ name = "moechat"
 version = "1.7.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = "~=3.11.0"
 dependencies = [
-    "audiolab>=0.5.1",
-    "faiss-cpu>=1.13.2",
-    "fastapi>=0.135.2",
-    "funasr>=1.3.1",
-    "gsv-tts-lite>=0.4.1",
-    "httpx>=0.28.1",
-    "jionlp>=1.5.27",
-    "modelscope>=1.35.3",
-    "numpy>=2.0.0",
-    "onnxruntime>=1.24.4",
-    "openai>=2.30.0",
-    "opencv-python>=4.13.0.92",
-    "pillow>=11.3.0",
-    "praat-parselmouth>=0.4.7",
-    "pyrnnoise>=0.4.3",
-    "python-multipart>=0.0.22",
-    "sherpa-onnx>=1.12.35",
-    "sherpa-onnx-core>=1.12.35",
-    "shortuuid>=1.0.13",
-    "soundfile>=0.13.1",
-    "torch>=2.11.0",
-    "torchaudio>=2.11.0",
-    "torchvision>=0.26.0",
-    "transformers>=5.8.0",
-    "uvicorn>=0.42.0",
-    "websockets>=16.0",
+    "audiolab==0.5.1",
+    "faiss-cpu==1.14.3",
+    "fastapi==0.139.2",
+    "funasr==1.3.19",
+    "gsv-tts-lite==0.4.7",
+    "httpx==0.28.1",
+    "jionlp==1.5.29",
+    "modelscope==1.38.1",
+    "numpy==2.3.5",
+    "onnxruntime==1.25.0",
+    "openai==2.46.0",
+    "opencv-python==4.13.0.92",
+    "paddleocr==3.7.0",
+    "pillow==12.3.0",
+    "praat-parselmouth==0.4.7",
+    "pyrnnoise==0.4.3",
+    "python-multipart==0.0.32",
+    "sherpa-onnx==1.12.40",
+    "sherpa-onnx-core==1.12.40",
+    "shortuuid==1.0.13",
+    "soundfile==0.13.1",
+    "torch==2.12.0",
+    "torchaudio==2.11.0",
+    "transformers==5.8.1",
+    "uvicorn==0.51.0",
+    "websockets==16.1.1",
 ]
 
 [project.optional-dependencies]
 test = [
     "ipykernel>=6.30.1",
     "ipython>=8.37.0",
-    "accelerate"
+    "accelerate",
 ]
-
-
-
+gpu = [
+    "onnxruntime-gpu==1.25.0",
+]
 
 [[tool.uv.index]]
 url = "https://mirrors.ustc.edu.cn/pypi/simple"
 default = true
-
-[tool.uv.sources]
-torch = [
-   { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }
-]
-torchvision = [
-   { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }
-]
 
 [[tool.uv.index]]
 name = "pytorch-cu130"
