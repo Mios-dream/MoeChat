@@ -1,5 +1,7 @@
 import traceback
 import sys
+import gc
+import platform
 
 from my_utils.check_and_download_default_assistant import (
     check_and_download_default_assistant,
@@ -28,6 +30,8 @@ async def init():
         await initialize_assistant()
         await initialize_tools()
 
+        cleanup()
+
     except Exception as e:
         _exc_type, _exc_value, exc_traceback = sys.exc_info()
         tb = traceback.extract_tb(exc_traceback)
@@ -36,6 +40,28 @@ async def init():
             f"文件路径: {tb[-1].filename} \n行号：{tb[-1].lineno} \n错误源码:{traceback.format_exc()}\n错误信息为: {e}",
         )
         exit()
+
+
+def cleanup():
+    # 所有初始化完成后，回收临时对象并释放 PyTorch 缓存
+    gc.collect()
+    try:
+        import torch
+
+        torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+    # Windows 下主动收拢工作集：将冷页面换出到磁盘，降低任务管理器"内存"列
+    # 不影响运行（缺页时自动换回），效果等同于系统空闲后的自动分页换出
+    if platform.system() == "Windows":
+        try:
+            import ctypes
+
+            ctypes.windll.psapi.EmptyWorkingSet(ctypes.c_void_p(-1))
+            logger.info("已收拢进程工作集，冷页面已换出到磁盘")
+        except Exception:
+            pass
 
 
 async def create_data_folder():
