@@ -8,6 +8,7 @@
 4. 兼容现有调用方式：保留 get_memories(...) 与 add_memory(...)
 """
 
+import asyncio
 import os
 import sqlite3
 import time
@@ -19,6 +20,7 @@ from models.types.assistant_info import AssistantInfo
 from my_utils import embedding
 from my_utils import log as Log
 from core.llm.llm_client import LLMClient
+from my_utils.token_counter import estimate_tokens
 from openai.types.chat import ChatCompletionMessageParam
 
 
@@ -41,6 +43,12 @@ class Memory:
         self.enable_search_enhance = agent_config.settings.enableLongMemorySearchEnhance
         # 每日对话记录阈值：仅当日记录数 > 5 时才生成日记。
         self.min_daily_records_for_diary = 6
+        # 日记摘要 LLM 输入 token 预算：超过此阈值触发分块分层摘要
+        self.max_diary_input_tokens = 8000
+        # 分块摘要时每块的消息数
+        self.chunk_message_count = 20
+        # 并发控制：分块摘要时最多 2 个 LLM 请求并行
+        self._summary_semaphore = asyncio.Semaphore(2)
         # LLM 客户端实例
         self._llm_client = LLMClient(model_key="LLM")
 
@@ -281,16 +289,43 @@ class Memory:
         """
         基于当天对话生成结构化摘要。
 
+        支持 token 预算感知的分层分块：
+        - 如果总 token 数 <= max_diary_input_tokens，单次 LLM 调用直接摘要
+        - 如果超限，按 chunk_message_count 分块 → 并行摘要各块 → 合并
+        - 合并后仍超限则二次聚合，保证输入不超预算
+
         输出内容作为 diary_days.facts 存储，并作为下一阶段日记生成输入。
         """
 
+        conversation_text = self._format_conversation(day_rows)
+        estimated = estimate_tokens(conversation_text)
+
+        # 未超限：单次完整摘要
+        if estimated <= self.max_diary_input_tokens:
+            return await self._call_summary_llm(conversation_text)
+
+        # 超限：启动分层分块摘要
+        Log.logger.info(
+            f"[长期记忆] 日记摘要输入超限 ({estimated} > {self.max_diary_input_tokens})，"
+            f"启动分块摘要 ({len(day_rows)} 条消息)"
+        )
+        return await self._hierarchical_summarize(day_rows)
+
+    def _format_conversation(self, day_rows: list[tuple[int, str, str]]) -> str:
+        """将原始数据库行格式化为 '[HH:MM:SS] 角色: 内容' 文本"""
         lines = []
         for ts, role, content in day_rows:
             speaker = self.user if role == "user" else self.char
             t_str = time.strftime("%H:%M:%S", time.localtime(ts))
             lines.append(f"[{t_str}] {speaker}: {content}")
-        conversation_text = "\n".join(lines)
+        return "\n".join(lines)
 
+    async def _call_summary_llm(self, conversation_text: str) -> str:
+        """
+        调用 LLM 生成对话摘要。
+
+        内部处理 prompt 构建、异常回退和空结果兜底。
+        """
         prompt = f"""
         请总结以下对话中的关键事件和情感要点，用于生成日记：
         {conversation_text}
@@ -316,6 +351,46 @@ class Memory:
             summary = "- 日常交流\n- 有对话发生"
 
         return summary.strip()
+
+    async def _hierarchical_summarize(
+        self, day_rows: list[tuple[int, str, str]]
+    ) -> str:
+        """
+        分层分块摘要：分块 → 并行摘要 → 合并 → 可选二次聚合。
+
+        并发数由 _summary_semaphore（Semaphore(2)）控制。
+        """
+        # 按时间顺序分块
+        chunks = [
+            day_rows[i:i + self.chunk_message_count]
+            for i in range(0, len(day_rows), self.chunk_message_count)
+        ]
+
+        # 并行摘要各块（受限并发）
+        async def summarize_one(chunk):
+            text = self._format_conversation(chunk)
+            async with self._summary_semaphore:
+                return await self._call_summary_llm(text)
+
+        tasks = [summarize_one(chunk) for chunk in chunks]
+        chunk_summaries = await asyncio.gather(*tasks)
+
+        # 过滤失败结果
+        chunk_summaries = [s for s in chunk_summaries if s]
+        if not chunk_summaries:
+            return ""
+
+        # 合并所有分块摘要
+        merged = "\n\n".join(
+            f"=== 时段 {i+1} ===\n{s}"
+            for i, s in enumerate(chunk_summaries)
+        )
+
+        # 合并后仍超限且有多个分块 → 二次聚合
+        if len(chunks) > 1 and estimate_tokens(merged) > self.max_diary_input_tokens:
+            merged = await self._call_summary_llm(merged)
+
+        return merged
 
     async def _build_diary_text(self, summary: str) -> str:
         """

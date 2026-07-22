@@ -45,9 +45,3 @@ Tools:
   timeout: 30
   # 工具调用最大轮次（防止无限循环）
   max_rounds: 5
-
-MotionGenerator:
-  # 动作生成器版本: v2 | v3
-  # v2: 使用llm异步生成全部动作，动作单一，但语义理解能力强
-  # v3: 使用检索加动作组合的方式生成，动作更多样化
-  version: v3
