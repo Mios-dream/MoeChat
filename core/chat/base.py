@@ -39,6 +39,24 @@ class TTSData(BaseModel):
     ref_text: str
 
 
+def _resolve_ref_audio_path(agent, ref_audio_rel: str) -> str:
+    """
+    解析参考音频实际路径。
+
+    查找顺序：
+    1. <助手 assets>/audio/<相对路径>
+    2. <presets 根目录>/<相对路径>
+    """
+    assistant_base = f"{Config.BASE_AGENTS_PATH}/{agent.agent_name}/assets"
+    path = os.path.join(assistant_base, "audio", ref_audio_rel)
+    if os.path.isfile(path):
+        return path
+    path = os.path.join(Config.RESOURCES_PATH, ref_audio_rel)
+    if os.path.isfile(path):
+        return path
+    return path
+
+
 async def tts_task(tts_data: TTSData) -> bytes | None:
     """
     执行 TTS 合成任务
@@ -58,20 +76,14 @@ async def tts_task(tts_data: TTSData) -> bytes | None:
         return None
 
     logger.info(f"[tts文本]{tts_data.text}")
-    assistant_asset_base_path = f"{Config.BASE_AGENTS_PATH}/{agent.agent_name}/assets"
     is_api = CConfig.config["TTS"]["mode"] == "api"
 
+    ref_audio_rel = tts_data.ref_text or agent.agent_config.gsvSetting.refAudioPath
     data = {
         "text": tts_data.text,
         "text_lang": agent.agent_config.gsvSetting.textLang,
         "ref_audio_path": (
-            tts_data.ref_text or agent.agent_config.gsvSetting.refAudioPath
-            if is_api
-            else os.path.join(
-                assistant_asset_base_path,
-                "audio",
-                (tts_data.ref_text or agent.agent_config.gsvSetting.refAudioPath),
-            )
+            ref_audio_rel if is_api else _resolve_ref_audio_path(agent, ref_audio_rel)
         ),
         "prompt_text": tts_data.ref_text or agent.agent_config.gsvSetting.promptText,
         "prompt_lang": agent.agent_config.gsvSetting.promptLang,

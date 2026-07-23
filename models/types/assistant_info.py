@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 class GSVSetting(BaseModel):
     """
     助手语音合成设置模型
-    字段默认为空字符串；为空或文件不存在时，由 AssistantService 回退到默认助手的配置。
+    字段默认为空字符串；前端需通过预置资源 API 获取可用资源列表并填入对应字段。
     """
 
     textLang: str = Field("", description="助手语音合成的语言")

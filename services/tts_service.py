@@ -102,11 +102,14 @@ class TTSService:
             # 拼接资源路径
             local_tts_engine = self.get_tts_engine()
 
-            local_tts_engine.load_gpt_model(gpt_model_path)
-            local_tts_engine.load_sovits_model(sovits_model_path)
-            local_tts_engine.init_language_module(language)
-            local_tts_engine.cache_prompt_audio(ref_audio_path, prompt_text)
-            local_tts_engine.cache_spk_audio(spk_audio_path)
+            try:
+                local_tts_engine.load_gpt_model(gpt_model_path)
+                local_tts_engine.load_sovits_model(sovits_model_path)
+                local_tts_engine.init_language_module(language)
+                local_tts_engine.cache_prompt_audio(ref_audio_path, prompt_text)
+                local_tts_engine.cache_spk_audio(spk_audio_path)
+            except Exception as e:
+                Log.logger.error(f"加载 GSV 模型失败: {e}", exc_info=True)
 
     async def local_gsv_tts(
         self,

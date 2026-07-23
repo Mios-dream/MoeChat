@@ -30,7 +30,7 @@ async def init():
         await initialize_assistant()
         await initialize_tools()
 
-        cleanup()
+        # cleanup()
 
     except Exception as e:
         _exc_type, _exc_value, exc_traceback = sys.exc_info()

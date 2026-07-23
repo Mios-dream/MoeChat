@@ -46,6 +46,8 @@ class Config:
     }
     # 动作数据库路径
     MOTION_DB_PATH = os.path.join(PROJECT_ROOT, "data", "motion.db")
+    # 默认资源库路径（通用助手资源，不依赖特定助手）
+    RESOURCES_PATH = os.path.join(PROJECT_ROOT, "data", "resources")
 
 
 # 设置环境变量,使用项目目录下的模型数据,而不是下载模型到默认位置，取消以下载到默认位置
