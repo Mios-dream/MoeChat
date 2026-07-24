@@ -86,7 +86,6 @@ class TaskScheduler:
             "每行必须是完整的、合法的 JSON 对象",
             "每行对应一句话，所有字段放在同一个 JSON 对象中",
             "不要输出 JSON 以外的任何内容（不要输出 markdown 代码块、解释说明等）。函数调用（function calling/tool calls）不受此条限制——工具调用和 JSON 文本输出是两个并行通道",
-            "注意：对话历史中你的回复格式可能与当前要求的 JSON 格式不同，你必须忽略历史格式，严格按照上述规则以 JSON 格式输出",
         ]
 
         rules_text = "\n".join(f"{i+1}. {rule}" for i, rule in enumerate(rules))

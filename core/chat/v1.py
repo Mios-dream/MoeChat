@@ -17,6 +17,7 @@ from models.dto.response.ChatResponse import (
     DoneMessage,
 )
 from my_utils.log import logger
+from services.memory_v2 import MemoryV2
 from core.chat.base import tts_wrapper
 from core.scheduler import TaskResult
 from core.scheduler import TaskScheduler
@@ -128,16 +129,24 @@ class V1ChatService:
         # 从 ChatRequest 构建用户消息内容
         user_message_raw, user_text = build_user_message_content(params)
 
-        raw_history = agent.get_history()
-        history_messages = [
-            {
+        # 动态上下文（记忆检索 + 知识库等）放在对话历史之后，避免击穿前缀缓存
+        dynamic_context = await agent.get_context(
+            msg=user_text, is_sleep_mode=params.is_sleep_mode
+        )
+
+        history_messages = []
+        # 固定前缀：记忆系统说明（可缓存）
+        if agent.enable_long_memory:
+            history_messages.append({
                 "role": "system",
-                "content": await agent.get_context(
-                    msg=user_text, is_sleep_mode=params.is_sleep_mode
+                "content": MemoryV2.build_system_prompt(
+                    agent.char, agent.user
                 ),
-            },
-            *raw_history,
-        ]
+            })
+        # 中间段：对话历史
+        history_messages.extend(agent.get_history())
+        # 动态后缀：每次变化的上下文
+        history_messages.extend(dynamic_context)
 
         scheduler = TaskScheduler()
         pipeline = scheduler.create_text_pipeline(

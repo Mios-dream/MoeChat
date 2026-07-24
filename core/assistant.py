@@ -13,18 +13,17 @@ from models.types.user_state import UserStateInfo
 from core.emotion.emotion_engine import EmotionEngine
 from concurrent.futures import ThreadPoolExecutor
 from core.llm.llm_client import LLMClient
-from core.llm.response_parser import JsonParser
-from services import core_mem, data_base, long_mem
+from services import data_base
+from services.memory_v2 import MemoryV2
+from tool_system.tools.memory_tool import RememberTool, RecallTool
 from openai.types.chat import ChatCompletionMessageParam
 
 
 class Assistant:
     # 情绪系统实例
     emotionEngine: EmotionEngine
-    # 角色记忆实例
-    memoryEngine: long_mem.Memory
-    # 核心记忆
-    coreMemoryEngine: core_mem.CoreMemory
+    # 统一记忆引擎（v2，替代 core_mem + long_mem）
+    memoryEngine: MemoryV2
     # 数据知识库实例
     databaseEngine: data_base.DataBase
 
@@ -116,11 +115,9 @@ class Assistant:
 
     def _load_prompt_template(self):
         """加载提示词模板"""
-        # 载入提示词
         self.prompt = ""
-        self.long_mem_prompt = prompt.long_mem_prompt
+        self.memory_prompt = prompt.memory_prompt
         self.data_base_prompt = prompt.data_base_prompt
-        self.core_mem_prompt = prompt.core_mem_prompt
         # 加入角色设定到提示词
         if self.description:
             # 格式化系统提示词
@@ -273,38 +270,19 @@ class Assistant:
 
     async def _async_search_memory(self, msg: str) -> tuple[str, float]:
         """
-        异步包装记忆检索
+        异步包装记忆检索（统一 v2 引擎，替代旧 long_mem + core_mem）
+
         Parameters:
             msg: 用户输入的消息
-            time_str: 时间字符串
+
         Returns:
-            记忆检索结果
+            (格式化记忆文本, 耗时)
         """
         start_time = time.time()
         if not self.enable_long_memory:
             return "", 0.0
 
-        result = await self._run_sync_task(self.memoryEngine.get_memories, msg)
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        return result, elapsed_time
-
-    async def _async_search_core_mem(self, msg: str) -> tuple[str, float]:
-        """
-        异步包装核心记忆检索任务
-        Parameters:
-            msg: 用户输入的消息
-        Returns:
-            核心记忆检索结果
-        """
-        start_time = time.time()
-        if not self.enable_core_memory:
-            return "", 0.0
-
-        def wrapper():
-            return self.coreMemoryEngine.find_memories(msg) or ""
-
-        result = await self._run_sync_task(wrapper)
+        result = await self._run_sync_task(self.memoryEngine.get_context, msg)
         end_time = time.time()
         elapsed_time = end_time - start_time
         return result, elapsed_time
@@ -324,15 +302,6 @@ class Assistant:
         end_time = time.time()
         elapsed_time = end_time - start_time
         return result, elapsed_time
-
-    async def _task_add_long_memory(self, turn_data: list[dict]) -> None:
-        """
-        后台任务：添加长期记忆
-        Parameters:
-            turn_data: 一轮对话数据
-        """
-        self.current_time = int(time.time())
-        await self.memoryEngine.add_memory(turn_data, self.current_time)
 
     def save_agent_config(self):
         """
@@ -390,16 +359,8 @@ class Assistant:
         self.data_base_thresholds = self.agent_config.settings.loreBooksThreshold
         # 知识库检索深度
         self.data_base_depth = self.agent_config.settings.loreBooksDepth
-        # 是否开启长期记忆（日记内容）
+        # 是否开启记忆系统（v2 统一引擎，替代旧 long_mem + core_mem）
         self.enable_long_memory = self.agent_config.settings.enableLongMemory
-        # 是否开启长期记忆搜索增强
-        self.enable_long_memory_search_enhance = (
-            self.agent_config.settings.enableLongMemorySearchEnhance
-        )
-        # 日记内容搜索阈值，启用日志检索加强是需要，用于判断匹配程度。过高可能会丢失数据，过低则过滤少量无用记忆。
-        self.long_memory_thresholds = self.agent_config.settings.longMemoryThreshold
-        # 是否开启核心记忆
-        self.enable_core_memory = self.agent_config.settings.enableCoreMemory
         # 是否开启情绪系统
         self.enable_emotion_engine = self.agent_config.settings.enableEmotionSystem
 
@@ -409,62 +370,19 @@ class Assistant:
         # 加载提示词模板
         self._load_prompt_template()
 
-        # 加载角色记忆
-        self.memoryEngine = long_mem.Memory(
-            self.agent_config, self.user_state.firstMeetTime
+        # 加载统一记忆引擎 v2（替代旧 long_mem + core_mem）
+        self.memoryEngine = MemoryV2(
+            self.agent_config, firstMeetTime=self.user_state.firstMeetTime
         )
-        # 加载核心记忆
-        self.coreMemoryEngine = core_mem.CoreMemory(self.agent_config)
+        # 注入记忆引擎到记忆工具，使 LLM 可通过工具自主记录和回忆记忆
+        RememberTool.set_engine(self.memoryEngine)
+        RecallTool.set_engine(self.memoryEngine)
         # 载入知识库
         self.databaseEngine = data_base.DataBase(self.agent_config)
         # 加载情绪系统
         self.emotionEngine = EmotionEngine(
             agent_config=self.agent_config, llm_config=self.llm_config
         )
-
-    async def insert_core_mem(
-        self, user_message: str, assistant_reply: str, previous_assistant_msg: str
-    ) -> None:
-        """
-        使用核心记忆提取用户和助手的对话内容，插入核心记忆任务
-        Parameters:
-            user_message: 用户输入的消息
-            assistant_reply: 助手回复的消息
-            previous_assistant_msg: 上一条助手回复的消息
-        """
-
-        # 检查上下文最后一条是否是助手回复，不是则不插入核心记忆
-        if self.chat_history[-1]["role"] != "assistant":
-            return
-        re_msg = (
-            "对话内容：助手："
-            + previous_assistant_msg
-            + "\n用户："
-            + user_message
-            + "\n助手："
-            + assistant_reply
-        )
-
-        try:
-
-            res_msg = await self._llm_client.request(
-                [
-                    {"role": "system", "content": prompt.get_core_mem},
-                    {"role": "user", "content": re_msg},
-                ]
-            )
-
-            if not res_msg:
-                Log.logger.info("核心记忆提取失败，跳过插入")
-                return
-
-            mem_list = JsonParser().parse(res_msg).get("core_mem", [])  # type: ignore
-
-            if len(mem_list) > 0:
-                self.coreMemoryEngine.add_memory(mem_list)
-        except Exception as e:
-            Log.logger.error(f"核心记忆提取出错: {e}")
-            return
 
     async def update_love_level(self, user_message, assistant_reply):
         """
@@ -486,73 +404,54 @@ class Assistant:
             f"助手 {self.agent_name} 好感度更新: 变化 {change}, 当前 {self.user_state.love}"
         )
 
-    async def get_context(self, msg: str, is_sleep_mode: bool = False) -> str:
+    async def get_context(
+        self, msg: str, is_sleep_mode: bool = False
+    ) -> list[ChatCompletionMessageParam]:
         """
-        获取当前上下文的消息数据，包含知识库、长期记忆、核心记忆、情绪信息等
+        获取动态上下文消息列表（知识库 + 记忆 + 好感度）
+
+        注意：本方法只返回每次轮询变化的动态内容，记忆系统说明等静态指令
+        由调用方在固定前缀位置构建，以最大化推理缓存命中率。
 
         Parameters:
             msg: 客户端发送的消息
             is_sleep_mode: 是否处于睡眠模式
 
         Returns:
-            发送到大模型的上下文
+            动态上下文的 system 消息列表（通常 0~1 条，放在对话历史之后）
         """
-
-        # 使用 asyncio.gather 同时启动所有任务
         tasks = [
             self._async_search_knowledge(msg),
             self._async_search_memory(msg),
-            self._async_search_core_mem(msg),
-            # self._async_process_emotion(msg),
         ]
         results = await asyncio.gather(*tasks)
-        # 解包结果和耗时
-        db_info, db_time = results[0]
-        mem_info, mem_time = results[1]
-        core_info, core_time = results[2]
-        # emotion_info, emotion_time = results[3]
+        db_info, _ = results[0]
+        mem_info, _ = results[1]
 
-        # # 打印或记录耗时
-        # print(f"Knowledge search time: {db_time:.4f}s")
-        # print(f"Memory search time: {mem_time:.4f}s")
-        # print(f"Core memory search time: {core_time:.4f}s")
-        # print(f"Emotion processing time: {emotion_time:.4f}s")
-
-        context_extras = []
-        # 添加知识库信息
+        context_parts: list[str] = []
         if db_info:
-            context_extras.append(
+            context_parts.append(
                 self.data_base_prompt.format(
                     data_base=db_info, user=self.user, char=self.char
                 )
             )
-        # 添加核心记忆信息
-        if core_info:
-            context_extras.append(
-                self.core_mem_prompt.format(
-                    core_mem=core_info, user=self.user, char=self.char
-                )
-            )
-        # 添加长期记忆信息
         if mem_info:
-            context_extras.append(
-                self.long_mem_prompt.format(
+            context_parts.append(
+                self.memory_prompt.format(
                     memories=mem_info, user=self.user, char=self.char
                 )
             )
-        # 添加好感度提示词
-        context_extras.append(self._get_love_prompt())
-        # 添加情绪信息
-        # if emotion_info:
-        #     context_extras.append(emotion_info)
-        # 添加睡眠模式提示词
+        context_parts.append(self._get_love_prompt())
         if is_sleep_mode:
-            sleep_prompt = prompt.sleep_mode_prompt.format(char=self.char)
-            context_extras.append(sleep_prompt)
+            context_parts.append(prompt.sleep_mode_prompt.format(char=self.char))
 
-        final_content = "\n".join(context_extras)
-
-        return final_content
+        messages: list[ChatCompletionMessageParam] = []
+        if context_parts:
+            messages.append({
+                "role": "system",
+                "content": "\n".join(context_parts),
+            })
+        return messages
 
     def get_history(self) -> list[ChatCompletionMessageParam]:
         """
@@ -577,10 +476,13 @@ class Assistant:
 
     async def add_msg(self, user_msg: str, assistant_msg: str) -> None:
         """
-        添加用户和助手的对话到上下文，更新长期记忆和好感度。
+        添加对话回合后的后续处理。
 
         chat_history 由调用方管理（调用前已追加完整序列），
-        本方法只负责持久化（chat_turns）、好感度计算、核心记忆提取。
+        本方法负责：
+        1. 好感度更新
+        2. 原始对话存储（供日记生成使用）
+        3. 跨天日记生成检查
 
         Parameters:
             user_msg: 用户输入的消息
@@ -594,33 +496,26 @@ class Assistant:
                 truncated = truncated[1:]
             self.chat_history = truncated
 
-        await asyncio.gather(
-            self.insert_core_mem(user_msg, assistant_msg, ""),
-            self.update_love_level(user_msg, assistant_msg),
-            self._task_add_long_memory(
-                [
-                    {"role": "user", "content": user_msg},
-                    {"role": "assistant", "content": assistant_msg},
-                ]
-            ),
-        )
+        # 存储原始对话轮次供日记使用
+        now_ts = int(time.time())
+        if self.enable_long_memory:
+            self.memoryEngine.add_chat_turn("user", user_msg, now_ts)
+            self.memoryEngine.add_chat_turn("assistant", assistant_msg, now_ts)
+            # 跨天日记生成检查（后台任务）
+            asyncio.create_task(self.memoryEngine.check_and_generate_diary(now_ts))
+
+        await self.update_love_level(user_msg, assistant_msg)
 
     async def add_interaction_msg(
         self, msg: str, plain_text: str | None = None
     ) -> None:
         """
-        保存交互事件消息到上下文,保存聊天历史,更新长期记忆
+        保存交互事件消息到上下文
         Parameters:
-            msg: 助手回复消息（保存到 chat_history，建议传递多任务 JSON 格式）
-            plain_text: 纯文本版本（保存到长期记忆），为 None 时使用 msg
+            msg: 助手回复消息
+            plain_text: 纯文本版本，暂未使用（保留接口兼容）
         """
-        # 添加交互事件消息到上下文
         self.chat_history.append({"role": "assistant", "content": msg})
-
-        content_for_memory = plain_text or msg
-        current_turn = [{"role": "assistant", "content": content_for_memory}]
-
-        await self._task_add_long_memory(current_turn)
 
     async def _run_sync_task(self, func, *args):
         """

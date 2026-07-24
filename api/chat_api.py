@@ -91,7 +91,7 @@ async def get_chat_diary(
     end_day: str | None = Query(None, description="结束日期，格式 YYYY-MM-DD"),
 ):
     """
-    获取日记记录
+    获取日记记录（来自记忆系统 v2）
 
     参数：
     - limit: 单次返回的日记条数

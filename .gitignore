@@ -17,4 +17,3 @@ test*
 ffmpeg
 nltk_data
 !data/models/sherpa-onnx-kws-zipformer-zh-en-3M
-plugins

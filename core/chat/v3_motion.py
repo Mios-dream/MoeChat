@@ -63,6 +63,7 @@ from models.dto.response.ChatResponse import (
     ToolMessage,
 )
 from my_utils.log import logger
+from services.memory_v2 import MemoryV2
 from core.scheduler import (
     TaskScheduler,
     create_text_task,
@@ -242,6 +243,9 @@ class V3MotionChatContext(BaseChatContext):
             self._motion_buf[result.sentence_id] = (motions, expression)
         elif result.task_type == "tool_call":
             tc: ToolCallEvent = result.data
+            # 内部工具（如 remember / recall）不转发给客户端，保持沉浸感
+            if tc.tool_name in ("remember", "recall"):
+                return
             self._queue.append(
                 _QueueItem(
                     kind="tool",
@@ -264,6 +268,9 @@ class V3MotionChatContext(BaseChatContext):
             return
         elif result.task_type == "tool_result":
             tr: ToolResultEvent = result.data
+            # 内部工具（如 remember / recall）的结果也不转发给客户端
+            if tr.tool_name in ("remember", "recall"):
+                return
             self._queue.append(
                 _QueueItem(
                     kind="tool",
@@ -428,17 +435,28 @@ class V3ChatService:
             expressions=load_expressions(agent.agent_name),
         )
 
+        # 动态上下文（记忆检索 + 知识库等）放在对话历史之后，避免击穿前缀缓存
+        dynamic_context = await agent.get_context(
+            msg=user_text, is_sleep_mode=params.is_sleep_mode
+        )
+
+        history_messages = []
+        # 固定前缀：记忆系统说明（可缓存）
+        if agent.enable_long_memory:
+            history_messages.append({
+                "role": "system",
+                "content": MemoryV2.build_system_prompt(
+                    agent.char, agent.user
+                ),
+            })
+        # 中间段：对话历史
+        history_messages.extend(agent.get_history())
+        # 动态后缀：每次变化的上下文
+        history_messages.extend(dynamic_context)
+
         pipeline = self._build_scheduler(agent).create_task_pipeline(
             system_context=agent.prompt,
-            history_messages=[
-                {
-                    "role": "system",
-                    "content": await agent.get_context(
-                        msg=user_text, is_sleep_mode=params.is_sleep_mode
-                    ),
-                },
-                *agent.get_history(),
-            ],
+            history_messages=history_messages,
             user_message=user_message,
             tools=self.integration.get_tools() if self.integration else None,
             tool_handler=(
