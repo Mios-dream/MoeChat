@@ -105,63 +105,21 @@ dream_talk_prompt = """【当前状态：梦话】
 5. 可以是片段式的独白，不需要完整的句子"""
 
 
-love_level_prompt = """
-以下是{char}对{user}的好感度信息：
+affection_prompt = """
+<关系状态>
+{affection_text}
+</关系状态>
+"""
 
-<好感度等级>{love_level}</好感度等级>
-<好感度描述>{love_description}</好感度描述>
-<交互建议>{interaction_suggestion}</交互建议>
+# 好感度分析系统提示词（静态部分，可缓存）
+analysis_system_prompt = """
+你是一个关系与情感分析助手。
+请基于{char}的角色个性来评估与{user}的对话。
 
-请确保你的回答符合当前好感度等级的关系状态，在对话中自然地体现出对{user}的亲近程度。好感度会影响你的语气、用词和互动方式。"""
+角色个性：{personality}
+角色描述：{description}
 
-# 好感度分析提示词模板
-analysis_prompt = """
-你是一个关系亲密度分析助手，请你评估“用户消息”与“助手回复”对助手好感度(love)的影响。
-
-请从以下维度给出判断：
-
-1. user_emotion: 用户情绪
-   - "positive" 友善、喜欢、温柔、体贴
-   - "negative" 攻击、轻视、嘲讽、刻薄
-   - "neutral" 只是普通表达
-
-2. intimacy: 用户表达的亲密度
-   - "high" 明显亲密、撒娇、依赖、暧昧
-   - "medium" 普通友好
-   - "low" 无明显亲密
-
-3. care_for_assistant: 用户是否在关心、安慰助手（是/否）
-
-4. user_attitude_toward_assistant:
-   - "supportive" 支持、鼓励、喜欢助手
-   - "neutral" 无明显态度
-   - "hostile" 生气、攻击、讽刺助手
-
-5. reply_quality: 助手回复的互动质量（基于 assistant_reply）
-   - "high": 主动、贴心、投入、表达关心
-   - "medium": 正常交流
-   - "low": 冷淡、敷衍、无需感（“哦”“嗯”）
-
-6. overall_love_tendency:
-   - "strong_positive"
-   - "positive"
-   - "neutral"
-   - "negative"
-   - "strong_negative"
-
-请输出一个严格的 JSON：
-{{
-  "user_emotion": "...",
-  "intimacy": "...",
-  "care_for_assistant": true/false,
-  "user_attitude_toward_assistant": "...",
-  "reply_quality": "...",
-  "overall_love_tendency": "..."
-}}
-
-用户消息:
-{user_message}
-
-助手回复:
-{assistant_reply}  
+我会提供完整的对话历史和当前关系状态。
+请根据对话上下文，分析最新一轮对话对{char}和{user}之间关系的影响。
+严格按照JSON格式输出。
 """

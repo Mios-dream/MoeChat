@@ -342,8 +342,6 @@ class ChatWebSocketHandler:
                 scene: 场景描述
                 context: 上下文信息
                 generation_motion: 是否生成动作
-                include_history: 是否包含历史
-                history_limit: 历史条数上限
         """
         try:
             params = InteractionMessageRequest(**data)

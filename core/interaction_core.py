@@ -56,19 +56,16 @@ def _build_interaction_system_prompt(params: InteractionMessageRequest) -> str:
 
 
 def _build_interaction_history(
-    params: InteractionMessageRequest,
+    limit: int = 10,
 ) -> list[ChatCompletionMessageParam]:
-    """构建交互事件的对话历史消息列表（不含当前事件消息）
+    """构建交互事件的对话历史消息列表
 
-    使用当前内存中的聊天历史（agent.chat_history），
-    因为其中已包含多任务 JSON 格式的回复，能让模型学习输出格式。
+    固定包含最近 limit 条聊天历史，让模型感知对话上下文。
+    历史中已包含多任务 JSON 格式的回复，可帮助模型学习输出格式。
     """
     agent = assistant_service.get_current_assistant()
     if not agent:
         raise RuntimeError("当前没有加载助手")
-    if not params.include_history:
-        return []
-    limit = params.history_limit
     history = agent.get_history()
     if limit > 0 and len(history) > limit:
         history = history[-limit:]
@@ -142,7 +139,7 @@ async def generate_interaction_message(
         return
 
     try:
-        msg_list_for_llm = _build_interaction_history(params)
+        msg_list_for_llm = _build_interaction_history()
     except Exception as e:
         logger.error(f"[交互WS] 构建历史消息列表失败: {e}")
         yield ErrorMessage(
@@ -150,6 +147,18 @@ async def generate_interaction_message(
             data=f"构建历史消息列表失败: {e}",
         )
         return
+
+    # 注入好感度 + 情绪上下文（不改变好感度数值，仅让自动交互感知关系状态）
+    msg_list_for_llm.append({
+        "role": "system",
+        "content": agent._get_affection_prompt(),
+    })
+    mood = agent.emotionEngine.get_mood_prompt()
+    if mood:
+        msg_list_for_llm.append({
+            "role": "system",
+            "content": mood,
+        })
 
     tts_lang = agent.agent_config.gsvSetting.textLang
 

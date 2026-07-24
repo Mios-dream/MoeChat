@@ -53,12 +53,6 @@ class AssistantSettings(BaseModel):
     )
     # 世界书搜索深度
     loreBooksDepth: int = Field(3, description="助手世界书(知识库)功能的搜索深度")
-    # 是否启动情绪系统
-    enableEmotionSystem: bool = Field(False, description="助手是否开启情绪系统")
-    # 情绪值是否持续，设置为 true，重启后会读取上次的情绪值；false则每次重置为0
-    enableEmotionPersist: bool = Field(
-        False, description="助手是否开启情绪系统的持续存储"
-    )
     # 上下文长度
     contextLength: int = Field(40, description="助手的上下文长度")
 
@@ -77,8 +71,6 @@ class AssistantSettings(BaseModel):
             enableLoreBooks=data.get("enableLoreBooks", True),
             loreBooksThreshold=data.get("loreBooksThreshold", 0.8),
             loreBooksDepth=data.get("loreBooksDepth", 3),
-            enableEmotionSystem=data.get("enableEmotionSystem", False),
-            enableEmotionPersist=data.get("enableEmotionPersist", False),
             contextLength=data.get("contextLength", 40),
         )
 
@@ -120,9 +112,6 @@ class AssistantInfo(BaseModel):
     settings: AssistantSettings = Field(..., description="助手设置")
     # 助手GSV设置
     gsvSetting: GSVSetting = Field(..., description="助手GSV设置")
-    # 助手情绪系统设置
-    emotionSetting: dict = Field({}, description="助手情绪系统设置")
-
     @staticmethod
     def from_dict(data: dict) -> "AssistantInfo":
         """
@@ -145,5 +134,4 @@ class AssistantInfo(BaseModel):
             customPrompt=data.get("customPrompt", ""),
             gsvSetting=GSVSetting.from_dict(data.get("gsvSetting", {})),
             startWith=data.get("startWith", []),
-            emotionSetting=data.get("emotionSetting", {}),
         )

@@ -20,46 +20,29 @@ from openai.types.chat import ChatCompletionMessageParam
 
 
 class Assistant:
-    # 情绪系统实例
+    # 事件驱动情绪引擎
     emotionEngine: EmotionEngine
     # 统一记忆引擎（v2，替代 core_mem + long_mem）
     memoryEngine: MemoryV2
     # 数据知识库实例
     databaseEngine: data_base.DataBase
 
-    # 好感度等级配置
-    LOVE_LEVELS = {
-        0: {
-            "name": "疏远",
-            "description": "与用户保持距离，关系比较陌生，内心有戒备感",
-            "suggestion": "语气保持礼貌但有距离感，使用正式称谓，避免肢体接触描述，回复简洁不主动展开话题",
-            "value": -50,
-        },
-        1: {
-            "name": "中性",
-            "description": "对用户的态度保持中立，关系普通",
-            "suggestion": "回复应该礼貌友好，但不过分亲昵",
-            "value": -20,
-        },
-        2: {
-            "name": "友好",
-            "description": "与用户关系良好，有一定的亲近感",
-            "suggestion": "回复应该热情友好，可以使用一些亲昵的表达",
-            "value": 1000,
-        },
-        3: {
-            "name": "亲密",
-            "description": "与用户关系非常亲密，如同好友或家人",
-            "suggestion": "语气温柔体贴，可以亲密称呼，表达关心和想念，有轻微的占有欲表现",
-            "value": 2000,
-        },
-        4: {
-            "name": "挚爱",
-            "description": "与用户关系非常亲密，如同好友或家人或恋人",
-            "suggestion": "语气温柔体贴，使用亲密称呼，表达关心和想念，有较强的占有欲表现",
-            "value": 5000,
-        },
-    }
+    # 好感度阶段配置（基于 affinity 值，阈值依次为各阶段最低值）
+    # 描述使用叙事体，让 LLM 自然感受关系状态而非机械执行指令
+    AFFINITY_STAGES: list[tuple[str, int, str]] = [
+        ("疏远", -50, "你对{user}还很陌生，心里保持着明显的距离感，不太愿意主动靠近"),
+        ("陌生", -30, "你和{user}才刚认识不久，还在慢慢熟悉彼此的存在，相处时有些拘谨"),
+        ("认识", 0, "你和{user}逐渐熟悉起来了，相处还算愉快，开始期待和他的交流"),
+        ("亲近", 25, "你和{user}的关系越来越亲近了，和他在一起时你会感到轻松自在"),
+        ("亲密", 50, "你已经很信任{user}了，愿意在他面前展现真实的自己，不设防备"),
+        ("挚爱", 80, "{user}是你心中最重要的人，和他在一起的每一刻你都很珍惜"),
+    ]
+    TRUST_THRESHOLDS: list[tuple[int, str]] = [
+        (30, "你发自内心地信任{user}，愿意依赖他，在他面前你感到安全"),
+        (0, "你还在观察{user}，不确定他是否值得你完全托付信任"),
+        (-30, "{user}的一些言行让你感到不安，你开始对他有所防备"),
+        (-50, "你不敢轻易相信{user}了，他曾经让你感到失望或受伤"),
+    ]
 
     def __init__(self, agent_name: str):
         # 助手名称
@@ -98,20 +81,24 @@ class Assistant:
         else:
             self.user_state = UserStateInfo()
 
-    def _get_love_prompt(self):
+    def _get_affection_prompt(self) -> str:
         """
-        获取好感度相关的提示词
+        生成好感度叙事提示词
+        用叙事体描述关系状态，让 LLM 自然感受而非机械执行
         """
-        love_level = self._get_love_level(self.user_state.love)
-        level_info = self.LOVE_LEVELS.get(love_level, self.LOVE_LEVELS[0])
+        stage_name, stage_desc = self._get_affinity_stage(self.user_state.affinity)
+        trust_desc = self._get_trust_level(self.user_state.trust)
+        days_known = max(1, (int(time.time()) - self.user_state.firstMeetTime) // 86400)
 
-        return prompt.love_level_prompt.format(
-            char=self.char,
-            user=self.user,
-            love_level=level_info["name"],
-            love_description=level_info["description"],
-            interaction_suggestion=level_info["suggestion"],
+        affection_text = (
+            f"你和{self.user}目前的关系是「{stage_name}」。\n"
+            f"{stage_desc.format(user=self.user)}\n"
+            f"{trust_desc.format(user=self.user)}\n"
+            f"你们已经相识 {days_known} 天，共同经历了 {self.user_state.bond} 次有意义的互动——"
+            f"这些经历构成了你对他的真实感受。\n"
+            f"请自然地体会这些感受，像真实的自己一样去回应，无需刻意强调。"
         )
+        return prompt.affection_prompt.format(affection_text=affection_text)
 
     def _load_prompt_template(self):
         """加载提示词模板"""
@@ -164,91 +151,135 @@ class Assistant:
             )
             self.prompt += self.message_example_prompt + "\n\n"
 
-    async def _calculate_love_change(self, user_message, assistant_reply) -> int:
+    def _get_interaction_summary(self, window: int = 20) -> str:
         """
-        使用 LLM 判定用户消息与助手回复的情感、亲密度、互动质量
-        Parameters:
-            user_message: 用户输入的消息
-            assistant_reply: 助手回复的消息
-        Returns:
-            好感度变化值
-        """
+        统计最近互动的构成，纯描述不做价值判断
 
-        # 构建分析提示词
-        emotion_analysis_prompt = prompt.analysis_prompt.format(
-            user_message=user_message,
-            assistant_reply=assistant_reply,
+        用户可能喜欢主动对话，也可能只是享受后台陪伴——两者都正常。
+        统计只反映互动模式，不作为评价用户好坏的依据。
+        """
+        recent = self.chat_history[-window:]
+        if not recent:
+            return ""
+
+        user_turns = 0
+        assistant_initiated = 0
+        responded = 0
+
+        i = 0
+        while i < len(recent):
+            if recent[i]["role"] == "user":
+                user_turns += 1
+                i += 1
+            elif recent[i]["role"] == "assistant":
+                # 无前驱 user → 助手主动发起的互动
+                if i == 0 or recent[i - 1]["role"] != "user":
+                    assistant_initiated += 1
+                    # 下一条是否为用户续接？
+                    if i + 1 < len(recent) and recent[i + 1]["role"] == "user":
+                        responded += 1
+                        i += 2
+                        continue
+                i += 1
+            else:
+                i += 1
+
+        parts = []
+        if user_turns:
+            parts.append(f"用户主动对话 {user_turns} 次")
+        if assistant_initiated:
+            parts.append(f"助手主动互动 {assistant_initiated} 次")
+        return "；".join(parts) if parts else ""
+
+    async def _calculate_affection_change(self) -> dict:
+        """
+        统一 LLM 分析：好感度 + 信任度 + 羁绊 + 情绪冲击
+
+        分析仅基于实际对话内容的质量，而非互动频率或响应率。
+        用户选择不回应助手主动互动是完全正常的行为，
+        好感度不因此惩罚用户——它只反映说了什么，而非说了多少次。
+
+        构建消息链以利用 LLM KV 缓存：
+          1. system（静态角色信息 → 缓存命中）
+          2. 最近对话历史（上下文）
+          3. user（当前状态 + 互动统计 + 分析请求）
+        """
+        current_emotions = self.emotionEngine.get_mood_prompt()
+        days_known = max(1, (int(time.time()) - self.user_state.firstMeetTime) // 86400)
+        default_result = {
+            "affinity_change": 0,
+            "trust_change": 0,
+            "bond_increment": 0,
+            "emotional_impact": {"emotion": "neutral", "intensity": 0.0, "reason": ""},
+        }
+
+        # 1. system：静态角色信息（可缓存）
+        system_content = prompt.analysis_system_prompt.format(
+            char=self.char,
+            user=self.user,
+            personality=self.personality or "",
+            description=self.description or "",
         )
+        messages: list[ChatCompletionMessageParam] = [
+            {"role": "system", "content": system_content},
+        ]
 
+        # 2. 最近对话上下文（原始历史，自动交互与用户对话共存）
+        #    上限 10 条防止单方消息过度主导，配合下方互动统计供 LLM 权衡判断
+        recent = self.chat_history[-10:]
+        messages.extend(recent)
+
+        # 3. 分析请求（动态状态 + 互动概况 + 输出格式）
+        request_text = (
+            f"当前关系状态：\n"
+            f"- 好感度：{self.user_state.affinity}\n"
+            f"- 信任度：{self.user_state.trust}\n"
+            f"- 羁绊值：{self.user_state.bond}\n"
+            f"- 相识天数：{days_known}\n"
+            f"- 当前情绪状态：{current_emotions or '平静'}\n"
+            f"- 互动概况：{self._get_interaction_summary()}\n\n"
+            f"请根据以上完整对话，分析最新一轮对话对{self.char}和{self.user}之间关系的影响。\n\n"
+            f"1. affinity_change: 好感度变化（整数 -3 到 +3）\n"
+            f"2. trust_change: 信任度变化（整数 -3 到 +3，降快升慢）\n"
+            f"3. bond_increment: 羁绊增量（整数 0 到 2）\n"
+            f'4. emotional_impact: {{"emotion":"...", "intensity":0.0~1.0, "reason":"用一句话描述触发情绪的具体情景"}}\n\n'
+            f'{{"affinity_change":0,"trust_change":0,"bond_increment":0,'
+            f'"emotional_impact":{{"emotion":"neutral","intensity":0.0,"reason":""}}}}'
+        )
+        messages.append({"role": "user", "content": request_text})
+
+        # 4. 请求 LLM
         try:
-            content = await self._llm_client.request(
-                [
-                    {"role": "user", "content": emotion_analysis_prompt},
-                ]
-            )
+            content = await self._llm_client.request(messages)
         except Exception as e:
             Log.logger.error("LLM 好感度判断失败:", e)
-            return 0
+            return default_result
 
-        # 解析 JSON
         match = re.search(r"\{.*\}", content or "", re.DOTALL)
         if not match:
-            return 0
+            return default_result
 
-        result = json.loads(match.group(0))
+        try:
+            result = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return default_result
 
-        # ====== 根据 LLM 输出计算得分 ======
-        change = 0
+        affinity_change = max(-3, min(3, result.get("affinity_change", 0)))
+        trust_change = max(-3, min(3, result.get("trust_change", 0)))
+        bond_increment = max(0, min(2, result.get("bond_increment", 0)))
+        emotional_impact = result.get(
+            "emotional_impact", {"emotion": "neutral", "intensity": 0.0, "reason": ""}
+        )
 
-        # 用户情绪
-        emotion_score = {
-            "positive": 2,
-            "neutral": 0,
-            "negative": -3,
+        Log.logger.info(
+            f"好感度分析: affinity={affinity_change}, trust={trust_change}, bond={bond_increment}, emotion={emotional_impact}"
+        )
+        return {
+            "affinity_change": affinity_change,
+            "trust_change": trust_change,
+            "bond_increment": bond_increment,
+            "emotional_impact": emotional_impact,
         }
-        change += emotion_score.get(result.get("user_emotion"), 0)
-
-        # 亲密度
-        intimacy_score = {
-            "high": 3,
-            "medium": 1,
-            "low": 0,
-        }
-        change += intimacy_score.get(result.get("intimacy"), 0)
-
-        # 用户是否关心助手
-        if result.get("care_for_assistant"):
-            change += 1
-
-        # 用户态度
-        attitude_score = {
-            "supportive": 2,
-            "neutral": 0,
-            "hostile": -4,
-        }
-        change += attitude_score.get(result.get("user_attitude_toward_assistant"), 0)
-
-        # 助手回复质量
-        reply_score = {
-            "high": 1.5,
-            "medium": 0,
-            "low": -1.5,
-        }
-        change += reply_score.get(result.get("reply_quality"), 0)
-
-        # 总倾向
-        overall_score = {
-            "strong_positive": 3,
-            "positive": 1,
-            "neutral": 0,
-            "negative": -1,
-            "strong_negative": -3,
-        }
-        change += overall_score.get(result.get("overall_love_tendency"), 0)
-        Log.logger.info(f"LLM 好感度判断结果: {change}")
-        # 单次变化限制
-        change = max(min(change, 5), -5)
-        return int(change)
 
     async def _async_search_knowledge(self, msg: str) -> tuple[str, float]:
         """
@@ -283,22 +314,6 @@ class Assistant:
             return "", 0.0
 
         result = await self._run_sync_task(self.memoryEngine.get_context, msg)
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        return result, elapsed_time
-
-    async def _async_process_emotion(self, msg: str) -> tuple[str, float]:
-        """
-        处理情绪任务
-        Parameters:
-            msg: 用户输入的消息
-        Returns:
-            情绪处理结果
-        """
-        start_time = time.time()
-        if not self.enable_emotion_engine:
-            return "", 0.0
-        result = await self.emotionEngine.process_emotion(msg)
         end_time = time.time()
         elapsed_time = end_time - start_time
         return result, elapsed_time
@@ -361,8 +376,6 @@ class Assistant:
         self.data_base_depth = self.agent_config.settings.loreBooksDepth
         # 是否开启记忆系统（v2 统一引擎，替代旧 long_mem + core_mem）
         self.enable_long_memory = self.agent_config.settings.enableLongMemory
-        # 是否开启情绪系统
-        self.enable_emotion_engine = self.agent_config.settings.enableEmotionSystem
 
         # 加载全局配置
         # 用于提取记录长期记忆的大模型
@@ -380,20 +393,31 @@ class Assistant:
         UpdateMemoryTool.set_engine(self.memoryEngine)
         # 载入知识库
         self.databaseEngine = data_base.DataBase(self.agent_config)
-        # 加载情绪系统
-        self.emotionEngine = EmotionEngine(
-            agent_config=self.agent_config, llm_config=self.llm_config
-        )
+        # 加载事件驱动情绪引擎
+        self.emotionEngine = EmotionEngine(agent_name=self.agent_name)
 
-    async def update_love_level(self, user_message, assistant_reply):
+    async def update_affection(self, user_message, assistant_reply):
         """
-        异步更新好感度任务
+        异步更新好感度+信任度+羁绊+情绪事件
         Parameters:
             user_message: 用户输入的消息
             assistant_reply: 助手回复的消息
         """
-        change = await self._calculate_love_change(user_message, assistant_reply)
-        self.user_state.love = max(self.user_state.love + change, -50)
+        result = await self._calculate_affection_change()
+
+        # 更新好感度（-50~100）
+        self.user_state.affinity = max(
+            -50, min(100, self.user_state.affinity + result["affinity_change"])
+        )
+        # 更新信任度（-50~100）
+        self.user_state.trust = max(
+            -50, min(100, self.user_state.trust + result["trust_change"])
+        )
+        # 更新羁绊（只增不减）
+        self.user_state.bond += result["bond_increment"]
+
+        # 记录情绪事件
+        self.emotionEngine.process_event(result["emotional_impact"])
 
         # 异步保存配置
         def save_config():
@@ -402,7 +426,7 @@ class Assistant:
         await self._run_sync_task(save_config)
 
         Log.logger.info(
-            f"助手 {self.agent_name} 好感度更新: 变化 {change}, 当前 {self.user_state.love}"
+            f"助手 {self.agent_name} 状态更新: affinity={self.user_state.affinity}, trust={self.user_state.trust}, bond={self.user_state.bond}"
         )
 
     async def get_context(
@@ -429,29 +453,47 @@ class Assistant:
         db_info, _ = results[0]
         mem_info, _ = results[1]
 
-        context_parts: list[str] = []
+        messages: list[ChatCompletionMessageParam] = []
         if db_info:
-            context_parts.append(
-                self.data_base_prompt.format(
-                    data_base=db_info, user=self.user, char=self.char
-                )
+            messages.append(
+                {
+                    "role": "system",
+                    "content": self.data_base_prompt.format(
+                        data_base=db_info, user=self.user, char=self.char
+                    ),
+                }
             )
         if mem_info:
-            context_parts.append(
-                self.memory_prompt.format(
-                    memories=mem_info, user=self.user, char=self.char
-                )
+            messages.append(
+                {
+                    "role": "system",
+                    "content": self.memory_prompt.format(
+                        memories=mem_info, user=self.user, char=self.char
+                    ),
+                }
             )
-        context_parts.append(self._get_love_prompt())
-        if is_sleep_mode:
-            context_parts.append(prompt.sleep_mode_prompt.format(char=self.char))
-
-        messages: list[ChatCompletionMessageParam] = []
-        if context_parts:
-            messages.append({
+        # 好感度与情绪各自独立成段，避免被其他内容淹没
+        messages.append(
+            {
                 "role": "system",
-                "content": "\n".join(context_parts),
-            })
+                "content": self._get_affection_prompt(),
+            }
+        )
+        mood_prompt = self.emotionEngine.get_mood_prompt()
+        if mood_prompt:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": mood_prompt,
+                }
+            )
+        if is_sleep_mode:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": prompt.sleep_mode_prompt.format(char=self.char),
+                }
+            )
         return messages
 
     def get_history(self) -> list[ChatCompletionMessageParam]:
@@ -505,7 +547,7 @@ class Assistant:
             # 跨天日记生成检查（后台任务）
             asyncio.create_task(self.memoryEngine.check_and_generate_diary(now_ts))
 
-        await self.update_love_level(user_msg, assistant_msg)
+        await self.update_affection(user_msg, assistant_msg)
 
     async def add_interaction_msg(
         self, msg: str, plain_text: str | None = None
@@ -531,20 +573,26 @@ class Assistant:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, func, *args)
 
-    def _get_love_level(self, love_value: int) -> int:
+    def _get_affinity_stage(self, affinity: int) -> tuple[str, str]:
         """
-        根据好感度数值获取好感度等级
-        好感度分为5个等级：0(疏远)、1(中性)、2(友好)、3(亲密)、4(挚爱)
+        根据好感度数值获取阶段名和描述
         Parameters:
-            love_value (int): 好感度数值
+            affinity (int): 好感度数值
 
         Returns:
-            int: 好感度等级
+            (阶段名, 一句话描述)
         """
-        for level, config in self.LOVE_LEVELS.items().__reversed__():
-            if love_value >= config["value"]:
-                return level
-        return 0
+        for name, threshold, desc in reversed(self.AFFINITY_STAGES):
+            if affinity >= threshold:
+                return name, desc
+        return self.AFFINITY_STAGES[0][0], self.AFFINITY_STAGES[0][2]
+
+    def _get_trust_level(self, trust: int) -> str:
+        """根据信任度返回一句话状态"""
+        for threshold, desc in reversed(self.TRUST_THRESHOLDS):
+            if trust >= threshold:
+                return desc
+        return self.TRUST_THRESHOLDS[-1][1]
 
     def _ensure_directory(self):
         """确保配置目录存在，如果不存在则创建"""

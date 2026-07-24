@@ -63,5 +63,3 @@ class InteractionMessageRequest(BaseModel):
     scene: str
     context: InteractionContext = InteractionContext()
     generation_motion: bool = False
-    include_history: bool = False
-    history_limit: int = 10

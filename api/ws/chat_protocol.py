@@ -94,8 +94,6 @@ class ChatWSMessageType(str, Enum):
         scene: str,                   场景描述
         context: InteractionContext,  上下文信息
         generation_motion: bool,      是否生成 Live2D 动作
-        include_history: bool,        是否包含历史
-        history_limit: int,           历史消息条数上限
     }
     回复格式与 chat:send 完全一致（chat:text / chat:audio / chat:motion / chat:done）
     """
