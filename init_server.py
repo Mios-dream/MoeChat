@@ -26,11 +26,11 @@ async def init():
         logger.info(f"当前版本为: {get_project_version()}")
 
         await create_data_folder()
-        await check_and_download_default_assistant()
+        # await check_and_download_default_assistant()
         await initialize_assistant()
         await initialize_tools()
 
-        # cleanup()
+        cleanup()
 
     except Exception as e:
         _exc_type, _exc_value, exc_traceback = sys.exc_info()

@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from core.llm.llm_client import LLMClient
 from services import data_base
 from services.memory_v2 import MemoryV2
-from tool_system.tools.memory_tool import RememberTool, RecallTool
+from tool_system.tools.memory_tool import RememberTool, RecallTool, UpdateMemoryTool
 from openai.types.chat import ChatCompletionMessageParam
 
 
@@ -374,9 +374,10 @@ class Assistant:
         self.memoryEngine = MemoryV2(
             self.agent_config, firstMeetTime=self.user_state.firstMeetTime
         )
-        # 注入记忆引擎到记忆工具，使 LLM 可通过工具自主记录和回忆记忆
+        # 注入记忆引擎到记忆工具，使 LLM 可通过工具自主记录、回忆和更新记忆
         RememberTool.set_engine(self.memoryEngine)
         RecallTool.set_engine(self.memoryEngine)
+        UpdateMemoryTool.set_engine(self.memoryEngine)
         # 载入知识库
         self.databaseEngine = data_base.DataBase(self.agent_config)
         # 加载情绪系统

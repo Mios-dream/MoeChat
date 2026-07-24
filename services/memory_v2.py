@@ -86,19 +86,23 @@ class MemoryV2:
     # 记忆工具系统提示词模板
     MEMORY_INSTRUCTION_PROMPT = """
 【记忆系统说明】
-你拥有一个名为 remember 的工具，可以记录重要信息。如果有多个重要信息，则可以多次调用进行记录。
+你拥有一个名为 remember 的工具，可以在对话过程中随时记录重要信息。可以多次调用。
+
+以下情况你必须使用 remember 工具（可以尝试记录更多信息，即使记录错误也可以使用 update_memory 工具更新）：
+1. 你和 {user} 之间有意义的互动 → 共同经历、有趣对话、情感交流
+2. {user} 分享了新知识 → 你学到的新信息、观点、故事
+3. 你自身的变化 → 对 {user} 的看法变化、新的感受、自我认知更新
 
 记忆分为四个类别：
-1. about_user - 关于{user}的信息：偏好、经历、习惯、性格特征等
-2. about_us - 关于你和{user}的关系：共同经历、互动感受、关系变化等
-3. about_world - 从对话中学到的外部知识
-4. about_self - 你对自己的认知和感受的变化
+- about_user：关于{user}的信息
+- about_us：关于你和{user}的关系和共同经历
+- about_world：从对话中学到的外部知识
+- about_self：你对自己认知和感受的变化
 
-使用准则：
-- 只有真正重要的事情才值得记录，不要事无巨细
-- 用你自己的视角来描述记忆内容
-- 极其重要的信息（影响性格和关系的核心记忆）设为 core 类型和 0.9+ 重要度
-- 普通重要的设为 normal 类型，会随时间逐渐淡忘
+准则：
+- 用你自己的视角来描述，如"用户说他讨厌下雨天"（不要用"用户讨厌下雨天"）
+- 极其重要的信息（影响性格和关系的核心记忆）设为 core 类型
+- 如果之前记住的信息需要修正，使用 update_memory 工具更新，不要新建重复的
 """
 
     # 主动回忆指令（recall 工具说明）
@@ -314,9 +318,7 @@ class MemoryV2:
         """从 SQLite 加载日记数据到内存缓存（线程安全，_lock 由调用者持有）"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT day, content FROM diary_days ORDER BY day"
-        )
+        cursor.execute("SELECT day, content FROM diary_days ORDER BY day")
         rows = cursor.fetchall()
         conn.close()
 
@@ -405,9 +407,7 @@ class MemoryV2:
                     )
                     # 验证索引与缓存一致
                     if self.diary_index.ntotal != len(self.diary_content_list):
-                        Log.logger.warning(
-                            "[日记] 索引大小不匹配，将重建"
-                        )
+                        Log.logger.warning("[日记] 索引大小不匹配，将重建")
                         self._build_diary_index()
                 except Exception as e:
                     Log.logger.warning(f"加载日记 FAISS 索引失败: {e}，将重建")
@@ -603,7 +603,9 @@ class MemoryV2:
 
         new_category = category if category is not None else self.categories[idx]
         new_importance = importance if importance is not None else self.importances[idx]
-        new_memory_type = memory_type if memory_type is not None else self.memory_types[idx]
+        new_memory_type = (
+            memory_type if memory_type is not None else self.memory_types[idx]
+        )
 
         if new_category not in self.CATEGORIES:
             new_category = "about_user"
@@ -619,8 +621,15 @@ class MemoryV2:
         cursor.execute(
             "UPDATE memories SET category=?, content=?, importance=?, "
             "memory_type=?, decay_rate=?, last_accessed=? WHERE id=?",
-            (new_category, content, new_importance, new_memory_type,
-             new_decay_rate, now_str, mem_id),
+            (
+                new_category,
+                content,
+                new_importance,
+                new_memory_type,
+                new_decay_rate,
+                now_str,
+                mem_id,
+            ),
         )
         updated = cursor.rowcount > 0
         conn.commit()
@@ -688,9 +697,12 @@ class MemoryV2:
                         "INSERT OR IGNORE INTO memory_links "
                         "(memory_id_a, memory_id_b, similarity, created_at) "
                         "VALUES (?, ?, ?, ?)",
-                        (min(new_mem_id, existing_id),
-                         max(new_mem_id, existing_id),
-                         round(sim, 4), now_str),
+                        (
+                            min(new_mem_id, existing_id),
+                            max(new_mem_id, existing_id),
+                            round(sim, 4),
+                            now_str,
+                        ),
                     )
                 except Exception:
                     continue
@@ -718,7 +730,9 @@ class MemoryV2:
             linked.append(b if a == mem_id else a)
         return linked
 
-    def add_memory_link(self, mem_id_a: int, mem_id_b: int, similarity: float = 0.5) -> bool:
+    def add_memory_link(
+        self, mem_id_a: int, mem_id_b: int, similarity: float = 0.5
+    ) -> bool:
         """手动添加两条记忆之间的关联"""
         if mem_id_a == mem_id_b:
             return False
@@ -730,8 +744,12 @@ class MemoryV2:
                 "INSERT OR IGNORE INTO memory_links "
                 "(memory_id_a, memory_id_b, similarity, created_at) "
                 "VALUES (?, ?, ?, ?)",
-                (min(mem_id_a, mem_id_b), max(mem_id_a, mem_id_b),
-                 round(similarity, 4), now_str),
+                (
+                    min(mem_id_a, mem_id_b),
+                    max(mem_id_a, mem_id_b),
+                    round(similarity, 4),
+                    now_str,
+                ),
             )
             conn.commit()
             return cursor.rowcount > 0
@@ -866,35 +884,45 @@ class MemoryV2:
                     effective_imp = importance_cache.get(mem_id, 0.0)
                     final_score = similarity * effective_imp
 
-                    memory_results.append({
-                        "id": mem_id,
-                        "content": self.contents[idx],
-                        "category": self.categories[idx],
-                        "importance": self.importances[idx],
-                        "effective_importance": round(effective_imp, 4),
-                        "memory_type": self.memory_types[idx],
-                        "score": round(final_score, 4),
-                        "source": "memory",
-                    })
+                    memory_results.append(
+                        {
+                            "id": mem_id,
+                            "content": self.contents[idx],
+                            "category": self.categories[idx],
+                            "importance": self.importances[idx],
+                            "effective_importance": round(effective_imp, 4),
+                            "memory_type": self.memory_types[idx],
+                            "score": round(final_score, 4),
+                            "source": "memory",
+                        }
+                    )
 
                 # ---- 关联记忆提升 ----
                 # 对 top-K 结果中的每条记忆，查找其关联记忆并给予分数加成
-                top_memory_ids = {r["id"] for r in memory_results[:max(3, top_k)]}
+                top_memory_ids = {r["id"] for r in memory_results[: max(3, top_k)]}
                 for r in memory_results:
                     if r["id"] in top_memory_ids:
                         linked_ids = self._get_linked_memory_ids(r["id"])
                         for linked_id in linked_ids:
                             for other in memory_results:
-                                if other["id"] == linked_id and other["id"] not in top_memory_ids:
+                                if (
+                                    other["id"] == linked_id
+                                    and other["id"] not in top_memory_ids
+                                ):
                                     other["score"] = round(
-                                        other["score"] * (1.0 + self.LINK_BOOST_FACTOR), 4
+                                        other["score"] * (1.0 + self.LINK_BOOST_FACTOR),
+                                        4,
                                     )
                                     break
 
                 results.extend(memory_results)
 
             # ---- 2. 检索日记 ----
-            if include_diaries and self.diary_index is not None and self.diary_index.ntotal > 0:
+            if (
+                include_diaries
+                and self.diary_index is not None
+                and self.diary_index.ntotal > 0
+            ):
                 try:
                     query_vec = self._encode_texts([query])
                     search_k = min(top_k * 2, self.diary_index.ntotal)
@@ -915,17 +943,19 @@ class MemoryV2:
                         time_score = self._calc_diary_time_score(day)
                         final_score = similarity * 0.7 + time_score * 0.3
 
-                        results.append({
-                            "id": f"diary_{day}",
-                            "content": content,
-                            "category": "diary",
-                            "importance": round(time_score, 4),
-                            "effective_importance": round(time_score, 4),
-                            "memory_type": "diary",
-                            "score": round(final_score, 4),
-                            "source": "diary",
-                            "day": day,
-                        })
+                        results.append(
+                            {
+                                "id": f"diary_{day}",
+                                "content": content,
+                                "category": "diary",
+                                "importance": round(time_score, 4),
+                                "effective_importance": round(time_score, 4),
+                                "memory_type": "diary",
+                                "score": round(final_score, 4),
+                                "source": "diary",
+                                "day": day,
+                            }
+                        )
 
         # ---- 3. 排序与截断 ----
         results.sort(key=lambda x: x["score"], reverse=True)

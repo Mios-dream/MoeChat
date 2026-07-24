@@ -21,30 +21,21 @@ class RememberTool(ServerTool):
     """
     记住重要事情的工具
 
-    当你遇到以下情况时应该使用此工具：
-    1. 用户透露了重要的个人信息（关于用户的）
-    2. 你和用户之间发生了有意义的互动（关于彼此的）
-    3. 用户在对话中分享了有价值的知识（关于世界的）
-    4. 你对自己的感受或认知发生了变化（关于自身的）
-
-    注意事项：
-    - 只记录真正重要的事情，不要事无巨细
-    - 用你自己的视角来描述记忆内容
-    - 不要记录已经在其他记忆中重复的内容
+    以下情况必须使用此工具：
+    1. 你和用户之间发生了有意义的互动
+    2. 用户在对话中分享了有价值的知识
+    3. 你对自己的感受或认知发生了变化
     """
 
     name = "remember"
-    description = (
-        "记住一段重要信息。当你觉得某件事值得长期记住时使用此工具。"
-        "只有真正重要的事情才值得记录，不要事无巨细。"
-    )
+    description = "记住一段信息。当你注意到用户的个人信息、共同经历、新知识"
     parameters = {
         "type": "object",
         "properties": {
             "content": {
                 "type": "string",
                 "description": "记忆内容。用你自己的视角描述，"
-                "如'用户提到他喜欢吃辣'或'今天和用户一起看了日落，感觉很温暖'",
+                "如'用户说他喜欢吃辣'或'今天和用户一起看了日落，感觉很温暖'",
             },
             "category": {
                 "type": "string",
@@ -57,22 +48,24 @@ class RememberTool(ServerTool):
             },
             "importance": {
                 "type": "number",
-                "description": "这条记忆的重要程度（0.0~1.0）。"
+                "description": "这条记忆的重要程度（0.0~1.0，默认 0.5）。"
                 "非常重要的事情给接近 1.0，普通重要给 0.5~0.7，"
                 "细节性的信息给 0.3~0.5。"
                 "影响性格和关系的核心记忆应设为 0.9 以上并设为 core 类型。",
                 "minimum": 0.0,
                 "maximum": 1.0,
+                "default": 0.5,
             },
             "memory_type": {
                 "type": "string",
                 "enum": ["core", "normal"],
-                "description": "记忆类型：\n"
+                "description": "记忆类型（默认 normal）：\n"
                 "- core：永久记忆，永远不会被遗忘（用于极其重要的事）\n"
                 "- normal：普通记忆，会随时间逐渐淡忘",
+                "default": "normal",
             },
         },
-        "required": ["content", "category", "importance", "memory_type"],
+        "required": ["content", "category"],
     }
 
     # 全局记忆引擎引用，由外部注入
@@ -117,17 +110,21 @@ class RememberTool(ServerTool):
         )
 
         if mem_id is None:
-            return self.result_json({
-                "status": "exists",
-                "message": "已存在相似的记忆，无需重复记录",
-                "memory_id": None,
-            })
+            return self.result_json(
+                {
+                    "status": "exists",
+                    "message": "已存在相似的记忆，无需重复记录",
+                    "memory_id": None,
+                }
+            )
 
-        return self.result_json({
-            "status": "ok",
-            "message": "已记住",
-            "memory_id": mem_id,
-        })
+        return self.result_json(
+            {
+                "status": "ok",
+                "message": "已记住",
+                "memory_id": mem_id,
+            }
+        )
 
 
 @register_tool(
@@ -206,12 +203,14 @@ class RecallTool(ServerTool):
             return self.result_error("检索失败")
 
         if not results:
-            return self.result_json({
-                "status": "empty",
-                "message": "没有找到相关记忆",
-                "results": [],
-                "count": 0,
-            })
+            return self.result_json(
+                {
+                    "status": "empty",
+                    "message": "没有找到相关记忆",
+                    "results": [],
+                    "count": 0,
+                }
+            )
 
         formatted = []
         for r in results:
@@ -234,9 +233,90 @@ class RecallTool(ServerTool):
                     entry["type"] = "核心" + entry["type"]
             formatted.append(entry)
 
-        return self.result_json({
-            "status": "ok",
-            "message": f"找到 {len(formatted)} 条相关记忆",
-            "results": formatted,
-            "count": len(formatted),
-        })
+        return self.result_json(
+            {
+                "status": "ok",
+                "message": f"找到 {len(formatted)} 条相关记忆",
+                "results": formatted,
+                "count": len(formatted),
+            }
+        )
+
+
+@register_tool(
+    domain=ExecutionDomain.SERVER,
+    mode=ExecutionMode.SYNC,
+    timeout=5.0,
+    tags=["memory"],
+)
+class UpdateMemoryTool(ServerTool):
+    """
+    更新/修正已有记忆的工具
+
+    当你发现之前记住的信息有误、过时或需要补充时使用此工具。
+    不要新建一条重复的，直接更新原有记忆。
+    """
+
+    name = "update_memory"
+    description = (
+        "更新一条已有记忆。当之前记住的信息不再准确、"
+        "需要修正或补充时使用此工具，不要新建重复记忆。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "memory_id": {
+                "type": "integer",
+                "description": "要更新的记忆 ID（通过 recall 工具可以查到）",
+            },
+            "content": {
+                "type": "string",
+                "description": "新的记忆内容",
+            },
+            "importance": {
+                "type": "number",
+                "description": "新的重要度（可选，不传则不改变）",
+                "default": None,
+            },
+        },
+        "required": ["memory_id", "content"],
+    }
+
+    # 全局记忆引擎引用，由外部注入
+    _engine = None
+
+    @classmethod
+    def set_engine(cls, engine):
+        """注入记忆引擎实例"""
+        cls._engine = engine
+
+    async def execute(self, **kwargs: str | float | int) -> str:
+        engine = self.__class__._engine
+        if engine is None:
+            return self.result_error("记忆引擎未就绪")
+
+        mem_id = int(kwargs.get("memory_id", 0))
+        content = str(kwargs.get("content", "")).strip()
+        importance_raw = kwargs.get("importance")
+        importance = float(importance_raw) if importance_raw is not None else None
+
+        if not content:
+            return self.result_error("记忆内容不能为空")
+        if mem_id <= 0:
+            return self.result_error("无效的记忆 ID")
+
+        success = engine.update_memory(
+            mem_id=mem_id,
+            content=content,
+            importance=importance,
+        )
+
+        if success:
+            return self.result_json(
+                {
+                    "status": "ok",
+                    "message": "已更新",
+                    "memory_id": mem_id,
+                }
+            )
+        return self.result_error("记忆不存在或更新失败")

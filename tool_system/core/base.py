@@ -18,6 +18,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from tool_system.core.types import ToolMeta
+from typing import ClassVar
 
 
 class BaseTool(ABC):
@@ -165,11 +166,17 @@ class BaseTool(ABC):
 
 
 class ServerTool(BaseTool, ABC):
+    # 由 @register_tool 装饰器在类定义时动态注入
+    _tool_meta: ClassVar[ToolMeta]
+
     """
     服务端工具基类
 
     工具逻辑完全在服务端进程内执行。继承此类后只需实现 execute() 方法。
     ServerExecutor 会直接 awaitt 执行并返回结果。
+
+    meta property 由 @register_tool 注入的 _tool_meta 自动实现，
+    子类无需手动处理。
 
     使用示例:
         @register_tool(domain=SERVER, mode=SYNC, timeout=15.0, tags=["vision"])
@@ -190,6 +197,11 @@ class ServerTool(BaseTool, ABC):
         # 如果子类定义了 meta 属性且未设置 domain，自动填充为 SERVER
         # 注意：此时子类的 meta 可能尚未完全初始化，由 @register_tool 处理
         pass
+
+    @property
+    def meta(self) -> ToolMeta:
+        """由 @register_tool 装饰器注入到 _tool_meta 的元信息"""
+        return self._tool_meta
 
     @abstractmethod
     async def execute(self, **kwargs: Any) -> str:

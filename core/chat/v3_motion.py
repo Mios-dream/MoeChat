@@ -243,8 +243,8 @@ class V3MotionChatContext(BaseChatContext):
             self._motion_buf[result.sentence_id] = (motions, expression)
         elif result.task_type == "tool_call":
             tc: ToolCallEvent = result.data
-            # 内部工具（如 remember / recall）不转发给客户端，保持沉浸感
-            if tc.tool_name in ("remember", "recall"):
+            # 内部工具（如 remember / recall / update_memory）不转发给客户端，保持沉浸感
+            if tc.tool_name in ("remember", "recall", "update_memory"):
                 return
             self._queue.append(
                 _QueueItem(
@@ -268,8 +268,8 @@ class V3MotionChatContext(BaseChatContext):
             return
         elif result.task_type == "tool_result":
             tr: ToolResultEvent = result.data
-            # 内部工具（如 remember / recall）的结果也不转发给客户端
-            if tr.tool_name in ("remember", "recall"):
+            # 内部工具（如 remember / recall / update_memory）的结果也不转发给客户端
+            if tr.tool_name in ("remember", "recall", "update_memory"):
                 return
             self._queue.append(
                 _QueueItem(
