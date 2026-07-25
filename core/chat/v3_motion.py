@@ -479,8 +479,9 @@ class V3ChatService:
             yield DoneMessage(full_text=full_text)
 
             # chat_history 保存多任务 JSON 格式，让模型从历史中学习输出格式
-            raw_output = ctx.get_raw_output()
-            agent.chat_history.append({"role": "assistant", "content": raw_output})
+            agent.chat_history.append(
+                {"role": "assistant", "content": ctx.get_raw_output()}
+            )
             asyncio.create_task(
                 agent.add_msg(user_msg=user_text, assistant_msg=ctx.get_full_text())
             )

@@ -105,7 +105,12 @@ class TaskScheduler:
         on_tool_event: Callable[[ChatCompletionMessageParam], None] | None = None,
     ) -> "Pipeline":
         """
-        创建多行json返回处理管道
+        创建多行 JSON 返回处理管道
+
+        同步方法，内部调用 chain.build() 展开消息链。build() 会触发
+        HistoryManager.get_for_llm() 的 LLM 语义摘要压缩（通过 new_event_loop
+        同步桥接 async 的 LLMClient），因此此方法虽然签名是同步的，但执行时
+        可能耗时数百毫秒（取决于 LLM 摘要的响应时间）。
 
         支持 Function Calling 工具调用。
         on_tool_event: 工具调用/结果实时回调（用于追加到 chat_history）

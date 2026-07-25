@@ -1,8 +1,15 @@
 """
 消息链构建器
 
-组件式挂载消息模块，自动计算 token 预算、压缩历史记录。
-每个组件通过 add() + 优先级数值确定位置，链负责组装和预算分配。
+组件式挂载消息模块，自动计算 token 预算、调用 HistoryManager 压缩历史记录。
+每个组件通过 add() + 优先级数值确定位置，链负责：
+1. 按优先级排序所有槽位
+2. 将最高优先级的消息块自动移至末尾（作为用户消息）
+3. 计算固定部分的 token 开销，为历史记录分配剩余预算
+4. 同步调用 HistoryManager.get_for_llm()，内部使用 LLM 语义摘要压缩历史（同步桥接）
+
+注意：build() 是同步方法。HistoryManager 的 LLM 压缩通过 new_event_loop()
+在独立事件循环中同步调用 async 的 LLMClient，避免将整个调用栈改造为 async。
 """
 
 from dataclasses import dataclass, field
@@ -12,7 +19,18 @@ from core.history_manager import HistoryManager
 
 @dataclass
 class _Slot:
-    """槽位：一个挂载点"""
+    """
+    槽位：消息链中的一个挂载点
+
+    Attributes:
+        priority: 优先级，数值越小越靠前。组件只需指定相对优先级（如 0/100/200/300/400），
+                  链在 build() 时统一排序。
+        messages: 静态消息块。如果此槽位包含最高优先级的 list，build() 自动将其移至末尾
+                  作为用户消息处理。
+        history_manager: HistoryManager 实例，build() 时调用其 get_for_llm() 获取
+                        压缩后的历史记录。多条历史记录可以在不同优先级插入。
+        max_count: 传递给 get_for_llm 的最大消息条数限制，默认 50。
+    """
 
     priority: int
     messages: list = field(default_factory=list)
@@ -24,19 +42,25 @@ class MessageChain:
     """
     消息链构建器
 
-    用法::
+    通过优先级系统将多个消息模块组装为最终的消息列表，自动处理 token 预算分配
+    和历史压缩。典型用法：:
 
         chain = MessageChain()
-        chain.add_system(agent.prompt,       priority=0)
-        chain.add([memory_msg],              priority=50)
-        chain.add_history(agent.chat_history, priority=100)
-        chain.add(dynamic_context,           priority=150)
-        chain.add(user_message,              priority=999)
+        chain.add_system(agent.prompt,           priority=0)    # 角色设定
+        chain.add([memory_msg],                  priority=100)  # 记忆系统说明
+        chain.add_history(agent.chat_history,    priority=200)  # 对话历史（内部 LLM 压缩）
+        chain.add(dynamic_context,               priority=300)  # 知识库检索等
+        chain.add(user_message,                  priority=999)  # 用户消息（自动移至末尾）
 
-        messages = chain.build()
+        messages = chain.build()  # 同步方法
     """
 
     def __init__(self, context_window: int = 128000):
+        """
+        Parameters:
+            context_window: LLM 上下文窗口大小，用于计算 token 预算。
+                            默认 128000（deepseek 系列的标准上下文长度）。
+        """
         self._context_window = context_window
         self._slots: list[_Slot] = []
 
@@ -102,12 +126,19 @@ class MessageChain:
         """
         按优先级构建完整消息列表
 
-        - 最高 priority 的 list → user_message（自动移至末尾）
-        - HistoryManager → 自动压缩后插入对应优先级位置
-        - 其余 list → 按优先级排列
+        构建流程：
+        1. 按优先级排序所有槽位
+        2. 自动识别最高优先级的消息块作为用户消息（移至末尾）
+        3. 计算非历史块 + 用户消息的固定 token 开销（+200 安全缓冲 + 4000 生成缓冲）
+        4. 遍历 ordered 列表：普通 list 直接追加，HistoryManager 调用 get_for_llm() 压缩后追加
+        5. 用户消息追加到末尾
+
+        HistoryManager.get_for_llm() 内部使用 LLM 语义摘要压缩（同步桥接），
+        _compress_over_count 将最旧消息摘要到 <=50 条，_compress_over_budget
+        在超 token 预算时进一步渐进压缩。
 
         Returns:
-            list[ChatCompletionMessageParam]
+            完整的消息列表 list[ChatCompletionMessageParam]
         """
         self._slots.sort(key=lambda s: s.priority)
 
@@ -135,6 +166,7 @@ class MessageChain:
                 fixed.extend(item)
         fixed.extend(user_messages)
 
+        # +200 安全缓冲 + 4000 LLM 生成缓冲（为模型预留输出 token 空间）
         reserved = HistoryManager.estimate_list_tokens(fixed) + 200 + 4000
 
         # ---- 按优先级组装最终结果，HistoryManager 替换为压缩版本 ----

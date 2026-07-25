@@ -311,7 +311,7 @@ class ChatWebSocketHandler:
             return
 
         # 清空内存历史（保留 system 消息）
-        agent.clear_history()
+        agent.chat_history.clear()
 
         logger.info(
             f"[ChatWS] 聊天记录已清除(仅内存): session={self._session_id}, "

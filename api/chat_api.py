@@ -28,8 +28,7 @@ async def get_chat_history():
     if not agent:
         raise HTTPException(status_code=400, detail="当前没有加载助手")
 
-    history_list = agent.get_history()
-    history_list = _simplify_history(history_list)
+    history_list = _simplify_history(agent.chat_history.copy())
 
     return {
         "msg": "Get chat history success",
@@ -57,6 +56,12 @@ def _simplify_history(
     """
     simplified: list[ChatCompletionMessageParam] = []
     for msg in history:
+        # 跳过压缩摘要消息（以 system 角色存储的历史压缩摘要）
+        if msg.get("role") == "system":
+            content = msg.get("content", "")
+            if isinstance(content, str) and "【以下为压缩的历史对话】" in content:
+                continue
+
         if msg.get("role") == "assistant" and isinstance(msg.get("content"), str):
             content: str = msg["content"]  # type: ignore[assignment]
             texts: list[str] = []

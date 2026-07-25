@@ -34,6 +34,7 @@ import os
 import time
 import math
 import threading
+import asyncio
 import numpy as np
 from datetime import datetime
 from typing import Any
@@ -171,8 +172,18 @@ class MemoryV2:
         self.diary_day_list: list[str] = []
         self.diary_content_list: list[str] = []
 
-        # 日记 LLM 客户端（lazy 初始化）
+        # 日记 LLM 客户端（lazy 初始化），由 _ensure_diary_llm 在首次生成日记时创建
         self._diary_llm: Any = None
+
+        # 日记生成异步任务引用
+        # 用于 schedule_diary_check 中取消上一次未完成的任务，防止同一天内
+        # 多次对话触发多个并发生成任务重复处理相同的时间范围
+        self._diary_task: asyncio.Task | None = None
+
+        # 日记系统专用数据库连接（lazy 初始化 + WAL 模式）
+        # 与 memory_v2.py 其他方法的临时连接策略不同，日记系统在异步任务中
+        # 频繁调用，使用单例连接避免反复创建/销毁的开销
+        self._conn: sqlite3.Connection | None = None
 
         # 角色画像直接从 agent_config 读取
 
@@ -1222,20 +1233,19 @@ class MemoryV2:
             content: 消息文本
             timestamp_sec: Unix 时间戳（秒）
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO chat_turns (timestamp_sec, role, content) VALUES (?, ?, ?)",
             (timestamp_sec, role, content),
         )
         conn.commit()
-        conn.close()
 
     def _get_turns_for_time_range(
         self, start_ts: int, end_ts: int
     ) -> list[dict[str, Any]]:
         """获取指定时间范围内的对话轮次（按时间升序）"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
             "SELECT timestamp_sec, role, content FROM chat_turns "
@@ -1244,16 +1254,14 @@ class MemoryV2:
             (start_ts, end_ts),
         )
         rows = cursor.fetchall()
-        conn.close()
         return [{"timestamp_sec": r[0], "role": r[1], "content": r[2]} for r in rows]
 
     def _get_last_diary_day(self) -> str | None:
         """获取最后生成日记的日期，None 表示从未生成过"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute("SELECT MAX(day) FROM diary_days")
         row = cursor.fetchone()
-        conn.close()
         return row[0] if row and row[0] else None
 
     def _format_turns_for_prompt(self, turns: list[dict[str, Any]]) -> str:
@@ -1271,7 +1279,7 @@ class MemoryV2:
 
         包括 core 类型记忆和高 importance 的记忆（如生日、节日等）
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
             "SELECT category, content, importance, memory_type FROM memories "
@@ -1280,7 +1288,6 @@ class MemoryV2:
             (top_k,),
         )
         rows = cursor.fetchall()
-        conn.close()
 
         if not rows:
             return ""
@@ -1303,6 +1310,44 @@ class MemoryV2:
         if self._diary_llm is None:
             self._diary_llm = LLMClient(model_key="LLM")
 
+    def _get_conn(self) -> sqlite3.Connection:
+        """
+        获取日记系统的持久化 SQLite 连接（lazy 初始化 + WAL 模式）
+
+        与 memory_v2.py 中其他方法（每次都创建新连接）不同，日记系统的方法
+        需在异步任务中频繁调用（schedule_diary_check），每次创建连接的开销不可忽视。
+        因此使用单例连接 + WAL 模式，兼顾性能和并发安全。
+
+        注意：check_same_thread=False 允许在不同协程间共享连接（SQLite 连接本身
+        带有文件锁保护写入），WAL 模式允许多个读取与单个写入并发。
+
+        Returns:
+            持久化的 SQLite 连接实例
+        """
+        if self._conn is None:
+            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+        return self._conn
+
+    def _diary_exists(self, day_str: str) -> bool:
+        """
+        检查指定日期是否已生成日记（幂等判断）
+
+        generate_diary_for_day 入口处调用此方法，如果日记已存在则跳过 LLM 生成。
+        这是双层防重中的第一层（第二层是 day_str 作为主键的 UNIQUE 约束）。
+
+        Parameters:
+            day_str: 日期字符串，格式 YYYY-MM-DD
+
+        Returns:
+            该日期是否已有日记记录
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM diary_days WHERE day = ?", (day_str,))
+        return cursor.fetchone() is not None
+
     async def generate_diary_for_day(
         self, day_str: str, turns: list[dict[str, Any]]
     ) -> bool:
@@ -1316,6 +1361,11 @@ class MemoryV2:
         Returns:
             是否成功生成了日记
         """
+        # 幂等：该日已有日记则跳过（防止重复触发重复生成）
+        if self._diary_exists(day_str):
+            Log.logger.info(f"[日记] 跳过 {day_str}：日记已存在")
+            return False
+
         if len(turns) < self.MIN_TURNS_FOR_DIARY:
             Log.logger.info(
                 f"[日记] 跳过 {day_str}：仅 {len(turns)} 轮对话，"
@@ -1423,15 +1473,14 @@ class MemoryV2:
 
         # 第三步：存入 diary_days 独立表
         now_iso = datetime.now().isoformat()
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT OR REPLACE INTO diary_days (day, event_summary, content, created_at) "
+            "INSERT INTO diary_days (day, event_summary, content, created_at) "
             "VALUES (?, ?, ?, ?)",
             (day_str, facts, diary_text, now_iso),
         )
         conn.commit()
-        conn.close()
 
         # 第四步：加入日记 FAISS 索引（支持语义检索）
         with self._lock:
@@ -1442,23 +1491,34 @@ class MemoryV2:
 
     async def check_and_generate_diary(self, now_ts: int):
         """
-        检查是否需要生成日记——跨天时触发未归档日期的日记生成
+        检查并生成未归档日期的日记
 
-        应在每次 add_chat_turn 后调用
+        每次对话后由 schedule_diary_check 异步调用。检查从上次已生成日记的日期
+        到今天之前是否有未归档的日期，如有则逐日生成日记。
+
+        关键修复：last_diary_end = last_diary_ts + 86400 跳过已归档日期的全天，
+        避免重复处理 last_diary_day 当天的对话轮次。配合 generate_diary_for_day
+        入口的 _diary_exists 幂等检查，形成双层防重。
+
+        Parameters:
+            now_ts: 当前 Unix 时间戳（秒），用于计算"今天"的日期边界
         """
         t = time.localtime(now_ts)
+        today_str = f"{t.tm_year}-{t.tm_mon}-{t.tm_mday}"
         today_start = int(
             time.mktime(
                 time.strptime(
-                    f"{t.tm_year}-{t.tm_mon}-{t.tm_mday} 00:00:00",
+                    f"{today_str} 00:00:00",
                     "%Y-%m-%d %H:%M:%S",
                 )
             )
         )
         last_diary_day = self._get_last_diary_day()
 
-        # 解码最后日记日期的时间戳起点
-        last_diary_ts = 0
+        # 计算上次日记之后第一个未归档日期的时间戳起点
+        # 修复：last_diary_end = last_diary_ts + 86400，跳过已归档日期的全天
+        # 避免重复处理 last_diary_day 当天的对话轮次
+        last_diary_end = 0
         if last_diary_day:
             try:
                 last_diary_ts = int(
@@ -1466,15 +1526,17 @@ class MemoryV2:
                         time.strptime(f"{last_diary_day} 00:00:00", "%Y-%m-%d %H:%M:%S")
                     )
                 )
+                # +86400 跳到下一天 00:00:00，排除已归档日期
+                last_diary_end = last_diary_ts + 86400
             except Exception:
-                last_diary_ts = 0
+                last_diary_end = 0
 
-        # 收集从上次日记之后到今天之前的所有未归档日期
-        if today_start <= last_diary_ts:
-            return  # 没有需要归档的日期
+        # 没有跨天：今天已有日记或还没有需要归档的日期
+        if today_start <= last_diary_end:
+            return
 
-        # 按天分组
-        turns = self._get_turns_for_time_range(last_diary_ts, today_start)
+        # 收集从 last_diary_end 到今天开始之前的所有对话轮次，按天分组
+        turns = self._get_turns_for_time_range(last_diary_end, today_start)
         if not turns:
             return
 
@@ -1483,8 +1545,46 @@ class MemoryV2:
             d = time.strftime("%Y-%m-%d", time.localtime(t_turn["timestamp_sec"]))
             day_groups.setdefault(d, []).append(t_turn)
 
+        # 逐天生成日记（generate_diary_for_day 内部有 _diary_exists 幂等检查）
         for day_str, day_turns in day_groups.items():
             await self.generate_diary_for_day(day_str, day_turns)
+
+    def schedule_diary_check(self, now_ts: int):
+        """
+        安全地调度日记生成检查
+
+        在每次 add_msg 后调用。关键设计：
+        1. 取消上一次未完成的日记生成任务（如果存在），防止任务堆积
+        2. 使用 _run_safe 内部协程包裹，捕获 CancelledError 和未知异常
+        3. 任务引用保存在 self._diary_task 中，支持外部取消和生命周期管理
+
+        这种"取消旧任务 → 创建新任务"的模式确保同一时刻最多只有一个日记生成
+        任务在运行，避免多个并发任务重复处理相同的日期范围。
+
+        Parameters:
+            now_ts: 当前 Unix 时间戳（秒），传递给 check_and_generate_diary
+        """
+        # 取消上一次未完成的日记生成任务
+        if self._diary_task and not self._diary_task.done():
+            self._diary_task.cancel()
+            self._diary_task = None
+
+        async def _run_safe(ts: int):
+            """
+            内部协程：带异常兜底的日记生成检查
+
+            asyncio.CancelledError 由 Python 原生控制流处理（取消时静默退出）。
+            其他异常（网络超时、LLM API 错误等）记录错误日志但不上抛，防止
+            未处理的异常传播到事件循环的异常回调中。
+            """
+            try:
+                await self.check_and_generate_diary(ts)
+            except asyncio.CancelledError:
+                Log.logger.info("[日记] 日记生成任务被取消")
+            except Exception:
+                Log.logger.error("[日记] 日记生成异常", exc_info=True)
+
+        self._diary_task = asyncio.create_task(_run_safe(now_ts))
 
     def get_diary_records(
         self,
