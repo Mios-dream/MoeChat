@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 import os
 import re
 from Config import Config
@@ -17,6 +18,8 @@ from services import data_base
 from services.memory_v2 import MemoryV2
 from tool_system.tools.memory_tool import RememberTool, RecallTool, UpdateMemoryTool
 from openai.types.chat import ChatCompletionMessageParam
+from core.history_manager import HistoryManager
+from core.message_chain import MessageChain
 
 
 class Assistant:
@@ -47,8 +50,8 @@ class Assistant:
     def __init__(self, agent_name: str):
         # 助手名称
         self.agent_name = agent_name
-        # 聊天记录
-        self.chat_history: list[ChatCompletionMessageParam] = []
+        # 聊天记录（使用 HistoryManager 统一管理）
+        self.chat_history: HistoryManager = HistoryManager()
         # 线程池执行器，用于处理同步的 CPU 密集任务
         self._executor = ThreadPoolExecutor(max_workers=4)
         # 用户私有状态（好感度、首次相遇时间等）
@@ -98,7 +101,7 @@ class Assistant:
             f"这些经历构成了你对他的真实感受。\n"
             f"请自然地体会这些感受，像真实的自己一样去回应，无需刻意强调。"
         )
-        return prompt.affection_prompt.format(affection_text=affection_text)
+        return f"<关系状态>{affection_text}</关系状态>"
 
     def _load_prompt_template(self):
         """加载提示词模板"""
@@ -396,7 +399,7 @@ class Assistant:
         # 加载事件驱动情绪引擎
         self.emotionEngine = EmotionEngine(agent_name=self.agent_name)
 
-    async def update_affection(self, user_message, assistant_reply):
+    async def update_affection(self):
         """
         异步更新好感度+信任度+羁绊+情绪事件
         Parameters:
@@ -429,7 +432,7 @@ class Assistant:
             f"助手 {self.agent_name} 状态更新: affinity={self.user_state.affinity}, trust={self.user_state.trust}, bond={self.user_state.bond}"
         )
 
-    async def get_context(
+    async def get_dynamic_context(
         self, msg: str, is_sleep_mode: bool = False
     ) -> list[ChatCompletionMessageParam]:
         """
@@ -454,7 +457,7 @@ class Assistant:
         mem_info, _ = results[1]
 
         messages: list[ChatCompletionMessageParam] = []
-        if db_info:
+        if db_info or mem_info:
             messages.append(
                 {
                     "role": "system",
@@ -472,28 +475,29 @@ class Assistant:
                     ),
                 }
             )
-        # 好感度与情绪各自独立成段，避免被其他内容淹没
+        # 好感度与情绪各独立成段，避免被其他内容淹没
+        mood_prompt = self.emotionEngine.get_mood_prompt()
         messages.append(
             {
                 "role": "system",
-                "content": self._get_affection_prompt(),
+                "content": "\n".join([self._get_affection_prompt(), mood_prompt]),
             }
         )
-        mood_prompt = self.emotionEngine.get_mood_prompt()
-        if mood_prompt:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": mood_prompt,
-                }
-            )
-        if is_sleep_mode:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": prompt.sleep_mode_prompt.format(char=self.char),
-                }
-            )
+
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    (f"当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+                    + (
+                        prompt.sleep_mode_prompt.format(char=self.char)
+                        if is_sleep_mode
+                        else ""
+                    )
+                ),
+            }
+        )
+
         return messages
 
     def get_history(self) -> list[ChatCompletionMessageParam]:
@@ -515,14 +519,107 @@ class Assistant:
         """
         清除内存中的聊天历史
         """
-        self.chat_history = []
+        self.chat_history.clear()
+
+    async def build_chat_chain(
+        self,
+        user_text: str,
+        user_message: list[ChatCompletionMessageParam],
+        is_sleep_mode=False,
+    ) -> MessageChain:
+        """
+        构建聊天消息链，返回 (system_context, history_messages, user_message)
+
+        优先级划分（每段间隔 100，中间留空便于插入）：
+            0:   角色设定 (agent.prompt)
+            100:  记忆系统说明
+            200:  聊天历史（自动压缩）
+            300:  动态上下文
+            400:  用户消息
+        """
+        chain = MessageChain()
+
+        chain.add_system(self.prompt, priority=0)
+        chain.add(
+            [
+                {
+                    "role": "system",
+                    "content": MemoryV2.build_system_prompt(self.char, self.user),
+                }
+            ],
+            priority=100,
+        )
+        chain.add_history(self.chat_history, priority=200)
+        # 动态上下文（记忆检索 + 知识库等）放在对话历史之后，避免击穿前缀缓存
+        dynamic_context = await self.get_dynamic_context(
+            msg=user_text, is_sleep_mode=is_sleep_mode
+        )
+        chain.add(dynamic_context, priority=300)
+        chain.add(user_message, priority=400)
+        return chain
+
+    async def build_interaction_chain(
+        self,
+        event_message: list[ChatCompletionMessageParam],
+        is_sleep_mode: bool = False,
+    ) -> MessageChain:
+        """
+        构建交互消息链
+
+        优先级划分（每段间隔 100，中间留空便于插入）：
+            0:   交互系统提示词
+            50:   任务系统提示词（由调度器添加）
+            100:  记忆系统说明
+            200:  聊天历史（自动压缩）
+            300:  额外上下文（好感度 + 情绪）
+            400:  用户消息
+        """
+        # 构建交互系统提示词
+        system_prompt = prompt.interaction_event_prompt.format(
+            char=self.char,
+            user=self.user,
+            description=self.description,
+            char_personality=self.agent_config.personality,
+            message_example=self.message_example,
+            extra_description=self.agent_config.customPrompt or "",
+        )
+
+        # 睡眠模式下追加疲倦语调提示
+        if is_sleep_mode:
+            sleep_prompt = prompt.sleep_mode_prompt.format(char=self.char)
+            system_prompt += "\n\n" + sleep_prompt
+
+        # 额外上下文（好感度 + 情绪）
+        extra_context: list[ChatCompletionMessageParam] = [
+            {
+                "role": "system",
+                "content": self._get_affection_prompt()
+                + self.emotionEngine.get_mood_prompt(),
+            },
+        ]
+
+        chain = MessageChain()
+        chain.add_system(system_prompt, priority=0)
+        chain.add(
+            [
+                {
+                    "role": "system",
+                    "content": MemoryV2.build_system_prompt(self.char, self.user),
+                }
+            ],
+            priority=100,
+        )
+        chain.add_history(self.chat_history, priority=200)
+        chain.add(extra_context, priority=300)
+        chain.add(event_message, priority=400)
+        return chain
 
     async def add_msg(self, user_msg: str, assistant_msg: str) -> None:
         """
         添加对话回合后的后续处理。
 
-        chat_history 由调用方管理（调用前已追加完整序列），
-        本方法负责：
+        HistoryManager 已自动管理 200 条上限和压缩，
+        本方法仅负责非消息存储的后续逻辑：
         1. 好感度更新
         2. 原始对话存储（供日记生成使用）
         3. 跨天日记生成检查
@@ -531,14 +628,6 @@ class Assistant:
             user_msg: 用户输入的消息
             assistant_msg: 助手回复的消息
         """
-        # 安全截断：移除孤立 tool 消息（前驱 tool_calls 被切掉时）
-        max_len = self.agent_config.settings.contextLength
-        if len(self.chat_history) > max_len:
-            truncated = self.chat_history[-max_len:]
-            while truncated and truncated[0].get("role") == "tool":
-                truncated = truncated[1:]
-            self.chat_history = truncated
-
         # 存储原始对话轮次供日记使用
         now_ts = int(time.time())
         if self.enable_long_memory:
@@ -547,7 +636,7 @@ class Assistant:
             # 跨天日记生成检查（后台任务）
             asyncio.create_task(self.memoryEngine.check_and_generate_diary(now_ts))
 
-        await self.update_affection(user_msg, assistant_msg)
+        await self.update_affection()
 
     async def add_interaction_msg(
         self, msg: str, plain_text: str | None = None

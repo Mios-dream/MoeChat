@@ -175,9 +175,7 @@ def build_user_message_content(
                     logger.error(f"[多模态处理器] 图片解码失败({file.name}): {e}")
                     ocr_text = ""
                 if ocr_text:
-                    ocr_texts.append(
-                        f"[图片: {file.name or '未命名'}] {ocr_text}"
-                    )
+                    ocr_texts.append(f"[图片: {file.name or '未命名'}] {ocr_text}")
                 logger.info(
                     f"[多模态处理器] OCR 模式: 识别图片 #{ocr_count}({file.name})"
                 )
@@ -185,15 +183,11 @@ def build_user_message_content(
             # 文本文件：读取内容
             text = _read_txt_content(file.data)
             if text:
-                ocr_texts.append(
-                    f"[文件: {file.name or '未命名'}]\n{text}"
-                )
+                ocr_texts.append(f"[文件: {file.name or '未命名'}]\n{text}")
         else:
             # 不支持的文件类型：仅标记文件名，前端可展示为灰色附件卡片
             logger.warning(f"[多模态处理器] 不支持的文件类型: {file.type}({file.name})")
-            ocr_texts.append(
-                f"[附件: {file.name or '未命名'}] 不支持的文件类型"
-            )
+            ocr_texts.append(f"[附件: {file.name or '未命名'}] 不支持的文件类型")
 
     # 组装 user_message_content（始终为 content parts list）
     content_parts: list[ChatCompletionContentPartParam] = []
@@ -204,12 +198,12 @@ def build_user_message_content(
         content_parts.extend(text_parts)
         for ocr_text in ocr_texts:
             content_parts.append({"type": "text", "text": ocr_text})
-
-    user_message_content.append(
-        {
-            "role": "user",
-            "content": content_parts or [{"type": "text", "text": ""}],
-        }
-    )
+    if content_parts:
+        user_message_content.append(
+            {
+                "role": "user",
+                "content": content_parts,
+            }
+        )
 
     return user_message_content, user_text

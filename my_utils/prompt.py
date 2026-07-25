@@ -71,7 +71,7 @@ interaction_event_prompt = """你是{char}，正以桌面宠物的形态陪伴�
 说话风格参考：
 {message_example}
 
-{extra_setting}
+{extra_description}
 
 行为准则:
 当收到事件通知时，请完全沉浸在「{char}」的身份中：
@@ -95,21 +95,6 @@ sleep_mode_prompt = """【当前状态：睡眠模式】
 3. 不要主动发起话题，被动回应即可
 4. 展现出困倦、迷糊的状态，但依然保持角色的基本性格"""
 
-
-dream_talk_prompt = """【当前状态：梦话】
-{char}正在睡觉，无意中说了一些梦话。请注意：
-1. 梦话内容要符合{char}的性格和近期经历
-2. 语句可以不完整、逻辑跳跃，像真实的梦话
-3. 语气要含糊、呢喃，像在说梦话
-4. 不超过20字
-5. 可以是片段式的独白，不需要完整的句子"""
-
-
-affection_prompt = """
-<关系状态>
-{affection_text}
-</关系状态>
-"""
 
 # 好感度分析系统提示词（静态部分，可缓存）
 analysis_system_prompt = """

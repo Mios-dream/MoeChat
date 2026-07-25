@@ -17,11 +17,10 @@ from models.dto.response.ChatResponse import (
     DoneMessage,
 )
 from my_utils.log import logger
-from services.memory_v2 import MemoryV2
 from core.chat.base import tts_wrapper
-from core.scheduler import TaskResult
-from core.scheduler import TaskScheduler
-from core.scheduler.parsers.text_stream_parser import filter_tts_text
+from core.scheduler import Pipeline, TaskResult
+from core.scheduler.parsers.text_stream_parser import TextStreamParser, filter_tts_text
+from core.llm.response_parser import TextParser
 from services.assistant_service import AssistantService
 
 
@@ -65,9 +64,7 @@ class BaseChatContext:
             audio_file: str | None = None
             tts_text = filter_tts_text(text)
             if tts_text.strip():
-                audio_file = await tts_wrapper(
-                    self.tts_semaphore, text, tts_text
-                )
+                audio_file = await tts_wrapper(self.tts_semaphore, text, tts_text)
 
             extras = {}
             if audio_file:
@@ -108,10 +105,10 @@ class V1ChatService:
         并行文字/语音，极低延迟同步。
 
         流程概述：
-        1. 获取助手实例，构建历史消息
-        2. 创建调度器和纯文本管道
-        3. 流式执行管道，处理文本结果
-        4. 事件循环：按序输出就绪事件
+        1. 获取助手实例
+        2. 使用 build_chat_chain + MessageChain 构建消息列表
+        3. 创建纯文本管道并流式执行
+        4. 按序处理 TTS → 输出就绪事件
 
         参数：
         - params: 聊天请求参数
@@ -129,30 +126,18 @@ class V1ChatService:
         # 从 ChatRequest 构建用户消息内容
         user_message_raw, user_text = build_user_message_content(params)
 
-        # 动态上下文（记忆检索 + 知识库等）放在对话历史之后，避免击穿前缀缓存
-        dynamic_context = await agent.get_context(
-            msg=user_text, is_sleep_mode=params.is_sleep_mode
-        )
-
-        history_messages = []
-        # 固定前缀：记忆系统说明（可缓存）
-        if agent.enable_long_memory:
-            history_messages.append({
-                "role": "system",
-                "content": MemoryV2.build_system_prompt(
-                    agent.char, agent.user
-                ),
-            })
-        # 中间段：对话历史
-        history_messages.extend(agent.get_history())
-        # 动态后缀：每次变化的上下文
-        history_messages.extend(dynamic_context)
-
-        scheduler = TaskScheduler()
-        pipeline = scheduler.create_text_pipeline(
-            system_context=agent.prompt,
-            history_messages=history_messages,
+        # 使用 MessageChain 构建消息链（与 V3 一致）
+        chain = await agent.build_chat_chain(
+            user_text=user_text,
             user_message=user_message_raw,
+            is_sleep_mode=params.is_sleep_mode,
+        )
+        messages = chain.build()
+
+        pipeline = Pipeline(
+            messages=messages,
+            llm_parser=TextParser(),
+            task_parser=TextStreamParser(),
         )
 
         try:

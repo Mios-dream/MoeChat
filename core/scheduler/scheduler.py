@@ -17,6 +17,7 @@ from openai.types.chat import (
     ChatCompletionMessageParam,
 )
 
+from core.message_chain import MessageChain
 from my_utils.log import logger as Log
 from core.llm import LLMClient
 from core.llm.response_parser import JsonLineParser, TextParser
@@ -95,9 +96,7 @@ class TaskScheduler:
 
     def create_task_pipeline(
         self,
-        user_message: list[ChatCompletionMessageParam],
-        system_context: str,
-        history_messages: list[ChatCompletionMessageParam] | None = None,
+        chain: MessageChain,
         max_retries: int = 2,
         retry_delay: float = 0,
         tools: list[ChatCompletionFunctionToolParam] | None = None,
@@ -109,27 +108,17 @@ class TaskScheduler:
         创建多行json返回处理管道
 
         支持 Function Calling 工具调用。
-        user_message 支持字符串或多模态内容部分列表。
         on_tool_event: 工具调用/结果实时回调（用于追加到 chat_history）
         """
-        task_system_prompt = self._build_task_system_prompt()
 
-        messages: list[ChatCompletionMessageParam] = [
-            {"role": "system", "content": system_context},
-            {"role": "system", "content": task_system_prompt},
-        ]
-
-        if history_messages:
-            messages.extend(history_messages)
-
-        messages.extend(user_message)
+        chain = chain.add_system(self._build_task_system_prompt(), priority=50)
 
         parser = MultiParser()
         for task in self._tasks.values():
             parser.register_task(task)
 
         return Pipeline(
-            messages=messages,
+            messages=chain.build(),
             llm_parser=JsonLineParser(),
             task_parser=parser,
             max_retries=max_retries,
@@ -215,7 +204,7 @@ class Pipeline:
         """构建重试消息列表"""
         messages_copy = list(messages)
 
-        retry_hint = "\n【重要提醒】你的上一次回复没有包含全部所需字段，或者输出的不是要求的json格式，请确保本次回复必须符合格式要求。每行 JSON 对象都必须包含必要字段。"
+        retry_hint = '\n【重要提醒】你的上一次回复没有包含"需要任务"中要求的全部所需字段，或者输出的不是要求的json格式，请确保本次回复必须符合格式要求。每行 JSON 对象都必须包含必要字段。'
 
         if messages_copy and messages_copy[-1]["role"] == "user":
             last = messages_copy[-1]

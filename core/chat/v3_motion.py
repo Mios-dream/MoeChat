@@ -51,6 +51,7 @@ data: {"type": "motion_frame", "sentence_id": 1, "motions": [...], ...}
 from collections.abc import AsyncGenerator
 import json
 import asyncio
+from core.assistant import Assistant
 from models.dto.request.chat_request import ChatRequest
 from core.chat.multimodal_processor import build_user_message_content
 from models.dto.response.ChatResponse import (
@@ -63,9 +64,9 @@ from models.dto.response.ChatResponse import (
     ToolMessage,
 )
 from my_utils.log import logger
-from services.memory_v2 import MemoryV2
 from core.scheduler import (
     TaskScheduler,
+    Pipeline,
     create_text_task,
     create_motion_task,
     create_bilingual_task,
@@ -83,13 +84,11 @@ from core.expression_generator.motion_engine_v3 import (
     MotionEngineService,
     estimate_text_duration,
 )
-from core.expression_generator.utils.expression_loader import (
-    ExpressionInfo,
-    load_expressions,
-)
+from core.expression_generator.utils.expression_loader import load_expressions
 from Config import Config
 from services.assistant_service import AssistantService
 from tool_system.integration import ToolCallIntegration
+from openai.types.chat import ChatCompletionMessageParam
 
 
 @dataclass
@@ -165,15 +164,12 @@ class V3MotionChatContext(BaseChatContext):
     - emit_ready: 按入队顺序依次取出已就绪事件
     """
 
-    def __init__(
-        self, tts_lang: str = "zh", expressions: list[ExpressionInfo] | None = None
-    ):
+    def __init__(self, tts_lang: str = "zh"):
         super().__init__(tts_concurrency=1)
         self.tts_lang: str = tts_lang
         self.text_cache: dict[int, str] = {}
         self.motion_cache: dict[int, list[dict]] = {}
         self.expression_cache: dict[int, str] = {}
-        self.expressions: list[ExpressionInfo] = expressions or []
         self.motion_engine: MotionEngineService = MotionEngineService(
             Config.MOTION_DB_PATH
         )
@@ -399,18 +395,19 @@ class V3ChatService:
         """
         self.integration = integration
 
-    def _build_scheduler(self, agent) -> TaskScheduler:
+    @staticmethod
+    def _build_scheduler(tts_lang: str, expressions: list) -> TaskScheduler:
         """
         创建调度器，注册任务
         """
         scheduler = TaskScheduler()
         scheduler.add_task(create_text_task(priority=100))
 
-        lang = agent.agent_config.gsvSetting.textLang
-        if lang != "zh" and lang in ("en", "ja"):
-            scheduler.add_task(create_bilingual_task(target_lang=lang, priority=150))
+        if tts_lang in ("en", "ja"):
+            scheduler.add_task(
+                create_bilingual_task(target_lang=tts_lang, priority=150)
+            )
 
-        expressions = load_expressions(agent.agent_name)
         action_prompt = (
             f"可用表情：{[expr.name for expr in expressions]}\n"
             f"可用动作：{', '.join(ACTION_DESCRIPTIONS.keys())}"
@@ -419,6 +416,38 @@ class V3ChatService:
             create_motion_task(available_actions=action_prompt, priority=200)
         )
         return scheduler
+
+    async def _create_chat_pipeline(
+        self, agent: Assistant, params: ChatRequest
+    ) -> tuple[V3MotionChatContext, Pipeline, str, list[ChatCompletionMessageParam]]:
+        """
+        统一构建上下文和管道
+
+        所有 agent 配置在此收敛解析，避免分散在多个方法中重复读取。
+        """
+        tts_lang = agent.agent_config.gsvSetting.textLang
+        expressions = load_expressions(agent.agent_name)
+
+        ctx = V3MotionChatContext(tts_lang=tts_lang)
+        scheduler = self._build_scheduler(tts_lang, expressions)
+
+        user_message, user_text = build_user_message_content(params)
+        chain = await agent.build_chat_chain(
+            user_text=user_text,
+            user_message=user_message,
+            is_sleep_mode=params.is_sleep_mode,
+        )
+
+        pipeline = scheduler.create_task_pipeline(
+            chain=chain,
+            tools=self.integration.get_tools() if self.integration else None,
+            tool_handler=(
+                self.integration.process_tool_calls if self.integration else None
+            ),
+            on_tool_event=lambda msg: agent.chat_history.append(msg),
+        )
+
+        return ctx, pipeline, user_text, user_message
 
     async def chat(self, params: ChatRequest) -> AsyncGenerator[FullChatResponse]:
         """
@@ -429,40 +458,8 @@ class V3ChatService:
             yield ErrorMessage(error_code="NO_ASSISTANT", data="当前没有加载助手")
             return
 
-        user_message, user_text = build_user_message_content(params)
-        ctx = V3MotionChatContext(
-            tts_lang=agent.agent_config.gsvSetting.textLang,
-            expressions=load_expressions(agent.agent_name),
-        )
-
-        # 动态上下文（记忆检索 + 知识库等）放在对话历史之后，避免击穿前缀缓存
-        dynamic_context = await agent.get_context(
-            msg=user_text, is_sleep_mode=params.is_sleep_mode
-        )
-
-        history_messages = []
-        # 固定前缀：记忆系统说明（可缓存）
-        if agent.enable_long_memory:
-            history_messages.append({
-                "role": "system",
-                "content": MemoryV2.build_system_prompt(
-                    agent.char, agent.user
-                ),
-            })
-        # 中间段：对话历史
-        history_messages.extend(agent.get_history())
-        # 动态后缀：每次变化的上下文
-        history_messages.extend(dynamic_context)
-
-        pipeline = self._build_scheduler(agent).create_task_pipeline(
-            system_context=agent.prompt,
-            history_messages=history_messages,
-            user_message=user_message,
-            tools=self.integration.get_tools() if self.integration else None,
-            tool_handler=(
-                self.integration.process_tool_calls if self.integration else None
-            ),
-            on_tool_event=lambda msg: agent.chat_history.append(msg),
+        ctx, pipeline, user_text, user_message = await self._create_chat_pipeline(
+            agent, params
         )
 
         agent.chat_history.extend(user_message)

@@ -70,7 +70,9 @@ class EmotionEngine:
     def _save(self):
         try:
             with open(self._events_file, "w", encoding="utf-8") as f:
-                json.dump(serialize_events(self._events), f, ensure_ascii=False, indent=2)
+                json.dump(
+                    serialize_events(self._events), f, ensure_ascii=False, indent=2
+                )
         except Exception as e:
             print(f"[情绪引擎] 保存情绪事件失败: {e}")
 
