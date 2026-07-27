@@ -6,10 +6,9 @@
 1. 按优先级排序所有槽位
 2. 将最高优先级的消息块自动移至末尾（作为用户消息）
 3. 计算固定部分的 token 开销，为历史记录分配剩余预算
-4. 同步调用 HistoryManager.get_for_llm()，内部使用 LLM 语义摘要压缩历史（同步桥接）
+4. 调用 HistoryManager.get_for_llm() 获取已压缩的历史记录（纯读取，无 LLM 调用）
 
-注意：build() 是同步方法。HistoryManager 的 LLM 压缩通过 new_event_loop()
-在独立事件循环中同步调用 async 的 LLMClient，避免将整个调用栈改造为 async。
+注意：build() 是同步方法。LLM 语义摘要压缩在写入时由 compress_if_needed() 完成。
 """
 
 from dataclasses import dataclass, field
@@ -130,12 +129,11 @@ class MessageChain:
         1. 按优先级排序所有槽位
         2. 自动识别最高优先级的消息块作为用户消息（移至末尾）
         3. 计算非历史块 + 用户消息的固定 token 开销（+200 安全缓冲 + 4000 生成缓冲）
-        4. 遍历 ordered 列表：普通 list 直接追加，HistoryManager 调用 get_for_llm() 压缩后追加
+        4. 遍历 ordered 列表：普通 list 直接追加，HistoryManager 调用 get_for_llm() 读取（无 LLM 调用）
         5. 用户消息追加到末尾
 
-        HistoryManager.get_for_llm() 内部使用 LLM 语义摘要压缩（同步桥接），
-        _compress_over_count 将最旧消息摘要到 <=50 条，_compress_over_budget
-        在超 token 预算时进一步渐进压缩。
+        HistoryManager.get_for_llm() 仅做条数截断，不做 LLM 调用。
+        LLM 语义摘要压缩已在写入时由 compress_if_needed() 完成。
 
         Returns:
             完整的消息列表 list[ChatCompletionMessageParam]

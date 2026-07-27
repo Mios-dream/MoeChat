@@ -16,6 +16,7 @@ from tool_system.tools.memory_tool import RememberTool, RecallTool, UpdateMemory
 from openai.types.chat import ChatCompletionMessageParam
 from core.history_manager import HistoryManager
 from core.message_chain import MessageChain
+from my_utils.log import logger as Log
 
 
 class Assistant:
@@ -369,16 +370,22 @@ class Assistant:
         """
         添加对话回合后的后续处理。
 
-        HistoryManager 已自动管理 200 条上限和压缩，
-        本方法仅负责非消息存储的后续逻辑：
-        1. 好感度更新
-        2. 原始对话存储（供日记生成使用）
-        3. 跨天日记生成检查
+        本方法负责：
+        1. 写入时 LLM 压缩历史记录
+        2. 好感度更新
+        3. 原始对话存储（供日记生成使用）
+        4. 跨天日记生成检查
 
         Parameters:
             user_msg: 用户输入的消息
             assistant_msg: 助手回复的消息
         """
+        # 写入时 LLM 语义压缩：对话轮次结束后触发，压缩超过阈值的历史消息
+        try:
+            await self.chat_history.compress_if_needed()
+        except Exception as e:
+            Log.warning(f"[Assistant] 历史记录 LLM 压缩失败（非致命）: {e}")
+
         # 存储原始对话轮次供日记使用
         now_ts = int(time.time())
         if self.enable_long_memory:
@@ -394,11 +401,19 @@ class Assistant:
     ) -> None:
         """
         保存交互事件消息到上下文
+
+        写入后触发 LLM 语义压缩，保持历史记录在可控范围内。
+
         Parameters:
             msg: 助手回复消息
             plain_text: 纯文本版本，暂未使用（保留接口兼容）
         """
         self.chat_history.append({"role": "assistant", "content": msg})
+        # 写入时 LLM 语义压缩
+        try:
+            await self.chat_history.compress_if_needed()
+        except Exception as e:
+            Log.warning(f"[Assistant] 历史记录 LLM 压缩失败（非致命）: {e}")
 
     async def _run_sync_task(self, func, *args):
         """

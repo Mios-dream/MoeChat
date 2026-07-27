@@ -6,15 +6,14 @@
 核心设计：
 1. 内存管理：最多 200 条消息，超限时自动将最旧消息压缩为单条 system 摘要
 2. Token 缓存：基于 estimate_tokens 的估算值，带失效标记，避免重复计算
-3. LLM 查询：按 token 预算 / 消息条数限制，主动压缩后返回给 LLM
+3. 写入时 LLM 压缩：达到阈值时由上层调用 compress_if_needed() 进行 LLM 语义摘要
 
 压缩策略：
-- append/extend 路径（同步，200 条硬上限）：_compress_oldest → _to_summary（纯文本拼接）
-- get_for_llm 路径（同步，50 条上限 + 128k token 预算）：_compress_over_count / _compress_over_budget → _to_summary_llm（LLM 语义摘要，失败时抛出异常）
-  两条路径的职责不同：前者仅用于内存水位控制，后者直接决定 LLM 看到的上下文质量。
+- append/extend 路径（同步，200 条硬上限）：_compress_oldest → _to_summary（纯文本拼接，内存安全垫）
+- compress_if_needed 路径（异步，50 条上限 + token 预算检查）：_to_summary_llm（LLM 语义摘要，失败时抛出异常）
+- get_for_llm 路径（同步，纯读取）：不做 LLM 调用，仅按最大条数截断后返回
 """
 
-import asyncio
 import json
 from openai.types.chat import ChatCompletionMessageParam
 from core.llm.llm_client import LLMClient
@@ -41,8 +40,11 @@ class HistoryManager:
     # 默认 LLM 上下文窗口大小（deepseek 系列模型的上下文长度）
     DEFAULT_CONTEXT_WINDOW: int = 64000
 
-    # 消息硬限制：超过此数量触发 _compress_oldest
+    # 消息硬限制：超过此数量触发 _compress_oldest（纯文本拼接，防 OOM）
     HARD_MAX_MESSAGES: int = 200
+
+    # 写入时 LLM 压缩的触发条数阈值，超过此值 compress_if_needed 会用 LLM 语义摘要
+    SOFT_MAX_MESSAGES: int = 50
 
     # 压缩时保留的最近消息条数，更早的消息被压缩为摘要
     RECENT_KEEP: int = 10
@@ -230,10 +232,10 @@ class HistoryManager:
         return sum(HistoryManager._compute_message_tokens(msg) for msg in messages)
 
     # ============================================================
-    # LLM 查询
-    # 同步方法，内部使用 new_event_loop 桥接 LLMClient 的 async 接口。
-    # 因为 MessageChain.build() 和 create_task_pipeline() 都是同步调用链，
-    # 将整个调用栈保持同步避免了大量 async 改造。
+    # LLM 查询（同步，纯读取）
+    #
+    # 仅做条数截断，不做 LLM 调用。LLM 语义摘要已在写入时由
+    # compress_if_needed() 完成。
     # ============================================================
 
     def get_for_llm(
@@ -245,106 +247,92 @@ class HistoryManager:
         """
         获取适合传入 LLM 的历史记录
 
-        两条压缩路径依次执行：
-        1. _compress_over_count：消息条数 > max_count 时，将最旧消息用 LLM 压缩为语义摘要
-        2. _compress_over_budget：token 总数超出预算时，逐步减少保留条数并 LLM 重新摘要
+        纯读取操作，不做 LLM 调用。当消息条数超过 max_count 时仅截断最旧消息。
+        LLM 语义摘要压缩在写入时由 compress_if_needed() 完成。
 
         Parameters:
             reserved_tokens: 固定部分（system + 用户消息 + 动态上下文 + 安全缓冲）的 token 开销
             context_window:  LLM 上下文窗口大小，默认 64000（deepseek 系列）
-            max_count:        传递给 LLM 的最大消息条数，超过此值触发按条数压缩
+            max_count:        传递给 LLM 的最大消息条数，超过此值截断最旧消息
 
         Returns:
-            压缩后的消息列表，可直接传入 LLM 的 messages 参数
+            截断后的消息列表，可直接传入 LLM 的 messages 参数
         """
         if not self._messages:
             return []
 
         history = list(self._messages)
-        token_budget = context_window - reserved_tokens
 
-        # 第一步：按条数压缩。当历史消息过多时，将最早的一批用 LLM 压缩为一条摘要
+        # 超过最大条数时，截断中间部分，保留首尾
         if max_count and len(history) > max_count:
-            history = self._compress_over_count(history, max_count)
-
-        # 第二步：按 token 预算压缩。如果压缩后仍超出预算，进一步减少保留条数
-        if self._estimate_tokens(history) > token_budget:
-            history = self._compress_over_budget(history, token_budget)
+            keep_count = min(self._recent_keep, max_count // 2)
+            # 保留首条（可能是 system 摘要）+ 最近 keep_count 条
+            head = history[:1]
+            tail = history[-keep_count:]
+            history = head + tail
 
         return history
 
     # ============================================================
-    # 压缩
-    # _compress_oldest：纯文本拼接，用于 append 路径的内存水位控制
-    # _compress_over_count / _compress_over_budget：LLM 语义摘要，用于 get_for_llm 路径
+    # 写入时 LLM 压缩（异步）
+    #
+    # 由上层（add_msg / add_interaction_msg）在完成一轮对话写入后调用。
+    # 使用 LLM 语义摘要将超过阈值的旧消息压缩为一条 system 摘要，
+    # 保持历史记录在可控范围内。
     # ============================================================
 
-    def _compress_over_count(
+    async def compress_if_needed(
         self,
-        messages: list[ChatCompletionMessageParam],
-        max_count: int,
-    ) -> list[ChatCompletionMessageParam]:
+        max_count: int = SOFT_MAX_MESSAGES,
+    ) -> None:
         """
-        按消息条数压缩（LLM 语义摘要）
+        写入时 LLM 语义压缩
 
-        当消息数超过 max_count 时，保留最近 self._recent_keep 条消息完整，
-        将更早的消息使用 LLM 压缩为一条 system 语义摘要。
-
-        压缩结果结构：[摘要(system), 最近消息1(user), 最近消息2(assistant), ...]
+        当消息条数超过 max_count 时，将最旧消息用 LLM 压缩为语义摘要，
+        保留最近 RECENT_KEEP 条完整。此方法由上层在完成每轮对话写入后调用。
 
         Parameters:
-            messages: 原始消息列表
-            max_count: 允许的最大消息条数
+            max_count: 触发压缩的消息条数阈值，默认 SOFT_MAX_MESSAGES（50）
 
-        Returns:
-            压缩后的消息列表，条数 <= max_count
+        Raises:
+            ValueError: 待压缩的消息中没有有效对话内容
+            RuntimeError: LLM 返回空摘要
+            以及 LLMClient.request 的各类网络/API 异常
         """
-        if len(messages) <= max_count:
-            return messages
+        if len(self._messages) <= max_count:
+            return
 
         keep_count = min(self._recent_keep, max_count - 1)
-        compress_msgs = messages[:-keep_count]
-        recent_msgs = messages[-keep_count:]
+        compress_msgs = self._messages[:-keep_count]
+        recent_msgs = self._messages[-keep_count:]
 
-        result = list(recent_msgs)
-        if compress_msgs:
-            # 使用 LLM 生成语义摘要，失败时直接抛出异常
-            result.insert(0, self._to_summary_llm(compress_msgs))
-        return result
+        Log.info(
+            f"[HistoryManager] LLM 语义压缩 {len(compress_msgs)} 条历史为摘要, "
+            f"保留 {len(recent_msgs)} 条"
+        )
 
-    def _compress_over_budget(
-        self,
-        messages: list[ChatCompletionMessageParam],
-        budget: int,
-    ) -> list[ChatCompletionMessageParam]:
-        """
-        按 token 预算渐进压缩（LLM 语义摘要）
+        # 从增量总数中减去被压缩消息的 token
+        for msg in compress_msgs:
+            self._token_total -= self._compute_message_tokens(msg)
 
-        从保留最多消息开始尝试，逐轮减少保留条数，每次都用 LLM 重新生成
-        剩余部分的摘要，直到总 token 数满足预算。这种策略在压缩程度和信息
-        保留之间做渐进权衡。
+        # 使用 LLM 生成语义摘要
+        summary = await self._to_summary_llm(compress_msgs)
+        self._messages = [summary] + recent_msgs
 
-        Parameters:
-            messages: 已过按条数压缩的消息列表
-            budget:   可用的 token 预算（context_window - reserved_tokens）
+        # 加上摘要消息的 token
+        self._token_total += self._compute_message_tokens(summary)
 
-        Returns:
-            压缩到满足预算的消息列表；如果无论如何都超预算，仅保留最后一条消息
-        """
-        max_keep = min(len(messages) - 1, self._recent_keep)
-        for keep_count in range(max_keep, 0, -1):
-            compress_msgs = messages[:-keep_count]
-            recent_msgs = messages[-keep_count:]
+        # 清理孤立 tool 消息：压缩后 tool_calls 的前驱消息已丢失，
+        # 开头的 tool 消息无法被 LLM 理解，直接移除
+        while self._messages and self._messages[0].get("role") == "tool":
+            removed = self._messages.pop(0)
+            self._token_total -= self._compute_message_tokens(removed)
 
-            result = list(recent_msgs)
-            if compress_msgs:
-                result.insert(0, self._to_summary_llm(compress_msgs))
-
-            if self._estimate_tokens(result) <= budget:
-                return result
-
-        # 极限压缩：保留最后一条消息（虽然对话上下文几乎丢失，但至少不让 LLM 请求失败）
-        return messages[-1:]
+    # ============================================================
+    # 压缩
+    # _compress_oldest：纯文本拼接，用于 append 路径的内存水位控制（同步，200 条硬上限）
+    # compress_if_needed：LLM 语义摘要，用于写入路径的智能压缩（异步）
+    # ============================================================
 
     def _compress_oldest(self) -> None:
         """
@@ -353,7 +341,7 @@ class HistoryManager:
         使用纯文本拼接（_to_summary），不调用 LLM，保证写入路径的同步性能。
         保留最近 RECENT_KEEP 条消息完整，将更早消息压缩为单条 system 摘要。
 
-        压缩后清理开头可能存在的孤立 tool 消息（其前驱 tool_calls 已被压缩）。
+        清理开头可能存在的孤立 tool 消息（其前驱 tool_calls 已被压缩）。
         """
         keep_count = self._recent_keep
         compress_msgs = self._messages[:-keep_count]
@@ -381,40 +369,13 @@ class HistoryManager:
             self._token_total -= self._compute_message_tokens(removed)
 
     # ============================================================
-    # LLM 摘要（同步桥接）
+    # LLM 摘要
     #
-    # _call_llm_sync：使用 new_event_loop().run_until_complete() 在独立事件循环中
-    # 同步调用 async 的 LLMClient.request。这是为了保持整个 history_manager 为同步
-    # 接口，避免 MessageChain.build() 和 create_task_pipeline() 改造为 async。
-    #
-    # 注意：每次调用都会创建和销毁一个事件循环，对 HTTP 请求级别的耗时来说可以接受。
+    # _to_summary_llm：异步，使用 LLM 生成语义摘要
+    # 被 compress_if_needed 调用。
     # ============================================================
 
-    def _call_llm_sync(self, messages: list[ChatCompletionMessageParam]) -> str:
-        """
-        在独立事件循环中同步调用 LLM
-
-        由于 LLMClient.request 是 async 方法，而 history_manager 需要保持同步接口（
-        被 MessageChain.build → create_task_pipeline 等同步方法调用），因此创建
-        一个新的事件循环来运行 async 调用。新循环独立于主循环运行，不会冲突。
-
-        Parameters:
-            messages: 传递给 LLM 的消息列表（system prompt + user conversation）
-
-        Returns:
-            LLM 返回的文本，去除首尾空白
-
-        Raises:
-            传递 LLMClient.request 的异常（网络错误、API 错误等）
-        """
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(self._llm_client.request(messages))
-            return (result or "").strip()
-        finally:
-            loop.close()
-
-    def _to_summary_llm(
+    async def _to_summary_llm(
         self,
         messages: list[ChatCompletionMessageParam],
     ) -> ChatCompletionMessageParam:
@@ -448,7 +409,9 @@ class HistoryManager:
             elif role == "assistant":
                 # assistant 消息可能是纯文本或 JSON（v3 多任务格式）
                 try:
-                    parsed = json.loads(content) if isinstance(content, str) else content
+                    parsed = (
+                        json.loads(content) if isinstance(content, str) else content
+                    )
                     if isinstance(parsed, dict):
                         text = parsed.get("text") or parsed.get("content") or content
                     else:
@@ -464,7 +427,7 @@ class HistoryManager:
             raise ValueError("无有效对话内容可供摘要")
 
         # 调用 LLM 生成摘要
-        summary_text = self._call_llm_sync(
+        summary_text = await self._llm_client.request(
             [
                 {"role": "system", "content": self.SUMMARY_SYSTEM_PROMPT},
                 {"role": "user", "content": conversation_text},
@@ -504,7 +467,9 @@ class HistoryManager:
                 parts.append(f"用户: {content}")
             elif role == "assistant":
                 try:
-                    parsed = json.loads(content) if isinstance(content, str) else content
+                    parsed = (
+                        json.loads(content) if isinstance(content, str) else content
+                    )
                     if isinstance(parsed, dict):
                         text = parsed.get("text") or parsed.get("content") or content
                     else:
