@@ -7,11 +7,11 @@ from api.tts_api import tts_api
 from api.assistant_api import assistant_api
 from api.llm_api import llm_api
 from api.config_api import config_api
-from api.wakeword_api import wakeword_api
 from api.knowledge_api import knowledge_api
 from api.interaction_api import interaction_api
 from api.resource_api import resource_api
 from api.ws.chat_ws_api import chat_ws_api
+from api.voice_ws_api import voice_ws_api
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(asr_api)
@@ -21,8 +21,8 @@ api_router.include_router(tts_api)
 api_router.include_router(assistant_api)
 api_router.include_router(llm_api)
 api_router.include_router(config_api)
-api_router.include_router(wakeword_api)
 api_router.include_router(knowledge_api)
 api_router.include_router(interaction_api)
 api_router.include_router(resource_api)
-api_router.include_router(chat_ws_api)  # 新增: 统一聊天 WebSocket
+api_router.include_router(chat_ws_api)  # 统一聊天 WebSocket
+api_router.include_router(voice_ws_api)  # 统一语音 WebSocket（VAD+ASR+Intent）

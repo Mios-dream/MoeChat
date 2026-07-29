@@ -1,20 +1,20 @@
+import os
 import threading
 import time
 import gc
-import torch
-from funasr import AutoModel
-from funasr.utils.postprocess_utils import rich_transcription_postprocess
-from Config import Config
+from io import BytesIO
+
+import numpy as np
+import sherpa_onnx
+import soundfile as sf
+
 from my_utils.log import logger
+from Config import Config
 
 
 class ASRServer:
     _instance = None
     _instance_lock = threading.Lock()
-
-    # 配置参数
-    IDLE_TIMEOUT = 60  # 超过 60 秒未使用自动释放（1分钟）
-    CHECK_INTERVAL = 30  # 后台检测间隔（秒）
 
     def __new__(cls):
         if cls._instance is None:
@@ -25,38 +25,35 @@ class ASRServer:
         return cls._instance
 
     def _init_once(self):
-        self.asr_model = None
+        self.recognizer = None
         self.last_used_time = 0.0
         self._model_lock = threading.Lock()
 
-        # 启动后台资源回收线程
-        check_thread = threading.Thread(target=self._auto_release_worker, daemon=True)
-        check_thread.start()
-
-    # =========================
-    # 模型管理
-    # =========================
     def load_model(self):
         """
         加载 ASR 模型（线程安全）
         """
         with self._model_lock:
-            if self.asr_model is not None:
+            if self.recognizer is not None:
                 return
-            logger.info("[ASR] 正在加载 ASR 模型...")
+            provider = "cpu"
+            logger.info(f"[ASR] 正在加载 zipformer-ctc 模型（{provider}）...")
 
-            self.asr_model = AutoModel(
-                model=Config.ASR_MODEL_DIR,
-                disable_update=True,
-                device="cuda:0",
+            self.recognizer = sherpa_onnx.OnlineRecognizer.from_zipformer2_ctc(
+                model=os.path.join(Config.ASR_MODEL_DIR, "model.int8.onnx"),
+                tokens=os.path.join(Config.ASR_MODEL_DIR, "tokens.txt"),
+                num_threads=4,
+                sample_rate=16000,
+                feature_dim=80,
+                provider=provider,
             )
-            logger.info("[ASR] ASR 模型加载完成（GPU）")
+            logger.info(f"[ASR] zipformer-ctc 模型加载完成（{provider}）")
 
     def ensure_model_loaded(self):
         """
         ASR 前检查模型是否加载
         """
-        if self.asr_model is None:
+        if self.recognizer is None:
             self.load_model()
 
         self.last_used_time = time.time()
@@ -66,46 +63,40 @@ class ASRServer:
         主动释放 ASR 模型资源
         """
         with self._model_lock:
-            if self.asr_model is None:
+            if self.recognizer is None:
                 return
 
-            logger.info("[ASR] 长时间未使用，释放 ASR 模型资源")
-            self.asr_model = None
-
-            # 释放显存 / 内存
+            logger.info("[ASR] 释放 ASR 模型资源")
+            self.recognizer = None
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-    def _auto_release_worker(self):
-        """
-        后台检测模型空闲时间，自动释放资源
-        """
-        while True:
-            time.sleep(self.CHECK_INTERVAL)
-
-            if self.asr_model is None:
-                continue
-
-            idle_time = time.time() - self.last_used_time
-            if idle_time > self.IDLE_TIMEOUT:
-                self.release_model()
 
     # ASR 接口
     def asr(self, audio_data: bytes) -> str | None:
         self.ensure_model_loaded()
-        if self.asr_model is None:
+        if self.recognizer is None:
             return None
-        with torch.inference_mode():
-            res = self.asr_model.generate(
-                input=audio_data,
-                cache={},
-                language="zh",
-                ban_emo_unk=True,
-                use_itn=False,
-                disable_pbar=True,
-            )
 
-        text = str(rich_transcription_postprocess(res[0]["text"])).replace(" ", "")
+        try:
+            # 解析 WAV 音频
+            with BytesIO(audio_data) as buf:
+                data, sr = sf.read(buf)
+            if data.dtype != np.float32:
+                data = data.astype(np.float32)
 
-        return text if text else None
+            # 创建流并喂入完整音频
+            stream = self.recognizer.create_stream()
+            stream.accept_waveform(sr, data)
+            # 喂入尾部静音确保尾字识别
+            tail_paddings = np.zeros(int(0.66 * sr), dtype=np.float32)
+            stream.accept_waveform(sr, tail_paddings)
+            stream.input_finished()
+
+            # 循环调用 decode_stream 直到 is_ready 返回 False
+            while self.recognizer.is_ready(stream):
+                self.recognizer.decode_stream(stream)
+
+            text = self.recognizer.get_result(stream).strip()
+            return text if text else None
+        except Exception as e:
+            logger.error(f"[ASR] 识别出错: {e}", exc_info=True)
+            return None

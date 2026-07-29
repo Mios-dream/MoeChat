@@ -6,28 +6,31 @@ class Config:
     配置类，用于存储全局配置，不需要修改这个
     """
 
-    # 基础数据路径
-    BASE_DATA_PATH = "data"
-
-    # 助手目录基础路径
-    BASE_AGENTS_PATH = "data/agents"
     # 默认助手名称（用作语音配置回退源；同时禁止删除）
     DEFAULT_ASSISTANT_NAME = "澪"
     # 项目根目录
     PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+    # 基础数据路径
+    BASE_DATA_PATH = os.path.join(PROJECT_ROOT, "data")
+    # 助手目录基础路径
+    BASE_AGENTS_PATH = os.path.join(BASE_DATA_PATH, "agents")
     # embedding模型路径
     EMBEDDING_MODEL_PATH = os.path.join(
-        PROJECT_ROOT, "data", "models", "nlp_gte_sentence-embedding_chinese-base"
+        BASE_DATA_PATH, "models", "nlp_gte_sentence-embedding_chinese-base"
     )
     # nltk数据路径
-    NLTK_DATA_DIR = os.path.join(PROJECT_ROOT, "data", "models", "nltk_data")
+    NLTK_DATA_DIR = os.path.join(BASE_DATA_PATH, "models", "nltk_data")
     # GSV模型路径,设置为None以自动下载
-    GSV_MODELS_PATH = os.path.join(PROJECT_ROOT, "data", "models", "gsv")
-    # ASR模型路径
-    ASR_MODEL_DIR = os.path.join(PROJECT_ROOT, "data", "models", "SenseVoiceSmall")
+    GSV_MODELS_PATH = os.path.join(BASE_DATA_PATH, "models", "gsv")
+    # 流式CTC-ASR模型路径（zipformer-ctc，当前使用）
+    ASR_MODEL_DIR = os.path.join(
+        BASE_DATA_PATH,
+        "models",
+        "sherpa-onnx-streaming-zipformer-ctc-zh-int8-2025-06-30",
+    )
     # 唤醒词模型基础路径
     WAKEWORD_MODEL_DIR = os.path.join(
-        PROJECT_ROOT, "data", "models", "sherpa-onnx-kws-zipformer-zh-en-3M"
+        BASE_DATA_PATH, "models", "sherpa-onnx-kws-zipformer-zh-en-3M"
     )
     WAKEWORD_MODELS = {
         "tokens": os.path.join(WAKEWORD_MODEL_DIR, "tokens.txt"),
@@ -45,9 +48,9 @@ class Config:
         "tokens_type": "phone+ppinyin",
     }
     # 动作数据库路径
-    MOTION_DB_PATH = os.path.join(PROJECT_ROOT, "data", "motion.db")
+    MOTION_DB_PATH = os.path.join(BASE_DATA_PATH, "motion.db")
     # 默认资源库路径（通用助手资源，不依赖特定助手）
-    RESOURCES_PATH = os.path.join(PROJECT_ROOT, "data", "resources")
+    RESOURCES_PATH = os.path.join(BASE_DATA_PATH, "resources")
 
 
 # 设置环境变量,使用项目目录下的模型数据,而不是下载模型到默认位置，取消以下载到默认位置

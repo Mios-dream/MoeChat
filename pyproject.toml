@@ -14,7 +14,7 @@ dependencies = [
     "jionlp==1.5.29",
     "modelscope==1.38.1",
     "numpy==2.3.5",
-    "onnxruntime==1.25.0",
+    "onnxruntime==1.28.0",
     "openai==2.46.0",
     "opencv-python==4.13.0.92",
     "paddleocr==3.7.0",
