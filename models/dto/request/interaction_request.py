@@ -1,6 +1,5 @@
 # 交互消息生成接口请求模型
 from pydantic import BaseModel
-from typing import Optional
 
 
 class MouseEventStatus(BaseModel):
@@ -62,4 +61,3 @@ class InteractionMessageRequest(BaseModel):
     event_type: str
     scene: str
     context: InteractionContext = InteractionContext()
-    generation_motion: bool = False

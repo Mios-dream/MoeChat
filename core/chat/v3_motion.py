@@ -438,13 +438,37 @@ class V3ChatService:
             is_sleep_mode=params.is_sleep_mode,
         )
 
+        _internal_tool_ids: set[str] = set()
+
+        def _on_tool_event(msg: ChatCompletionMessageParam):
+            """过滤内部工具后写入 chat_history，保持沉浸感"""
+            if msg["role"] == "assistant":
+                tool_calls = msg.get("tool_calls", [])
+                if not tool_calls:
+                    return
+                filtered = []
+                for tc in tool_calls:
+                    name = tc.get("function", {}).get("name", "")
+                    if name in ("remember", "recall", "update_memory"):
+                        _internal_tool_ids.add(tc["id"])
+                    else:
+                        filtered.append(tc)
+                if filtered:
+                    agent.chat_history.append(
+                        {"role": "assistant", "content": None, "tool_calls": filtered}
+                    )
+            elif msg["role"] == "tool":
+                if msg.get("tool_call_id") in _internal_tool_ids:
+                    return
+                agent.chat_history.append(msg)
+
         pipeline = scheduler.create_task_pipeline(
             chain=chain,
             tools=self.integration.get_tools() if self.integration else None,
             tool_handler=(
                 self.integration.process_tool_calls if self.integration else None
             ),
-            on_tool_event=lambda msg: agent.chat_history.append(msg),
+            on_tool_event=_on_tool_event,
         )
 
         return ctx, pipeline, user_text, user_message

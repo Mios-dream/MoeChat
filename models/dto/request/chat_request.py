@@ -36,11 +36,9 @@ class ChatRequest(BaseModel):
     服务端根据 LLM 配置自动处理（多模态直传/OCR 识别/文本提取）。
     """
 
-    text: str = ""
     """用户文本消息"""
-    files: list[FileAttachment] = []
+    text: str = ""
     """文件附件列表（图片自动 OCR 或 image_url，txt 自动读取内容）"""
-    generation_motion: bool = False
-    """是否生成 Live2D 动作"""
-    is_sleep_mode: bool = False
+    files: list[FileAttachment] = []
     """是否睡眠模式"""
+    is_sleep_mode: bool = False
