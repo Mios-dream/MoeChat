@@ -143,11 +143,7 @@ class AssistantService:
 
         # 更新信息（只更新非None字段）
         update_data = update_request.model_dump(exclude_unset=True)
-        # 过滤掉可能残留的 user-private 字段
-        update_data.pop("firstMeetTime", None)
-        update_data.pop("love", None)
-        update_data.pop("updatedAt", None)
-        update_data.pop("assetsLastModified", None)
+
         existing_info.update(update_data)
 
         # 保存共享信息

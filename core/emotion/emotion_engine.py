@@ -33,9 +33,9 @@ class EmotionEngine:
     4. 生成供 LLM 使用的关系叙事提示词与情绪提示词
     """
 
-    # 好感度阶段配置（基于 affinity 值，阈值依次为各阶段最低值）
+    # 好感度阶段配置（基于 love 值，阈值依次为各阶段最低值）
     # 描述使用叙事体，让 LLM 自然感受关系状态而非机械执行指令
-    AFFINITY_STAGES: list[tuple[str, int, str]] = [
+    LOVE_STAGES: list[tuple[str, int, str]] = [
         ("疏远", -50, "你对{user}还很陌生，心里保持着明显的距离感，不太愿意主动靠近"),
         ("陌生", -30, "你和{user}才刚认识不久，还在慢慢熟悉彼此的存在，相处时有些拘谨"),
         ("认识", 0, "你和{user}逐渐熟悉起来了，相处还算愉快，开始期待和他的交流"),
@@ -142,7 +142,7 @@ class EmotionEngine:
             return "<关系状态></关系状态>"
 
         user_name = self._agent_config.user or "用户"
-        stage_name, stage_desc = self._get_affinity_stage(self.user_state.affinity)
+        stage_name, stage_desc = self._get_love_stage(self.user_state.love)
         trust_desc = self._get_trust_level(self.user_state.trust)
         days_known = max(1, (int(time.time()) - self.user_state.firstMeetTime) // 86400)
 
@@ -165,8 +165,8 @@ class EmotionEngine:
         result = await self._calculate_affection_change()
 
         # 更新好感度（-50~100）
-        self.user_state.affinity = max(
-            -50, min(100, self.user_state.affinity + result["affinity_change"])
+        self.user_state.love = max(
+            -50, min(100, self.user_state.love + result["love_change"])
         )
         # 更新信任度（-50~100）
         self.user_state.trust = max(
@@ -182,7 +182,7 @@ class EmotionEngine:
 
         Log.logger.info(
             f"助手 {self._agent_name} 状态更新: "
-            f"affinity={self.user_state.affinity}, "
+            f"love={self.user_state.love}, "
             f"trust={self.user_state.trust}, "
             f"bond={self.user_state.bond}"
         )
@@ -192,10 +192,10 @@ class EmotionEngine:
         获取当前关系状态摘要
 
         Returns:
-            包含 affinity、trust、bond、firstMeetTime 的字典
+            包含 love、trust、bond、firstMeetTime 的字典
         """
         return {
-            "affinity": self.user_state.affinity,
+            "love": self.user_state.love,
             "trust": self.user_state.trust,
             "bond": self.user_state.bond,
             "firstMeetTime": self.user_state.firstMeetTime,
@@ -265,7 +265,7 @@ class EmotionEngine:
             or self._agent_config is None
         ):
             return {
-                "affinity_change": 0,
+                "love_change": 0,
                 "trust_change": 0,
                 "bond_increment": 0,
                 "emotional_impact": {
@@ -279,7 +279,7 @@ class EmotionEngine:
         current_emotions = self.get_mood_prompt()
         days_known = max(1, (int(time.time()) - self.user_state.firstMeetTime) // 86400)
         default_result = {
-            "affinity_change": 0,
+            "love_change": 0,
             "trust_change": 0,
             "bond_increment": 0,
             "emotional_impact": {
@@ -320,7 +320,7 @@ class EmotionEngine:
         # 3. 分析请求
         request_text = (
             f"当前关系状态：\n"
-            f"- 好感度：{self.user_state.affinity}\n"
+            f"- 好感度：{self.user_state.love}\n"
             f"- 信任度：{self.user_state.trust}\n"
             f"- 羁绊值：{self.user_state.bond}\n"
             f"- 相识天数：{days_known}\n"
@@ -328,12 +328,12 @@ class EmotionEngine:
             f"- 互动概况：{self._get_interaction_summary()}\n\n"
             f"请根据以上完整对话，分析最新一轮对话对"
             f"{cfg.name}和{cfg.user}之间关系的影响。\n\n"
-            f"1. affinity_change: 好感度变化（整数 -3 到 +3）\n"
+            f"1. love_change: 好感度变化（整数 -3 到 +3）\n"
             f"2. trust_change: 信任度变化（整数 -3 到 +3，降快升慢）\n"
             f"3. bond_increment: 羁绊增量（整数 0 到 2）\n"
             f'4. emotional_impact: {{"emotion":"...", "intensity":0.0~1.0, '
             f'"reason":"用一句话描述触发情绪的具体情景"}}\n\n'
-            f'{{"affinity_change":0,"trust_change":0,"bond_increment":0,'
+            f'{{"love_change":0,"trust_change":0,"bond_increment":0,'
             f'"emotional_impact":{{"emotion":"neutral","intensity":0.0,"reason":""}}}}'
         )
         messages.append({"role": "user", "content": request_text})
@@ -354,7 +354,7 @@ class EmotionEngine:
         except json.JSONDecodeError:
             return default_result
 
-        affinity_change = max(-3, min(3, result.get("affinity_change", 0)))
+        love_change = max(-3, min(3, result.get("love_change", 0)))
         trust_change = max(-3, min(3, result.get("trust_change", 0)))
         bond_increment = max(0, min(2, result.get("bond_increment", 0)))
         emotional_impact = result.get(
@@ -363,11 +363,11 @@ class EmotionEngine:
         )
 
         Log.logger.info(
-            f"好感度分析: affinity={affinity_change}, trust={trust_change}, "
+            f"好感度分析: love={love_change}, trust={trust_change}, "
             f"bond={bond_increment}, emotion={emotional_impact}"
         )
         return {
-            "affinity_change": affinity_change,
+            "love_change": love_change,
             "trust_change": trust_change,
             "bond_increment": bond_increment,
             "emotional_impact": emotional_impact,
@@ -375,20 +375,20 @@ class EmotionEngine:
 
     # ==================== 内部：阈值工具 ====================
 
-    def _get_affinity_stage(self, affinity: int) -> tuple[str, str]:
+    def _get_love_stage(self, love: int) -> tuple[str, str]:
         """
         根据好感度数值获取阶段名和描述
 
         Parameters:
-            affinity: 好感度数值
+            love: 好感度数值
 
         Returns:
             (阶段名, 一句话描述)
         """
-        for name, threshold, desc in reversed(self.AFFINITY_STAGES):
-            if affinity >= threshold:
+        for name, threshold, desc in reversed(self.LOVE_STAGES):
+            if love >= threshold:
                 return name, desc
-        return self.AFFINITY_STAGES[0][0], self.AFFINITY_STAGES[0][2]
+        return self.LOVE_STAGES[0][0], self.LOVE_STAGES[0][2]
 
     def _get_trust_level(self, trust: int) -> str:
         """根据信任度返回一句话状态"""
