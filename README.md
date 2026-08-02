@@ -194,6 +194,52 @@ WakeWord:
 > [!WARNING]
 > 当前官方客户端仅支持 Windows。
 
+## 📦 构建与打包
+
+项目提供两个 PowerShell 构建脚本，位于 `scripts/` 目录下，用于生成桌面端分发的资产包与数据包，产物默认输出到 `dist/`。
+
+### 构建资产包（内核源代码 + 可选依赖）
+
+```powershell
+.\scripts\build-asset-bundle.ps1            # 一键构建全部三种变体（lite + cpu + cu130）
+.\scripts\build-asset-bundle.ps1 -Lite      # 仅 lite 变体（仅源码，无依赖）
+.\scripts\build-asset-bundle.ps1 -Cpu       # 仅 cpu 变体（源码 + CPU wheels）
+.\scripts\build-asset-bundle.ps1 -Cuda      # 仅 cu130 变体（源码 + CUDA wheels）
+.\scripts\build-asset-bundle.ps1 -Lite -Cpu # 任意组合，仅构建所选变体
+```
+
+产物命名与内容：
+
+| 产物                                  | 内容                                                             |
+| ------------------------------------- | ---------------------------------------------------------------- |
+| `moechat-assets-v{version}-lite.zip`  | 仅内核源码，无依赖。桌面端首次运行时在线安装依赖                 |
+| `moechat-assets-v{version}-cpu.zip`   | 内核源码 + CPU 版 torch / torchaudio / onnxruntime wheels        |
+| `moechat-assets-v{version}-cu130.zip` | 内核源码 + CUDA 13.0 版 torch / torchaudio wheels + onnxruntime  |
+
+> [!NOTE]
+> 构建 cpu / cuda 变体需要本机安装 [uv](https://docs.astral.sh/uv/) 与 `uvx`，脚本通过 `uvx pip download` 按 Python 3.11 / win_amd64 平台抓取预编译 wheel。包内同时写入 `version.txt` 与 `manifest.json`（记录版本、类型与 wheels 列表）便于诊断。
+
+### 构建数据包（模型 / 资源 / 助手 / motion）
+
+```powershell
+.\scripts\build-data-bundle.ps1 -AllAgents                              # 打包全部助手
+.\scripts\build-data-bundle.ps1 -Agent "澪","香风智乃"                   # 仅打包指定助手
+.\scripts\build-data-bundle.ps1                                          # 交互式选择助手
+```
+
+产物命名与内容：
+
+- 产物：`dist/moechat-data-v{version}.zip`
+- 内容（zip 根直接存放，不含 `data/` 外层）：`models/`、`resources/`、`motion.db`（含 `-shm`/`-wal`，若存在）、`agents/`（每个助手仅保留 `info.yaml` 与 `assets/`）、`manifest.json`
+- `manifest.json` 记录 `version`、`type=data` 以及打包进包的 `models` / `resources` / `agents` 目录列表
+
+> [!NOTE]
+> 桌面端会将此包以 `data/` 前缀解压到 `{kernel}/data/`，使后端以 `./data/...` 相对内核根目录读取，因此 zip 内不包一层 `data/` 目录。助手采用选择性打包，避免随包分发无关的模型数据。
+
+### 通用参数
+
+两个脚本均支持 `-OutputDir <路径>` 指定输出目录（默认 `./dist`）、`-Version <版本>` 手动指定版本号（默认自动从 `pyproject.toml` 读取，读不到时回退到脚本内置默认值）。
+
 ## 🤔常见问题
 
 ### Q1: 服务启动失败或模型加载失败

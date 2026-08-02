@@ -3,10 +3,26 @@
     Build MoeChat data resource bundle (models + resources + motion + agents)
 .DESCRIPTION
     Packages data resources into moechat-data-{version}.zip for distribution.
-    Includes: models/, resources/, motion databases.
+
+    The zip ROOT contains the data content directly (NOT wrapped in a data/
+    folder): models/, resources/, agents/, worldbook/, motion dbs + manifest.json.
+    The desktop app extracts this bundle with a "data/" prefix into
+    {kernel}/data/ so the backend sees ./data/... relative to the kernel root.
+
     Agents are selectively included; only info.yaml and assets/ are kept per agent.
-    Usage: .\scripts\build-data-bundle.ps1 [-AllAgents] [-Agent "澪","香风智乃"] [-OutputDir ./dist]
-    Default mode is interactive agent selection (use -AllAgents or -Agent to skip prompts).
+
+.PARAMETER OutputDir
+    Output directory, default "./dist".
+.PARAMETER Version
+    Package version. Auto-read from pyproject.toml when empty.
+.PARAMETER Agent
+    Agent name(s) to include, e.g. -Agent "澪","香风智乃".
+.PARAMETER AllAgents
+    Include all agents found under data/agents.
+.EXAMPLE
+    .\scripts\build-data-bundle.ps1 -AllAgents            # 打包全部助手
+    .\scripts\build-data-bundle.ps1 -Agent "澪"            # 仅打包指定助手
+    .\scripts\build-data-bundle.ps1                        # 交互式选择助手
 #>
 
 param(
@@ -32,36 +48,30 @@ if (-not $Version) {
         }
     }
 }
-if (-not $Version) { $Version = "1.7.0" }
+if (-not $Version) { $Version = "2.0.0" }
 
-# 准备输出目录
 $OutputPath = Join-Path $ProjectRoot $OutputDir
 if (-not (Test-Path $OutputPath)) {
     New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 }
 $OutputPath = (Get-Item $OutputPath).FullName
 
-# 工作目录
+# 工作目录：最终 zip 根 = {kernel}/data 的内容（不含 data/ 外层）
 $WorkDir = Join-Path $env:TEMP "moechat-data-build"
 if (Test-Path $WorkDir) { Remove-Item -Recurse -Force $WorkDir }
+New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
 
 $DataDir = Join-Path $ProjectRoot "data"
-# 注意：内容直接放在 WorkDir 根目录（不含 data/ 外层），
-# 因为前端 importDataBundle 会用 subDir='data' 参数解压，
-# 自动将所有条目前缀 data/，放入 {kernel}/data/ 下。
-$PkgDataDir = $WorkDir
-
-Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "  MoeChat Data Bundle Builder" -ForegroundColor Cyan
-Write-Host "  Version: $Version" -ForegroundColor Cyan
-Write-Host "  Project: $ProjectRoot" -ForegroundColor Cyan
-Write-Host "============================================" -ForegroundColor Cyan
-
-# 检查 data 目录是否存在
 if (-not (Test-Path $DataDir)) {
     Write-Error "data directory not found: $DataDir"
     exit 1
 }
+
+Write-Host "============================================" -ForegroundColor Cyan
+Write-Host "  MoeChat Data Bundle Builder" -ForegroundColor Cyan
+Write-Host "  Version: $Version" -ForegroundColor Cyan
+Write-Host "  Data   : $DataDir" -ForegroundColor Cyan
+Write-Host "============================================" -ForegroundColor Cyan
 
 # ============================================================
 # 选择需要打包的助手
@@ -107,10 +117,10 @@ if ($AllAgents) {
 # ============================================================
 # Step 1: 打包 models
 # ============================================================
-Write-Host "[1/4] Packing models..." -ForegroundColor Yellow
+Write-Host "[1/5] Packing models..." -ForegroundColor Yellow
 $modelsSource = Join-Path $DataDir "models"
 if (Test-Path $modelsSource) {
-    $modelsDest = Join-Path $PkgDataDir "models"
+    $modelsDest = Join-Path $WorkDir "models"
     New-Item -ItemType Directory -Path $modelsDest -Force | Out-Null
     Copy-Item -Path "$modelsSource/*" -Destination $modelsDest -Recurse -Force
     Write-Host "  Models copied" -ForegroundColor Green
@@ -121,10 +131,10 @@ if (Test-Path $modelsSource) {
 # ============================================================
 # Step 2: 打包 resources
 # ============================================================
-Write-Host "[2/4] Packing resources..." -ForegroundColor Yellow
+Write-Host "[2/5] Packing resources..." -ForegroundColor Yellow
 $resourcesSource = Join-Path $DataDir "resources"
 if (Test-Path $resourcesSource) {
-    $resourcesDest = Join-Path $PkgDataDir "resources"
+    $resourcesDest = Join-Path $WorkDir "resources"
     New-Item -ItemType Directory -Path $resourcesDest -Force | Out-Null
     Copy-Item -Path "$resourcesSource/*" -Destination $resourcesDest -Recurse -Force
     Write-Host "  Resources copied" -ForegroundColor Green
@@ -132,19 +142,19 @@ if (Test-Path $resourcesSource) {
     Write-Host "  Resources directory not found, skipping" -ForegroundColor Gray
 }
 
+
 # ============================================================
 # Step 3: 打包 motion 数据库
 # ============================================================
-Write-Host "[3/4] Packing motion databases..." -ForegroundColor Yellow
+Write-Host "[3/5] Packing motion databases..." -ForegroundColor Yellow
 $motionFiles = @(
-    "motion.db", "motion.db-shm", "motion.db-wal",
-    "motion_momona.db", "motion_momona.db-shm", "motion_momona.db-wal"
+    "motion.db", "motion.db-shm", "motion.db-wal"
 )
 $hasMotion = $false
 foreach ($file in $motionFiles) {
     $src = Join-Path $DataDir $file
     if (Test-Path $src) {
-        Copy-Item -Path $src -Destination (Join-Path $PkgDataDir $file) -Force
+        Copy-Item -Path $src -Destination (Join-Path $WorkDir $file) -Force
         $hasMotion = $true
     }
 }
@@ -155,11 +165,11 @@ if ($hasMotion) {
 }
 
 # ============================================================
-# Step 3.5: 打包助手（选择性，仅 info.yaml + assets）
+# Step 4: 打包助手（选择性，仅 info.yaml + assets）
 # ============================================================
 if ($selectedAgents.Count -gt 0) {
-    Write-Host "[3.5/4] Packing agents (info.yaml + assets only)..." -ForegroundColor Yellow
-    $agentsDest = Join-Path $PkgDataDir "agents"
+    Write-Host "[4/5] Packing agents (info.yaml + assets only)..." -ForegroundColor Yellow
+    $agentsDest = Join-Path $WorkDir "agents"
     New-Item -ItemType Directory -Path $agentsDest -Force | Out-Null
     foreach ($agentName in $selectedAgents) {
         $agentSource = Join-Path $AgentsDir $agentName
@@ -187,18 +197,15 @@ if ($selectedAgents.Count -gt 0) {
         Write-Host "  Agent '$agentName' packed" -ForegroundColor Green
     }
 } else {
-    Write-Host "[3.5/4] Skipping agents (none selected)" -ForegroundColor Gray
+    Write-Host "[4/5] Skipping agents (none selected)" -ForegroundColor Gray
 }
 
 # ============================================================
-# Step 4: 打包成 zip
+# Step 5: 打包成 zip
 # ============================================================
-Write-Host "[4/4] Packaging..." -ForegroundColor Yellow
+Write-Host "Packaging..." -ForegroundColor Yellow
 
-$zipName = "moechat-data-v${Version}.zip"
-$zipPath = Join-Path $OutputPath $zipName
-
-# 创建清单
+# 创建清单（models/resources/agents 仅记录目录名，便于诊断）
 $manifest = @{
     version  = $Version
     type     = "data"
@@ -207,22 +214,46 @@ $manifest = @{
     agents   = @($selectedAgents)
 }
 
-$pkgModelsDir = Join-Path $PkgDataDir "models"
+$pkgModelsDir = Join-Path $WorkDir "models"
 if (Test-Path $pkgModelsDir) {
-    $manifest.models = (Get-ChildItem -Path $pkgModelsDir -Directory -Name)
+    # 使用 @() 强制结果为数组，避免单个目录时被管道展开为标量字符串
+    $manifest.models = @(Get-ChildItem -Path $pkgModelsDir -Directory | ForEach-Object { $_.Name })
 }
 
-$pkgResourcesDir = Join-Path $PkgDataDir "resources"
+$pkgResourcesDir = Join-Path $WorkDir "resources"
 if (Test-Path $pkgResourcesDir) {
-    $manifest.resources = (Get-ChildItem -Path $pkgResourcesDir -Directory -Name)
+    # 使用 @() 强制结果为数组，避免单个目录时被管道展开为标量字符串
+    $manifest.resources = @(Get-ChildItem -Path $pkgResourcesDir -Directory | ForEach-Object { $_.Name })
 }
 
 $manifest | ConvertTo-Json | Out-File -FilePath (Join-Path $WorkDir "manifest.json") -Encoding utf8
 
-# 创建 zip
+$zipName = "moechat-data-v${Version}.zip"
+$zipPath = Join-Path $OutputPath $zipName
+
 if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-[System.IO.Compression.ZipFile]::CreateFromDirectory($WorkDir, $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+
+# 使用 ZipArchive 手动写入，条目名统一使用正斜杠 "/" 分隔符。
+# 背景：.NET 的 CreateFromDirectory 在 Windows 上会以反斜杠 "\" 写条目名，
+# 属于非标准 zip，桌面端 node-stream-zip 会将其判为恶意条目而拒绝解压
+# （"Malicious entry: api\asr_api.py"）。
+$zip = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    Get-ChildItem -Path $WorkDir -Recurse -File | ForEach-Object {
+        # 相对路径统一转为 "/" 分隔符（兼容 Windows 与跨平台解压）
+        $relative = $_.FullName.Substring($WorkDir.Length + 1).Replace('\', '/')
+        $entry = $zip.CreateEntry($relative, [System.IO.Compression.CompressionLevel]::Optimal)
+        $entryStream = $entry.Open()
+        try {
+            $fileStream = [System.IO.File]::OpenRead($_.FullName)
+            try { $fileStream.CopyTo($entryStream) } finally { $fileStream.Dispose() }
+        } finally { $entryStream.Dispose() }
+    }
+} finally {
+    $zip.Dispose()
+}
 
 $zipSize = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 

@@ -17,16 +17,14 @@ def download_embedding_model():
 def download_asr_model():
     """
     下载语音识别模型到本地指定路径。
+    见
     """
-    snapshot_download(
-        model_id="iic/SenseVoiceSmall",
-        local_dir=Config.ASR_MODEL_DIR,
-    )
+    pass
 
 
 def download_kws_model():
     """
-    下载关键词检测模型。需要手动下载并填写到Config.py中。
+    下载关键词检测模型。
     见https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2
     """
     pass

@@ -324,6 +324,11 @@ class AssistantService:
     async def initialize_default_assistant(self) -> Assistant | None:
         """
         初始化默认助手
+
+        选择优先级（依次尝试，成功即返回）：
+        1. 上次使用的助手
+        2. 默认助手
+        3. 助手列表中的第一个助手（兜底）
         """
         last_used_file = os.path.join(Config.BASE_DATA_PATH, "last_used_agent.txt")
         last_used = None
@@ -335,16 +340,31 @@ class AssistantService:
             except Exception as e:
                 Log.logger.error(f"读取上次使用的助手失败: {e}")
 
+        # 优先级 1：尝试加载上次使用的助手
         if last_used:
             try:
                 return await self.set_assistant(last_used)
-            except:
+            except Exception:
                 Log.logger.info(f"无法加载上次使用的助手: {last_used}")
 
+        # 优先级 2：尝试加载默认助手
         try:
             return await self.set_assistant(Config.DEFAULT_ASSISTANT_NAME)
-        except:
+        except Exception:
             Log.logger.info(f"无法加载默认助手'{Config.DEFAULT_ASSISTANT_NAME}'")
+
+        # 优先级 3：兜底加载助手列表中的第一个助手
+        try:
+            assistants = self.load_assistant_info()
+            if assistants:
+                first_name = assistants[0]["name"]
+                try:
+                    return await self.set_assistant(first_name)
+                except Exception:
+                    Log.logger.info(f"无法加载助手列表中的第一个助手: {first_name}")
+        except Exception as e:
+            Log.logger.error(f"加载助手列表失败: {e}")
+
         return None
 
     def save_last_used_agent(self) -> None:

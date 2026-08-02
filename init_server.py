@@ -2,10 +2,6 @@ import traceback
 import sys
 import gc
 import platform
-
-from my_utils.check_and_download_default_assistant import (
-    check_and_download_default_assistant,
-)
 from my_utils.log import logger
 import os
 from my_utils.logo import print_moechat_logo
@@ -91,7 +87,6 @@ async def initialize_assistant():
         logger.info(f"成功初始化默认助手: {agent.agent_name}")
     else:
         logger.warning("未找到可用的助手，请创建一个助手后再使用")
-        exit(1)
 
 
 async def initialize_tools():
