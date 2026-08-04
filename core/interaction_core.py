@@ -85,8 +85,9 @@ async def generate_interaction_message(
         yield DoneMessage(full_text=full_text)
 
         # chat_history 保存多任务 JSON 格式，长期记忆保存纯文本
+        # 触发事件与回复成对写入（EventRecord + InteractionRecord），保证消息链可区分
         await agent.add_interaction_msg(
-            chat_context.get_raw_output(), plain_text=full_text
+            chat_context.get_raw_output(), plain_text=full_text, event=params
         )
 
     except Exception as e:

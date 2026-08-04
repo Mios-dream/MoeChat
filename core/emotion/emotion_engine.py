@@ -2,7 +2,6 @@ import json
 import os
 import re
 import time
-from typing import Optional, List
 
 import yaml
 from openai.types.chat import ChatCompletionMessageParam
@@ -15,7 +14,7 @@ from core.emotion.emotion_event import (
     EMOTION_MAP_ZH,
 )
 from core.llm.llm_client import LLMClient
-from core.history_manager import HistoryManager
+from core.history import HistoryManager
 from models.types.assistant_info import AssistantInfo
 from models.types.user_state import UserStateInfo
 from my_utils import prompt

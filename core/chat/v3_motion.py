@@ -75,6 +75,7 @@ from core.scheduler.task import TaskResult, ToolCallEvent, ToolResultEvent
 from core.scheduler.parsers.text_stream_parser import filter_tts_text
 from core.chat.base import tts_wrapper
 from core.chat.v1 import BaseChatContext
+from core.history import ChatReplyRecord, ToolCallRecord, ToolResultRecord, UserRecord
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -173,6 +174,7 @@ class V3MotionChatContext(BaseChatContext):
         self.motion_engine: MotionEngineService = MotionEngineService(
             Config.MOTION_DB_PATH
         )
+        # 逐句原始多任务 JSON 行，供 get_raw_output() 以 JSON 格式归档到 chat_history
         self._raw_json_lines: dict[int, str] = {}
 
         # 有序发射队列
@@ -455,12 +457,19 @@ class V3ChatService:
                         filtered.append(tc)
                 if filtered:
                     agent.chat_history.append(
-                        {"role": "assistant", "content": None, "tool_calls": filtered}
+                        ToolCallRecord(
+                            tool_calls=filtered,
+                        )
                     )
             elif msg["role"] == "tool":
                 if msg.get("tool_call_id") in _internal_tool_ids:
                     return
-                agent.chat_history.append(msg)
+                agent.chat_history.append(
+                    ToolResultRecord(
+                        tool_call_id=msg["tool_call_id"],
+                        content=msg.get("content"),
+                    )
+                )
 
         pipeline = scheduler.create_task_pipeline(
             chain=chain,
@@ -486,7 +495,9 @@ class V3ChatService:
             agent, params
         )
 
-        agent.chat_history.extend(user_message)
+        agent.chat_history.extend(
+            [UserRecord(content=m.get("content")) for m in user_message]
+        )
 
         try:
             async for result in pipeline.execute():
@@ -502,12 +513,17 @@ class V3ChatService:
             full_text = ctx.get_full_text()
             yield DoneMessage(full_text=full_text)
 
-            # chat_history 保存多任务 JSON 格式，让模型从历史中学习输出格式
+            # chat_history 保存多任务 JSON 格式（逐行 JSON），供模型从历史中学习输出格式；
+            # 对外输出时由 /api/chat/history 解析并去掉多任务结构。
             agent.chat_history.append(
-                {"role": "assistant", "content": ctx.get_raw_output()}
+                ChatReplyRecord(
+                    content=ctx.get_raw_output(),
+                )
             )
+
+            # 归档（长期记忆/日记）时保留整轮完整文本
             asyncio.create_task(
-                agent.add_msg(user_msg=user_text, assistant_msg=ctx.get_full_text())
+                agent.add_msg(user_msg=user_text, assistant_msg=full_text)
             )
 
         except Exception as e:

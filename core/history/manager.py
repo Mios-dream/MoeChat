@@ -1,21 +1,31 @@
 """
-历史消息管理器
+历史消息管理器（单源私有记录）
 
 统一管理聊天历史记录的生命周期，是对话上下文中历史部分的核心管理组件。
 
 核心设计：
-1. 内存管理：最多 200 条消息，超限时自动将最旧消息压缩为单条 system 摘要
-2. Token 缓存：基于 estimate_tokens 的估算值，带失效标记，避免重复计算
-3. 写入时 LLM 压缩：达到阈值时由上层调用 compress_if_needed() 进行 LLM 语义摘要
+1. 单源存储：``_records: list[ChatRecord]`` 为唯一事实来源，LLM 上下文（get_for_llm）、
+   展示输出（copy）、情感引擎原始消息（get_raw_recent）一律调用记录自身的格式化策略
+   （to_openai / to_display）多态投影派生，不再维护平行的纯 OpenAI 消息列表；
+2. 内存管理：最多 max_messages 条消息，超限时自动将最旧消息压缩为单条 SummaryRecord；
+3. Token 缓存：基于 estimate_tokens 的估算值增量维护（O(1) 访问），避免重复计算；
+4. 写入时 LLM 压缩：达到阈值时由上层调用 compress_if_needed() 进行 LLM 语义摘要。
 
-压缩策略：
-- append/extend 路径（同步，200 条硬上限）：_compress_oldest → _to_summary（纯文本拼接，内存安全垫）
-- compress_if_needed 路径（异步，50 条上限 + token 预算检查）：_to_summary_llm（LLM 语义摘要，失败时抛出异常）
-- get_for_llm 路径（同步，纯读取）：不做 LLM 调用，仅按最大条数截断后返回
+投影规则（由各消息类别自决）：
+- summary / note / event 等类别 to_display() 返回 None → 展示 API 自动过滤；
+- summary / event 等类别 to_openai() 注入 LLM → 上下文自动携带；
+- 新增消息类型只需新增一个 ChatRecord 子类，本管理器零改动。
 """
 
+from collections.abc import Iterable
 import json
+
 from openai.types.chat import ChatCompletionMessageParam
+
+from core.history.records import (
+    ChatRecord,
+    SummaryRecord,
+)
 from core.llm.llm_client import LLMClient
 from my_utils.token_counter import estimate_tokens
 from my_utils.log import logger as Log
@@ -26,15 +36,16 @@ class HistoryManager:
     历史消息管理器
 
     职责：
-    - 存储聊天消息列表，提供 list 兼容接口
+    - 存储聊天消息列表（ChatRecord 私有记录），提供 list 兼容接口
     - 超限时自动压缩，保持内存使用可控
-    - 为 LLM 查询提供压缩后的历史记录
+    - 为 LLM 查询提供投影后的 OpenAI 消息链
+    - 为展示 API 提供投影后的展示字典列表
 
     使用方式：
         history = HistoryManager()
-        history.append({"role": "user", "content": "你好"})
-        # 自动管理 200 条上限
-        # 通过 MessageChain.build() 自动调用 get_for_llm 压缩后传入 LLM
+        history.append(UserRecord(content="你好"))
+        # 自动管理条数上限
+        # 通过 MessageChain.build() 自动调用 get_for_llm 投影后传入 LLM
     """
 
     # 默认 LLM 上下文窗口大小（deepseek 系列模型的上下文长度）
@@ -72,7 +83,7 @@ class HistoryManager:
             max_messages: 消息硬限制，超限时触发 _compress_oldest 压缩最旧消息
             recent_keep: 压缩时保留的最近消息条数
         """
-        self._messages: list[ChatCompletionMessageParam] = []
+        self._records: list[ChatRecord] = []
         self._max_messages: int = max_messages
         self._recent_keep: int = recent_keep
         self._token_total: int = 0
@@ -84,69 +95,87 @@ class HistoryManager:
     # 提供与 Python list 一致的接口，确保已有的 history.append() / extend() 等代码无缝迁移
     # ============================================================
 
-    def append(self, message: ChatCompletionMessageParam) -> None:
+    def append(self, record: ChatRecord) -> None:
         """
         追加一条消息到历史列表末尾
 
-        当消息总数超过 max_messages 时，自动将最旧消息压缩为单条 system 摘要。
+        当消息总数超过 max_messages 时，自动将最旧消息压缩为单条 SummaryRecord。
         此路径使用纯文本拼接（_to_summary），不调用 LLM，保证写入性能。
 
         Parameters:
-            message: OpenAI 格式的聊天消息，格式为 {"role": str, "content": str | list}
+            record: 私有聊天记录（ChatRecord 子类实例）
         """
-        self._messages.append(message)
-        self._token_total += self._compute_message_tokens(message)
-        if len(self._messages) > self._max_messages:
+        self._records.append(record)
+        self._token_total += record.estimate_tokens()
+        if len(self._records) > self._max_messages:
             self._compress_oldest()
 
-    def extend(self, messages: list[ChatCompletionMessageParam]) -> None:
+    def extend(self, records: Iterable[ChatRecord]) -> None:
         """
         追加多条消息到历史列表末尾
 
         超限时触发压缩，行为同 append。
 
         Parameters:
-            messages: OpenAI 格式的聊天消息列表
+            records: 私有聊天记录的可迭代集合
         """
-        self._messages.extend(messages)
-        self._token_total += sum(self._compute_message_tokens(m) for m in messages)
-        if len(self._messages) > self._max_messages:
-            self._compress_oldest()
+        for record in records:
+            self.append(record)
 
-    def pop(self, index: int = -1) -> ChatCompletionMessageParam:
-        """弹出指定位置的消息，默认弹出末尾"""
-        result = self._messages.pop(index)
-        self._token_total -= self._compute_message_tokens(result)
+    def pop(self, index: int = -1) -> ChatRecord:
+        """
+        弹出指定位置的消息，默认弹出末尾
+
+        单列表弹出，索引与展示记录天然对齐（修复原双层列表错位缺陷）。
+
+        Parameters:
+            index: 弹出位置，支持负数索引
+
+        Returns:
+            被弹出的记录
+        """
+        result = self._records.pop(index)
+        self._token_total -= result.estimate_tokens()
         return result
 
     def clear(self) -> None:
         """清空所有消息和 token 缓存"""
-        self._messages.clear()
+        self._records.clear()
         self._token_total = 0
 
-    def copy(self) -> list[ChatCompletionMessageParam]:
-        """返回消息列表的浅拷贝副本"""
-        return self._messages.copy()
+    def copy(self) -> list[dict]:
+        """
+        返回投影后的展示字典列表（含 kind/timestamp）
+
+        逐条调用 to_display() 派生，返回 None 的类别（summary/note/event/system）自动过滤。
+
+        Returns:
+            展示字典列表，供 /api/chat/history 等展示链路使用
+        """
+        return [
+            display
+            for record in self._records
+            if (display := record.to_display()) is not None
+        ]
 
     def __len__(self) -> int:
         """返回消息总数"""
-        return len(self._messages)
+        return len(self._records)
 
     def __iter__(self):
-        """迭代所有消息"""
-        return iter(self._messages)
+        """迭代所有消息记录"""
+        return iter(self._records)
 
     def __getitem__(self, index):
-        """按下标访问消息，支持切片和负数索引"""
-        return self._messages[index]
+        """按下标访问消息记录，支持切片和负数索引"""
+        return self._records[index]
 
     def get_raw_recent(self, count: int = 10) -> list[ChatCompletionMessageParam]:
         """
-        获取最近 count 条原始消息（跳过压缩生成的 system 摘要）
+        获取最近 count 条原始消息（跳过非原始对话类别）
 
-        用于情感分析等需要干净对话历史的场景。_compress_oldest 生成的摘要
-        以 system 角色和特定前缀标记，此方法在反向遍历时跳过这些消息，
-        确保返回的消息都是原始的 user / assistant 对话。
+        用于情感分析等需要干净对话历史的场景。跳过 is_conversation=False 的类别
+        （summary/note/event），返回其余记录投影后的 OpenAI 字典。
 
         Parameters:
             count: 需要返回的原始消息条数，默认 10
@@ -154,13 +183,14 @@ class HistoryManager:
         Returns:
             原始消息列表，按时间正序排列；如果原始消息不足，返回全部可用条数
         """
-        raw = []
-        for msg in reversed(self._messages):
-            if msg.get("role") == "system":
-                content = msg.get("content", "")
-                if isinstance(content, str) and "【以下为压缩的历史对话】" in content:
-                    continue
-            raw.append(msg)
+        raw: list[ChatCompletionMessageParam] = []
+        for record in reversed(self._records):
+            if not record.is_conversation:
+                continue
+            openai_msg = record.to_openai()
+            if openai_msg is None:
+                continue
+            raw.append(openai_msg)
             if len(raw) >= count:
                 break
         return list(reversed(raw))
@@ -184,7 +214,9 @@ class HistoryManager:
     @staticmethod
     def _compute_message_tokens(message: ChatCompletionMessageParam) -> int:
         """
-        计算单条消息的估算 token 数（含 4 token 的 role 标记开销）
+        计算单条 OpenAI 消息的估算 token 数（含 4 token 的 role 标记开销）
+
+        供 estimate_list_tokens 对非自身记录列表做一次性估算。
 
         Parameters:
             message: OpenAI 格式的聊天消息
@@ -203,22 +235,10 @@ class HistoryManager:
             return total + 4
         return 4
 
-    def _estimate_tokens(self, messages: list[ChatCompletionMessageParam]) -> int:
-        """
-        估算一组消息的 token 总数（遍历计算，用于非自身消息列表的预算估算）
-
-        Parameters:
-            messages: 要估算的消息列表
-
-        Returns:
-            估算的 token 总数
-        """
-        return sum(self._compute_message_tokens(msg) for msg in messages)
-
     @staticmethod
     def estimate_list_tokens(messages: list[ChatCompletionMessageParam]) -> int:
         """
-        静态方法：估算一组消息的 token 总数（含 role 标记开销）
+        静态方法：估算一组 OpenAI 消息的 token 总数（含 role 标记开销）
 
         供 MessageChain 等在构建消息链时计算固定部分（system + 动态上下文 + 用户消息）
         的 token 开销，以便为历史记录分配剩余 token 预算。
@@ -234,7 +254,7 @@ class HistoryManager:
     # ============================================================
     # LLM 查询（同步，纯读取）
     #
-    # 仅做条数截断，不做 LLM 调用。LLM 语义摘要已在写入时由
+    # 仅做投影与条数截断，不做 LLM 调用。LLM 语义摘要已在写入时由
     # compress_if_needed() 完成。
     # ============================================================
 
@@ -247,7 +267,8 @@ class HistoryManager:
         """
         获取适合传入 LLM 的历史记录
 
-        纯读取操作，不做 LLM 调用。当消息条数超过 max_count 时仅截断最旧消息。
+        纯读取操作，不做 LLM 调用。逐条调用 to_openai() 投影，返回 None 的类别
+        （如 note）不进入消息链；超过 max_count 时仅截断最旧消息。
         LLM 语义摘要压缩在写入时由 compress_if_needed() 完成。
 
         Parameters:
@@ -256,28 +277,33 @@ class HistoryManager:
             max_count:        传递给 LLM 的最大消息条数，超过此值截断最旧消息
 
         Returns:
-            截断后的消息列表，可直接传入 LLM 的 messages 参数
+            截断后的 OpenAI 消息列表，可直接传入 LLM 的 messages 参数
         """
-        if not self._messages:
+        # 逐条投影，None 类别（如 note）不进入 LLM 消息链
+        projected = [
+            openai_msg
+            for record in self._records
+            if (openai_msg := record.to_openai()) is not None
+        ]
+
+        if not projected:
             return []
 
-        history = list(self._messages)
-
         # 超过最大条数时，截断中间部分，保留首尾
-        if max_count and len(history) > max_count:
+        if max_count and len(projected) > max_count:
             keep_count = min(self._recent_keep, max_count // 2)
             # 保留首条（可能是 system 摘要）+ 最近 keep_count 条
-            head = history[:1]
-            tail = history[-keep_count:]
-            history = head + tail
+            head = projected[:1]
+            tail = projected[-keep_count:]
+            projected = head + tail
 
-        return history
+        return projected
 
     # ============================================================
     # 写入时 LLM 压缩（异步）
     #
-    # 由上层（add_msg / add_interaction_msg）在完成一轮对话写入后调用。
-    # 使用 LLM 语义摘要将超过阈值的旧消息压缩为一条 system 摘要，
+    # 由上层（add_msg）在完成一轮对话写入后调用。
+    # 使用 LLM 语义摘要将超过阈值的旧消息压缩为一条 SummaryRecord，
     # 保持历史记录在可控范围内。
     # ============================================================
 
@@ -299,34 +325,34 @@ class HistoryManager:
             RuntimeError: LLM 返回空摘要
             以及 LLMClient.request 的各类网络/API 异常
         """
-        if len(self._messages) <= max_count:
+        if len(self._records) <= max_count:
             return
 
         keep_count = min(self._recent_keep, max_count - 1)
-        compress_msgs = self._messages[:-keep_count]
-        recent_msgs = self._messages[-keep_count:]
+        compress_records = self._records[:-keep_count]
+        recent_records = self._records[-keep_count:]
 
         Log.info(
-            f"[HistoryManager] LLM 语义压缩 {len(compress_msgs)} 条历史为摘要, "
-            f"保留 {len(recent_msgs)} 条"
+            f"[HistoryManager] LLM 语义压缩 {len(compress_records)} 条历史为摘要, "
+            f"保留 {len(recent_records)} 条"
         )
 
         # 从增量总数中减去被压缩消息的 token
-        for msg in compress_msgs:
-            self._token_total -= self._compute_message_tokens(msg)
+        for record in compress_records:
+            self._token_total -= record.estimate_tokens()
 
         # 使用 LLM 生成语义摘要
-        summary = await self._to_summary_llm(compress_msgs)
-        self._messages = [summary] + recent_msgs
+        summary = await self._to_summary_llm(compress_records)
+        self._records = [summary] + recent_records
 
         # 加上摘要消息的 token
-        self._token_total += self._compute_message_tokens(summary)
+        self._token_total += summary.estimate_tokens()
 
         # 清理孤立 tool 消息：压缩后 tool_calls 的前驱消息已丢失，
         # 开头的 tool 消息无法被 LLM 理解，直接移除
-        while self._messages and self._messages[0].get("role") == "tool":
-            removed = self._messages.pop(0)
-            self._token_total -= self._compute_message_tokens(removed)
+        while self._records and self._records[0].kind == "tool_result":
+            removed = self._records.pop(0)
+            self._token_total -= removed.estimate_tokens()
 
     # ============================================================
     # 压缩
@@ -339,34 +365,34 @@ class HistoryManager:
         原地压缩最旧消息（达到 HARD_MAX_MESSAGES 时触发）
 
         使用纯文本拼接（_to_summary），不调用 LLM，保证写入路径的同步性能。
-        保留最近 RECENT_KEEP 条消息完整，将更早消息压缩为单条 system 摘要。
+        保留最近 RECENT_KEEP 条记录完整，将更早记录压缩为单条 SummaryRecord。
 
         清理开头可能存在的孤立 tool 消息（其前驱 tool_calls 已被压缩）。
         """
         keep_count = self._recent_keep
-        compress_msgs = self._messages[:-keep_count]
-        recent_msgs = self._messages[-keep_count:]
+        compress_records = self._records[:-keep_count]
+        recent_records = self._records[-keep_count:]
 
         Log.info(
-            f"[HistoryManager] 压缩 {len(compress_msgs)} 条历史为摘要, "
-            f"保留 {len(recent_msgs)} 条"
+            f"[HistoryManager] 压缩 {len(compress_records)} 条历史为摘要, "
+            f"保留 {len(recent_records)} 条"
         )
 
         # 从增量总数中减去被压缩消息的 token
-        for msg in compress_msgs:
-            self._token_total -= self._compute_message_tokens(msg)
+        for record in compress_records:
+            self._token_total -= record.estimate_tokens()
 
-        summary = self._to_summary(compress_msgs)
-        self._messages = [summary] + recent_msgs
+        summary = self._to_summary(compress_records)
+        self._records = [summary] + recent_records
 
         # 加上摘要消息的 token
-        self._token_total += self._compute_message_tokens(summary)
+        self._token_total += summary.estimate_tokens()
 
         # 清理孤立 tool 消息：压缩后 tool_calls 的前驱消息已丢失，
         # 开头的 tool 消息无法被 LLM 理解，直接移除
-        while self._messages and self._messages[0].get("role") == "tool":
-            removed = self._messages.pop(0)
-            self._token_total -= self._compute_message_tokens(removed)
+        while self._records and self._records[0].kind == "tool_result":
+            removed = self._records.pop(0)
+            self._token_total -= removed.estimate_tokens()
 
     # ============================================================
     # LLM 摘要
@@ -377,31 +403,34 @@ class HistoryManager:
 
     async def _to_summary_llm(
         self,
-        messages: list[ChatCompletionMessageParam],
-    ) -> ChatCompletionMessageParam:
+        records: list[ChatRecord],
+    ) -> SummaryRecord:
         """
-        使用 LLM 将多条消息压缩为单条语义摘要
+        使用 LLM 将多条记录压缩为单条语义摘要
 
-        将需要压缩的消息列表格式化为"用户:" / "助手:" 对话文本，调用 LLM
-        生成摘要，返回 system 角色的摘要消息。如果 LLM 调用失败或返回空值，
+        将需要压缩的记录投影为"用户:" / "助手:" 对话文本，调用 LLM
+        生成摘要，返回 SummaryRecord。如果 LLM 调用失败或返回空值，
         直接抛出异常，不回退到规则拼接——防止语义信息丢失静默发生。
 
         Parameters:
-            messages: 需要压缩的原始消息列表
+            records: 需要压缩的原始记录列表
 
         Returns:
-            system 角色的摘要消息，格式为 {"role": "system", "content": "【以下为压缩的历史对话】..."}
+            SummaryRecord 摘要记录
 
         Raises:
             ValueError: 待压缩的消息中没有有效对话内容
             RuntimeError: LLM 返回空摘要
             以及 LLMClient.request 的各类网络/API 异常
         """
-        # 将消息列表格式化为可读的对话文本
+        # 将记录投影为可读的对话文本
         conversation_lines = []
-        for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
+        for record in records:
+            openai_msg = record.to_openai()
+            if not openai_msg:
+                continue
+            role = openai_msg.get("role", "")
+            content = openai_msg.get("content", "")
             if not content:
                 continue
             if role == "user":
@@ -436,31 +465,31 @@ class HistoryManager:
         if not summary_text:
             raise RuntimeError("LLM 摘要返回为空")
 
-        return {
-            "role": "system",
-            "content": f"【以下为压缩的历史对话】{summary_text}",
-        }
+        return SummaryRecord(summary_text=summary_text)
 
     @staticmethod
     def _to_summary(
-        messages: list[ChatCompletionMessageParam],
-    ) -> ChatCompletionMessageParam:
+        records: list[ChatRecord],
+    ) -> SummaryRecord:
         """
         纯文本拼接压缩（不使用 LLM）
 
-        将多条消息的文本内容用"用户:" / "助手:" 前缀拼接为一段纯文本。
+        将多条记录的文本内容用"用户:" / "助手:" 前缀拼接为一段纯文本。
         用于 append/extend 路径的快速压缩，仅控制内存水位，不直接喂给 LLM。
 
         Parameters:
-            messages: 需要压缩的原始消息列表
+            records: 需要压缩的原始记录列表
 
         Returns:
-            system 角色的摘要消息
+            SummaryRecord 摘要记录
         """
         parts = ["【以下为压缩的历史对话】"]
-        for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
+        for record in records:
+            openai_msg = record.to_openai()
+            if not openai_msg:
+                continue
+            role = openai_msg.get("role", "")
+            content = openai_msg.get("content", "")
             if not content:
                 continue
             if role == "user":
@@ -479,4 +508,4 @@ class HistoryManager:
                 parts.append(f"助手: {text}")
             elif role == "system":
                 parts.append(f"【设定】{str(content)[:200]}")
-        return {"role": "system", "content": "\n".join(parts)}
+        return SummaryRecord(summary_text="\n".join(parts))

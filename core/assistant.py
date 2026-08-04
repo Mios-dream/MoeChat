@@ -14,8 +14,9 @@ from services import data_base
 from services.memory_v2 import MemoryV2
 from tool_system.tools.memory_tool import RememberTool, RecallTool, UpdateMemoryTool
 from openai.types.chat import ChatCompletionMessageParam
-from core.history_manager import HistoryManager
+from core.history import HistoryManager, EventRecord, InteractionRecord, SystemRecord
 from core.message_chain import MessageChain
+from models.dto.request.interaction_request import InteractionMessageRequest
 from my_utils.log import logger as Log
 
 
@@ -30,7 +31,7 @@ class Assistant:
     def __init__(self, agent_name: str):
         # 助手名称
         self.agent_name = agent_name
-        # 聊天记录（使用 HistoryManager 统一管理）
+        # 聊天记录（富记录管理器：单源私有记录，LLM/展示投影由类别自决）
         self.chat_history: HistoryManager = HistoryManager()
         # 线程池执行器，用于处理同步的 CPU 密集任务
         self._executor = ThreadPoolExecutor(max_workers=4)
@@ -39,10 +40,10 @@ class Assistant:
 
         self.load_config()
 
-        # 添加起始对话
+        # 添加起始对话（角色初始化，注入 LLM 的 system 消息）
         if self.agent_config.startWith:
             for content in self.agent_config.startWith:
-                self.chat_history.append({"role": "system", "content": content})
+                self.chat_history.append(SystemRecord(content=content))
 
     def _load_config(self):
         """加载配置文件"""
@@ -397,18 +398,37 @@ class Assistant:
         await self.emotionEngine.update_affection()
 
     async def add_interaction_msg(
-        self, msg: str, plain_text: str | None = None
+        self,
+        msg: str,
+        plain_text: str | None = None,
+        event: InteractionMessageRequest | None = None,
     ) -> None:
         """
         保存交互事件消息到上下文
 
-        写入后触发 LLM 语义压缩，保持历史记录在可控范围内。
+        交互触发事件与回复**成对写入**：先写一条 EventRecord（LLM 注入为 user 消息，
+        消除悬空 assistant；展示折叠），再写一条 InteractionRecord（自动回复，展示为
+        "自动回复"徽标）。写入后触发 LLM 语义压缩，保持历史记录在可控范围内。
 
         Parameters:
-            msg: 助手回复消息
+            msg: 助手回复消息（多任务 JSON 格式，由 API 输出时解析）
             plain_text: 纯文本版本，暂未使用（保留接口兼容）
+            event: 交互触发事件请求，携带事件类型/场景/上下文；None 表示无触发事件
         """
-        self.chat_history.append({"role": "assistant", "content": msg})
+        if event is not None:
+            # 事件记录：LLM 注入为 user 消息，展示折叠（与回复成对，形成自动回合锚点）
+            self.chat_history.append(
+                EventRecord(
+                    event_type=event.event_type,
+                    scene=event.scene,
+                    context=event.context.model_dump() if event.context else {},
+                )
+            )
+        self.chat_history.append(
+            InteractionRecord(
+                content=msg,
+            )
+        )
         # 写入时 LLM 语义压缩
         try:
             await self.chat_history.compress_if_needed()

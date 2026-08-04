@@ -22,6 +22,7 @@ from core.scheduler import Pipeline, TaskResult
 from core.scheduler.parsers.text_stream_parser import TextStreamParser, filter_tts_text
 from core.llm.response_parser import TextParser
 from services.assistant_service import AssistantService
+from core.history import ChatReplyRecord, UserRecord
 
 
 class BaseChatContext:
@@ -150,9 +151,11 @@ class V1ChatService:
 
             yield DoneMessage(full_text=ctx.get_full_text())
 
-            agent.chat_history.extend(user_message_raw)
+            agent.chat_history.extend(
+                [UserRecord(content=m.get("content")) for m in user_message_raw]
+            )
             agent.chat_history.append(
-                {"role": "assistant", "content": ctx.get_full_text()}
+                ChatReplyRecord(content=ctx.get_full_text())
             )
             asyncio.create_task(
                 agent.add_msg(

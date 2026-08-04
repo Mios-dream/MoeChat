@@ -13,7 +13,7 @@
 
 from dataclasses import dataclass, field
 from openai.types.chat import ChatCompletionMessageParam
-from core.history_manager import HistoryManager
+from core.history import HistoryManager
 
 
 @dataclass

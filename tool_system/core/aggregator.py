@@ -73,6 +73,17 @@ class ResultAggregator:
                 # 实际注入逻辑由 ResultNotifier 处理
                 continue
 
+            if not result.success:
+                # 失败结果：构造结构化错误消息，避免将空内容喂给 LLM
+                messages.append(
+                    ResultAggregator.build_error_message(
+                        result.call_id,
+                        result.error or "工具执行失败",
+                        result.error_code or "TOOL_EXEC_ERROR",
+                    )
+                )
+                continue
+
             msg: ChatCompletionToolMessageParam = {
                 "role": "tool",
                 "tool_call_id": result.call_id,
