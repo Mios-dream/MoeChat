@@ -218,12 +218,14 @@ function Invoke-Build-Variant {
         Write-Host "  Lite 模式：跳过 wheels（运行时在线安装依赖）" -ForegroundColor DarkYellow
     }
 
-    # 写入版本号
-    $Version | Out-File -FilePath (Join-Path $WorkDir "version.txt") -Encoding utf8
+    # 唯一构建标识：使用毫秒级时间戳，保证每次构建（即使版本号不变）必然生成不同值，
+    # 供桌面端在"版本号相同但内容已变更"（如测试场景重复构建同一版本）时识别需要替换内核源码。
+    $buildId = Get-Date -Format "yyyyMMddHHmmssfff"
 
-    # 写入清单（记录版本 / 类型 / 平台 / wheels，便于诊断）
+    # 写入清单（记录版本 / 构建标识 / 类型 / 平台 / wheels，便于诊断与升级判定）
     $manifest = @{
         version  = $Version
+        build_id = $buildId
         platform = $Platform
         type     = if ($isLite) { "lite" } elseif ($isCuda) { "cuda" } else { "cpu" }
         mode     = if ($isLite) { "lite" } else { "full" }

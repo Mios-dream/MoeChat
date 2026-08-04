@@ -217,7 +217,7 @@ WakeWord:
 | `moechat-assets-v{version}-cu130.zip` | 内核源码 + CUDA 13.0 版 torch / torchaudio wheels + onnxruntime  |
 
 > [!NOTE]
-> 构建 cpu / cuda 变体需要本机安装 [uv](https://docs.astral.sh/uv/) 与 `uvx`，脚本通过 `uvx pip download` 按 Python 3.11 / win_amd64 平台抓取预编译 wheel。包内同时写入 `version.txt` 与 `manifest.json`（记录版本、类型与 wheels 列表）便于诊断。
+> 构建 cpu / cuda 变体需要本机安装 [uv](https://docs.astral.sh/uv/) 与 `uvx`，脚本通过 `uvx pip download` 按 Python 3.11 / win_amd64 平台抓取预编译 wheel。包内写入 `manifest.json`（记录版本、构建标识、类型与 wheels 列表），桌面端以它作为版本与内容指纹进行升级判定。
 
 ### 构建数据包（模型 / 资源 / 助手 / motion）
 
