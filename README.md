@@ -229,7 +229,7 @@ WakeWord:
 
 产物命名与内容：
 
-- 产物：`dist/moechat-data-v{version}.zip`
+- 产物：`dist/moechat-data-v{version}.zip`（数据包内容为平台/变体无关的通用数据，产物名不带任何后缀；平台与变体区分只存在于资产包 `moechat-assets-*`）
 - 内容（zip 根直接存放，不含 `data/` 外层）：`models/`、`resources/`、`motion.db`（含 `-shm`/`-wal`，若存在）、`agents/`（每个助手仅保留 `info.yaml` 与 `assets/`）、`manifest.json`
 - `manifest.json` 记录 `version`、`type=data` 以及打包进包的 `models` / `resources` / `agents` 目录列表
 

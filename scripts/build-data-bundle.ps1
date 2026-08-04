@@ -3,11 +3,13 @@
     Build MoeChat data resource bundle (models + resources + motion + agents)
 .DESCRIPTION
     Packages data resources into moechat-data-{version}.zip for distribution.
+    数据包内容（模型/资源/助手/motion）为平台无关、变体无关的通用数据，
+    因此产物名不带平台/变体后缀；仅资产包（moechat-assets-*）区分平台与变体。
 
     The zip ROOT contains the data content directly (NOT wrapped in a data/
     folder): models/, resources/, agents/, worldbook/, motion dbs + manifest.json.
     The desktop app extracts this bundle with a "data/" prefix into
-    {kernel}/data/ so the backend sees ./data/... relative to the kernel root.
+    {kernel}/data so the backend sees ./data/... relative to the kernel root.
 
     Agents are selectively included; only info.yaml and assets/ are kept per agent.
 
@@ -50,6 +52,9 @@ if (-not $Version) {
 }
 if (-not $Version) { $Version = "2.0.0" }
 
+# 解析临时目录：Linux 无 $env:TEMP 环境变量，回退 /tmp（PowerShell 5.1 兼容写法）
+$TempRoot = if ($env:TEMP) { $env:TEMP } else { '/tmp' }
+
 $OutputPath = Join-Path $ProjectRoot $OutputDir
 if (-not (Test-Path $OutputPath)) {
     New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
@@ -57,7 +62,7 @@ if (-not (Test-Path $OutputPath)) {
 $OutputPath = (Get-Item $OutputPath).FullName
 
 # 工作目录：最终 zip 根 = {kernel}/data 的内容（不含 data/ 外层）
-$WorkDir = Join-Path $env:TEMP "moechat-data-build"
+$WorkDir = Join-Path $TempRoot "moechat-data-build"
 if (Test-Path $WorkDir) { Remove-Item -Recurse -Force $WorkDir }
 New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
 
@@ -207,11 +212,11 @@ Write-Host "Packaging..." -ForegroundColor Yellow
 
 # 创建清单（models/resources/agents 仅记录目录名，便于诊断）
 $manifest = @{
-    version  = $Version
-    type     = "data"
-    models   = @()
+    version   = $Version
+    type      = "data"
+    models    = @()
     resources = @()
-    agents   = @($selectedAgents)
+    agents    = @($selectedAgents)
 }
 
 $pkgModelsDir = Join-Path $WorkDir "models"
@@ -228,6 +233,7 @@ if (Test-Path $pkgResourcesDir) {
 
 $manifest | ConvertTo-Json | Out-File -FilePath (Join-Path $WorkDir "manifest.json") -Encoding utf8
 
+# 产物命名：数据包内容平台/变体无关，不带任何后缀
 $zipName = "moechat-data-v${Version}.zip"
 $zipPath = Join-Path $OutputPath $zipName
 

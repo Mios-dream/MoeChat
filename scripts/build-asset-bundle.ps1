@@ -2,24 +2,33 @@
 .SYNOPSIS
     构建MoeChat资产包（内核源代码+可选依赖）
 .DESCRIPTION
-    将内核源代码打包到 moechat-assets-v{version}-{cpu|cu130}.zip
+    将内核源代码打包到 moechat-assets-v{version}-{platform}-{cpu|cu130}.zip
     （或 -lite 变体）。三种变体：
 
-    -lite ：moechat-assets-v{ver}-lite.zip
+    -lite ：moechat-assets-v{ver}-{platform}-lite.zip
         仅包含内核源代码，无依赖、无模型。桌面应用首次运行时在线安装依赖。
+        注意：lite 为纯源码包，产物名中也带平台标识，用于区分 win/linux 产物。
 
-    -cpu  ：moechat-assets-v{ver}-cpu.zip
+    -cpu  ：moechat-assets-v{ver}-{platform}-cpu.zip
         内核源代码 + CPU 版 torch / torchaudio / onnxruntime wheels。
 
-    -cu130：moechat-assets-v{ver}-cu130.zip
+    -cu130：moechat-assets-v{ver}-{platform}-cu130.zip
         内核源代码 + CUDA 13.0 版 torch / torchaudio wheels + onnxruntime。
 
     默认无参数时一键构建全部三种变体（lite + cpu + cu130）；
     也可用 -Lite / -Cpu / -Cuda 快捷开关任意组合，仅构建所选变体。
+
+    平台说明（-Platform 参数）：
+    - windows（默认）：wheels 下载 win_amd64，产物名带 -win-。
+    - linux  ：wheels 下载 manylinux2014_x86_64，产物名带 -linux-。
+    linux wheels 的下载与 zip 打包脚本在 Linux 本机执行时，Python 脚本无需改动
+    （后端代码已跨平台），仅依赖打包的 wheels 平台不同。
 .PARAMETER OutputDir
     输出目录，默认 "./dist"。
 .PARAMETER Version
     包版本。自动从 pyproject.toml 读取。
+.PARAMETER Platform
+    目标平台："windows" | "linux"。默认取当前系统平台。
 .PARAMETER Lite
     构建 Lite 变体（仅源码，无依赖）。可与 -Cpu / -Cuda 组合。
 .PARAMETER Cpu
@@ -27,7 +36,8 @@
 .PARAMETER Cuda
     构建 CUDA 变体（cu130）。可与 -Lite / -Cpu 组合。
 .EXAMPLE
-    .\scripts\build-asset-bundle.ps1                       # 一键输出全部三种（lite + cpu + cu130）
+    .\scripts\build-asset-bundle.ps1                       # 一键输出全部三种（lite + cpu + cu130, Windows）
+    .\scripts\build-asset-bundle.ps1 -Platform linux       # 一键输出全部三种（Linux wheels）
     .\scripts\build-asset-bundle.ps1 -Lite                 # 仅 lite
     .\scripts\build-asset-bundle.ps1 -Cpu                  # 仅 cpu
     .\scripts\build-asset-bundle.ps1 -Cuda                 # 仅 CUDA
@@ -38,6 +48,8 @@
 param(
     [string]$OutputDir = "./dist",
     [string]$Version = "",
+    [ValidateSet("windows", "linux", "")]
+    [string]$Platform = "",
     [switch]$Lite = $false,
     [switch]$Cpu = $false,
     [switch]$Cuda = $false
@@ -60,6 +72,15 @@ if (-not $Version) {
     }
 }
 if (-not $Version) { $Version = "1.7.0" }
+
+# ── 解析目标平台 ────────────────────────────────────────
+# 未显式指定时，以当前系统为准（Windows 构建 win 版、Linux 构建 linux 版）。
+# wheels 与产物名均按平台区分，避免 win/linux 混用导致运行时加载失败。
+if (-not $Platform) {
+    $Platform = if ($env:OS -match "Windows") { "windows" } else { "linux" }
+}
+$isWindowsPlatform = ($Platform -eq "windows")
+$platformTag = if ($isWindowsPlatform) { "win" } else { "linux" }
 
 # ── 解析要构建的变体列表 ────────────────────────────────
 # 默认（无参数）构建全部三种：lite + cpu + cuda。
@@ -104,7 +125,8 @@ function Invoke-Build-Variant {
     $isCuda = ($Variant -eq "cuda")
 
     # 工作目录：最终 zip 根 = 内核运行目录（按变体独立，避免残留污染）
-    $WorkDir = Join-Path $env:TEMP "moechat-asset-build-${Variant}"
+    # Linux 环境 temp 路径无大小写问题，Windows 下保留原有命名；此处加入平台标识避免 win/linux 并行构建冲突
+    $WorkDir = Join-Path $env:TEMP "moechat-asset-build-${platformTag}-${Variant}"
     if (Test-Path $WorkDir) { Remove-Item -Recurse -Force $WorkDir }
     New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
 
@@ -112,6 +134,7 @@ function Invoke-Build-Variant {
     Write-Host "  MoeChat Asset Bundle Builder" -ForegroundColor Cyan
     Write-Host "  Version: $Version" -ForegroundColor Cyan
     Write-Host "  Project: $ProjectRoot" -ForegroundColor Cyan
+    Write-Host "  Platform: $Platform" -ForegroundColor Cyan
     Write-Host "  Variant: $(if ($isLite) { 'N/A (无 wheels)' } elseif ($isCuda) { 'CUDA (cu130)' } else { 'CPU' })" -ForegroundColor $(if ($isCuda) { 'Yellow' } elseif ($isLite) { 'DarkYellow' } else { 'Green' })
     Write-Host "  Mode   : $(if ($isLite) { 'Lite (仅源码)' } else { 'Full (源码 + wheels)' })" -ForegroundColor $(if ($isLite) { 'Yellow' } else { 'Green' })
     Write-Host "============================================" -ForegroundColor Cyan
@@ -150,25 +173,31 @@ function Invoke-Build-Variant {
 
     $wheelCount = 0
     if (-not $isLite) {
-        # 每次构建使用独立 wheels 目录，避免变体间（cpu/cuda）互相污染
-        $WheelsDir = Join-Path $env:TEMP "moechat-asset-wheels-${Variant}"
+        # 每次构建使用独立 wheels 目录，避免变体间（cpu/cuda）互相污染；
+        # 追加平台标识，避免 win/linux 并行构建时 temp 目录冲突
+        $WheelsDir = Join-Path $env:TEMP "moechat-asset-wheels-${platformTag}-${Variant}"
         if (Test-Path $WheelsDir) { Remove-Item -Recurse -Force $WheelsDir }
         New-Item -ItemType Directory -Path $WheelsDir -Force | Out-Null
 
         Write-Host "  Downloading wheels..." -ForegroundColor Yellow
 
         # 使用 uvx pip download（uvx 自动拉取 pip 运行，无需 venv 内安装 pip），
-        # 按目标 Python 版本 / 平台直接抓取预编译 wheel
+        # 按目标 Python 版本 / 平台直接抓取预编译 wheel。
+        # 平台标签：Windows 为 win_amd64；Linux 为 manylinux_2_28_x86_64。
+        # 注意：torch 2.7+ 已停止发布 manylinux2014（glibc 2.17）轮子，仅提供
+        # manylinux_2_28（glibc 2.28，即 Ubuntu 18.04+ / Debian 10+），此处必须用 2_28。
+        $platformTagArg = if ($isWindowsPlatform) { "win_amd64" } else { "manylinux_2_28_x86_64" }
         $pipArgs = @(
             "pip", "download"
             "--only-binary=:all:"
             "--python-version", "3.11"
-            "--platform", "win_amd64"
+            "--platform", $platformTagArg
             "--no-deps"
             "-d", $WheelsDir
         )
 
         if ($isCuda) {
+            # torch cu130 wheels 在 Linux 上的文件名为 manylinux...x86_64，与 win_amd64 规则一致
             $pipArgs += "--index-url", "https://download.pytorch.org/whl/cu130"
             $pipArgs += "--extra-index-url", "https://pypi.org/simple"
             $pipArgs += "torch==2.12.0+cu130"
@@ -192,24 +221,26 @@ function Invoke-Build-Variant {
     # 写入版本号
     $Version | Out-File -FilePath (Join-Path $WorkDir "version.txt") -Encoding utf8
 
-    # 写入清单（记录版本 / 类型 / wheels，便于诊断）
+    # 写入清单（记录版本 / 类型 / 平台 / wheels，便于诊断）
     $manifest = @{
-        version = $Version
-        type    = if ($isLite) { "lite" } elseif ($isCuda) { "cuda" } else { "cpu" }
-        mode    = if ($isLite) { "lite" } else { "full" }
-        wheels  = @()
+        version  = $Version
+        platform = $Platform
+        type     = if ($isLite) { "lite" } elseif ($isCuda) { "cuda" } else { "cpu" }
+        mode     = if ($isLite) { "lite" } else { "full" }
+        wheels   = @()
     }
     if (-not $isLite) {
         $manifest.wheels = @(Get-ChildItem -Path "$WorkDir/wheels/*.whl" -Name)
     }
     $manifest | ConvertTo-Json | Out-File -FilePath (Join-Path $WorkDir "manifest.json") -Encoding utf8
 
-    # 产物命名：精简版不带变体后缀（无 wheels，与 cpu/cuda 无关）；完整版按变体区分
+    # 产物命名：统一内嵌平台标识（win/linux），避免与另一平台同名产物混淆；
+    # 完整版再追加变体后缀（cpu/cu130）。
     $zipName = if ($isLite) {
-        "moechat-assets-v${Version}-lite.zip"
+        "moechat-assets-v${Version}-${platformTag}-lite.zip"
     } else {
         $suffix = if ($isCuda) { "cu130" } else { "cpu" }
-        "moechat-assets-v${Version}-${suffix}.zip"
+        "moechat-assets-v${Version}-${platformTag}-${suffix}.zip"
     }
     $zipPath = Join-Path $OutputPath $zipName
 
@@ -247,9 +278,9 @@ function Invoke-Build-Variant {
     Write-Host "  Wheels: ${wheelCount}" -ForegroundColor White
     Write-Host ("=" * 44) -ForegroundColor Green
 
-    # 清理本次构建的临时目录
+    # 清理本次构建的临时目录（wheels 目录同样按平台标识命名）
     Remove-Item -Recurse -Force $WorkDir -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force (Join-Path $env:TEMP "moechat-asset-wheels-${Variant}") -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force (Join-Path $env:TEMP "moechat-asset-wheels-${platformTag}-${Variant}") -ErrorAction SilentlyContinue
 }
 
 # ── 主流程：按变体列表逐个构建 ──────────────────────────
