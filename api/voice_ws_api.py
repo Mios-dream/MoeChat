@@ -420,7 +420,7 @@ async def _run_background_asr(
             buf.seek(0)
             audio_bytes = buf.read()
 
-        text = asr_server.asr(audio_bytes)
+        text = await asr_server.asr(audio_bytes)
         if not text:
             return
 
@@ -494,7 +494,7 @@ async def _process_conversation_asr(
             buffer.seek(0)
             audio_bytes = buffer.read()
 
-        text = asr_server.asr(audio_bytes)
+        text = await asr_server.asr(audio_bytes)
         if not text:
             return
 

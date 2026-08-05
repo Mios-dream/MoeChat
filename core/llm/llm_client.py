@@ -178,7 +178,7 @@ class LLMClient:
         # 触发开始回调
         await self._callbacks.emit(CallbackEvent.START, messages=messages)
 
-        print("请求内容", json.dumps(messages, ensure_ascii=False, indent=2))
+        Log.debug("请求内容", json.dumps(messages, ensure_ascii=False, indent=2))
 
         try:
             # 合并 extra_body
@@ -263,7 +263,7 @@ class LLMClient:
 
         start_time = time.time()
 
-        print("请求内容", json.dumps(messages, ensure_ascii=False, indent=2))
+        Log.debug("请求内容", json.dumps(messages, ensure_ascii=False, indent=2))
 
         try:
             # 合并 extra_body

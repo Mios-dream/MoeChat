@@ -125,7 +125,7 @@ class V1ChatService:
         ctx = BaseChatContext()
 
         # 从 ChatRequest 构建用户消息内容
-        user_message_raw, user_text = build_user_message_content(params)
+        user_message_raw, user_text = await build_user_message_content(params)
 
         # 使用 MessageChain 构建消息链（与 V3 一致）
         chain = await agent.build_chat_chain(

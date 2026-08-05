@@ -31,7 +31,7 @@ async def asr_audio(params: asr_data):
             raw_data = raw_data.split(",")[1]
         audio_data = base64.b64decode(raw_data)
         # text = chat_core.asr(audio_data)
-        text = asrServer.asr(audio_data)
+        text = await asrServer.asr(audio_data)
 
         if not text:
             logger.warning("[ASR] 识别结果为空")
@@ -122,7 +122,7 @@ async def asr_websocket(c_websocket: WebSocket):
                     )
                     buffer.seek(0)
                     audio_bytes = buffer.read()  # 完整的 WAV bytes
-                res_text = asrServer.asr(audio_bytes)
+                res_text = await asrServer.asr(audio_bytes)
 
                 if res_text:
                     await c_websocket.send_text(res_text)

@@ -11,9 +11,6 @@
 """
 
 import base64
-from io import BytesIO
-from typing import Any
-import numpy
 from models.dto.request.chat_request import ChatRequest, FileType
 from my_utils import config_manager as CConfig
 from my_utils.log import logger
@@ -23,79 +20,7 @@ from openai.types.chat import (
     ChatCompletionContentPartTextParam,
     ChatCompletionMessageParam,
 )
-from paddleocr import PaddleOCR
-
-# PaddleOCR 全局单例
-_ocr_instance: PaddleOCR | None = None
-
-
-def _get_ocr_instance() -> PaddleOCR:
-    """获取或创建 PaddleOCR 实例（懒加载单例）"""
-    global _ocr_instance
-    if _ocr_instance is None:
-        _ocr_instance = PaddleOCR(
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-            lang="ch",
-            engine="onnxruntime",
-            device="cpu",
-        )
-        logger.info("[多模态处理器] PaddleOCR 实例已创建(onnxruntime+cpu)")
-    return _ocr_instance
-
-
-def _extract_text_and_score(
-    result: list[dict[str, Any]],
-) -> tuple[list[str], float]:
-    """从 PaddleOCR 输出中提取文本，过滤低置信度结果"""
-    texts: list[str] = []
-    scores: list[float] = []
-    threshold = 0.9
-
-    for res in result or []:
-        rec_texts = res.get("rec_texts", [])
-        rec_scores = res.get("rec_scores", [])
-
-        for idx, text in enumerate(rec_texts):
-            cleaned = (text or "").strip()
-            if not cleaned:
-                continue
-
-            score = rec_scores[idx] if idx < len(rec_scores) else 0.0
-            if isinstance(score, (int, float)):
-                score_value = float(score)
-                if score_value < threshold or len(cleaned) <= 4:
-                    continue
-                texts.append(cleaned)
-                scores.append(score_value)
-
-    avg_score = sum(scores) / len(scores) if scores else 0.0
-    return texts, avg_score
-
-
-def _ocr_image_bytes(image_bytes: bytes) -> str:
-    """对图片字节数据进行 OCR 识别（使用 PaddleOCR）"""
-    try:
-        from PIL import Image
-
-        image = Image.open(BytesIO(image_bytes))
-        if image.mode == "RGBA":
-            image = image.convert("RGB")
-        image_array = numpy.array(image)
-        ocr = _get_ocr_instance()
-        result = ocr.predict(image_array)
-        texts, _ = _extract_text_and_score(result)
-        combined = "\n".join(texts) if texts else ""
-        if combined:
-            logger.info(f"[多模态处理器] PaddleOCR 识别成功: {len(combined)} 字符")
-        return combined
-    except ImportError:
-        logger.warning("paddleocr 未安装，请执行: pip install paddleocr")
-        return "[OCR 引擎未安装]"
-    except Exception as e:
-        logger.error(f"[多模态处理器] PaddleOCR 识别失败: {e}")
-        return "[图片 OCR 失败]"
+from services.ocr_service import ocrService
 
 
 def _decode_base64_to_bytes(data: str) -> bytes:
@@ -120,12 +45,15 @@ def _read_txt_content(data: str) -> str:
         return "[txt 读取失败]"
 
 
-def build_user_message_content(
+async def build_user_message_content(
     request: ChatRequest,
     model_key: str = "ChatLLM",
 ) -> tuple[list[ChatCompletionMessageParam], str]:
     """
-    从 ChatRequest 构建用户消息内容。
+    从 ChatRequest 构建用户消息内容（协程）。
+
+    非多模态模式下的图片 OCR 委托给 services.ocr_service.OcrService，
+    推理在服务内部通过线程池执行，避免阻塞事件循环。
 
     返回 (user_message_content, user_text)：
     - user_message_content: list[ChatCompletionMessageParam]，OpenAI 原生格式
@@ -166,11 +94,11 @@ def build_user_message_content(
                     f"[多模态处理器] 多模态模式: image_url({file.name or '未命名'})"
                 )
             else:
-                # 非多模态模式：OCR 识别
+                # 非多模态模式：OCR 识别（推理在线程池中执行，避免阻塞事件循环）
                 ocr_count += 1
                 try:
                     image_bytes = _decode_base64_to_bytes(file.data)
-                    ocr_text = _ocr_image_bytes(image_bytes)
+                    ocr_text = await ocrService.recognize_image(image_bytes)
                 except Exception as e:
                     logger.error(f"[多模态处理器] 图片解码失败({file.name}): {e}")
                     ocr_text = ""

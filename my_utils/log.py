@@ -1,4 +1,5 @@
 import logging
+from my_utils.config_manager import config
 
 
 class ColoredFormatter(logging.Formatter):
@@ -33,5 +34,7 @@ handler.setFormatter(formatter)
 logger = logging.getLogger("colored_logger")
 logger.handlers.clear()  # 清除已存在的handlers
 logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+logger.setLevel(
+    getattr(logging, config.get("Log", {}).get("level", "INFO").upper(), logging.INFO)
+)
 logger.propagate = False  # 阻止传播到父logger

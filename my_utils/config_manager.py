@@ -1,7 +1,7 @@
 import os
 import shutil
 import yaml
-from my_utils.log import logger
+import logging
 
 
 def _init_config():
@@ -11,7 +11,7 @@ def _init_config():
     if not os.path.exists("config.yaml"):
         if os.path.exists("config.example.yaml"):
             shutil.copy2("config.example.yaml", "config.yaml")
-            logger.warning(
+            logging.warning(
                 "未检测到 config.yaml，已从模板 config.example.yaml 创建，请修改配置后重新启动。"
             )
         else:

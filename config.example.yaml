@@ -45,3 +45,6 @@ Tools:
   timeout: 30
   # 工具调用最大轮次（防止无限循环）
   max_rounds: 5
+
+Log:
+  level: info

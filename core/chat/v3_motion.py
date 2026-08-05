@@ -433,7 +433,7 @@ class V3ChatService:
         ctx = V3MotionChatContext(tts_lang=tts_lang)
         scheduler = self._build_scheduler(tts_lang, expressions)
 
-        user_message, user_text = build_user_message_content(params)
+        user_message, user_text = await build_user_message_content(params)
         chain = await agent.build_chat_chain(
             user_text=user_text,
             user_message=user_message,
