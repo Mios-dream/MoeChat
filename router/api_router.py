@@ -12,6 +12,7 @@ from api.interaction_api import interaction_api
 from api.resource_api import resource_api
 from api.ws.chat_ws_api import chat_ws_api
 from api.voice_ws_api import voice_ws_api
+from api.motion_api import motion_api
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(asr_api)
@@ -26,3 +27,4 @@ api_router.include_router(interaction_api)
 api_router.include_router(resource_api)
 api_router.include_router(chat_ws_api)  # 统一聊天 WebSocket
 api_router.include_router(voice_ws_api)  # 统一语音 WebSocket（VAD+ASR+Intent）
+api_router.include_router(motion_api)
