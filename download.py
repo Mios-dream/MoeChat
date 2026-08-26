@@ -16,10 +16,12 @@ def download_embedding_model():
 
 def download_asr_model():
     """
-    下载语音识别模型到本地指定路径。
-    见
+    检查并下载语音识别模型到本地指定路径。
     """
-    pass
+    snapshot_download(
+        model_id="yuhang0329/sherpa-onnx-streaming-zipformer-ctc-zh-int8",
+        local_dir=Config.ASR_MODEL_DIR,
+    )
 
 
 def download_kws_model():
@@ -40,7 +42,7 @@ def download_tts_pretrained_model():
     )
 
 
-def main():
+def check_and_download_models():
     download_embedding_model()
     download_asr_model()
     # download_kws_model()
@@ -48,4 +50,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    check_and_download_models()

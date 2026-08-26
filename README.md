@@ -16,7 +16,6 @@
 [![BiliBili](https://custom-icon-badges.demolab.com/badge/BiliBili-浮华星弦-FF69B4?style=for-the-badge&logo=bilibili)](https://space.bilibili.com/205296924)
 </div>
 
-
 <div align="center">
   <img src="https://readme-typing-svg.demolab.com?font=ZCOOL+KuaiLe&size=40&pause=1200&color=fe7ea9&center=true&vCenter=true&repeat=true&width=900&lines=MoeChat+%7C+%E5%9F%BA%E4%BA%8E+GPT-SoVITS+%E7%9A%84%E8%AF%AD%E9%9F%B3%E4%BA%A4%E4%BA%92%E7%B3%BB%E7%BB%9F;%E7%94%A8%E8%AF%AD%E9%9F%B3%E5%92%8C+AI+%E8%A7%92%E8%89%B2%E8%87%AA%E7%84%B6%E5%AF%B9%E8%AF%9D%E3%80%81%E6%B2%89%E6%B5%B8%E6%89%AE%E6%BC%94;%E6%94%AF%E6%8C%81+ASR+%2B+LLM+%2B+TTS+%2B+WakeWord+%2B+Live2D" alt="typing" />
 </div>
@@ -53,14 +52,14 @@ MoeChat 是一个围绕「语音陪伴 + 角色扮演 + 桌面助手」构建的
 
 ### ✨ 核心特性
 
-| 模块         | 能力              | 说明                                                         |
-| ------------ | ----------------- | ------------------------------------------------------------ |
-| 对话引擎     | SSE 流式输出      | 支持边生成边播报，降低首字延迟。Linux 环境下首 Token 延迟基本能做到 1.5s 以内。Windows 环境下延迟在 2.1s 左右。 |
-| 语音识别     | REST + WebSocket  | 同时支持非流式和实时流式识别。                               |
-| 语音合成     | 本地 / API 双模式 | 可按部署条件切换，兼顾质量与性能。根据情绪选择对应的参考音频。 |
-| 唤醒词       | WakeWord          | 支持实时检测和关键词触发                                     |
-| 助手系统     | 多助手管理        | 支持切换、增删改、资源同步                                   |
-| 表情动作     | Emotion + Motion  | 支持驱动 Live2D 表情与动作                                   |
+| 模块         | 能力              | 说明                                                                                                                                                                 |
+| ------------ | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 对话引擎     | SSE 流式输出      | 支持边生成边播报，降低首字延迟。Linux 环境下首 Token 延迟基本能做到 1.5s 以内。Windows 环境下延迟在 2.1s 左右。                                                      |
+| 语音识别     | REST + WebSocket  | 同时支持非流式和实时流式识别。                                                                                                                                       |
+| 语音合成     | 本地 / API 双模式 | 可按部署条件切换，兼顾质量与性能。根据情绪选择对应的参考音频。                                                                                                       |
+| 唤醒词       | WakeWord          | 支持实时检测和关键词触发                                                                                                                                             |
+| 助手系统     | 多助手管理        | 支持切换、增删改、资源同步                                                                                                                                           |
+| 表情动作     | Emotion + Motion  | 支持驱动 Live2D 表情与动作                                                                                                                                           |
 | 长期记忆查询 | LongMemory        | Moechat 项目拥有全站**最快**、**最精准**的长期记忆查询可根据如“昨天”、“上周”这样的模糊的时间范围精确查询记忆在 11800h CPU 的笔记本上测试，查询总耗时仅为 80ms 左右。 |
 
 ## 📂 项目结构
@@ -82,14 +81,14 @@ MoeChat/
 
 ## 🚀快速开始
 
-### 推荐使用整合包
+### 推荐使用客户端安装版
 
-> 整合包包含完整环境、核心服务和客户端，对于普通用户使用，适合快速体验。
+> 当前主发布物为精简安装版。安装后会在线同步 Python 依赖和大模型，首次启动时间取决于网络速度。
+
+CPU/CUDA 整合包仅作为后续离线发行形态的预留，不作为当前主发布物。
 
 - 百度网盘：https://pan.baidu.com/s/5h_xqAGOZWkn4Y5dMSXk4Vg
-- QQ 群：967981851（群内同步版本说明）
-
-
+- QQ 群：676832751（群内同步版本说明）
 
 ### 环境要求
 
@@ -112,14 +111,19 @@ copy config.example.yaml config.yaml
 ### 启动服务
 
 ```bash
-# 安装/同步依赖
-uv sync
+# CPU 版本
+uv sync --extra cpu
+
+# CUDA 13.0 版本：从阿里云镜像扫描适合当前 Python 与平台的 wheel
+uv sync --extra cuda --find-links https://mirrors.aliyun.com/pytorch-wheels/cu130
 
 # 下载模型资源
 uv run download.py
 
 # 启动服务
-uv run main_web.py
+uv run --extra cpu main_web.py
+
+uv run -extra cuda main_web.py
 ```
 
 ## 📋配置说明
@@ -176,8 +180,6 @@ WakeWord:
 - `SLM.extra_config.temperature`: 建议 `0.3~0.8`。
 - `WakeWord.keywords_threshold`: 较小更敏感，建议先从 `0.25` 附近调试。
 
-
-
 ## 🎨客户端接入
 
 官方客户端（Windows）：
@@ -196,49 +198,30 @@ WakeWord:
 
 ## 📦 构建与打包
 
-项目提供两个 PowerShell 构建脚本，位于 `scripts/` 目录下，用于生成桌面端分发的资产包与数据包，产物默认输出到 `dist/`。
+项目提供 PowerShell 构建脚本，位于 `scripts/` 目录下，用于生成桌面端分发的运行时资产包，产物默认输出到 `dist/`。
 
-### 构建资产包（内核源代码 + 可选依赖）
+### 构建资产包（内核源代码 + 必要运行数据）
 
 ```powershell
-.\scripts\build-asset-bundle.ps1            # 一键构建全部三种变体（lite + cpu + cu130）
-.\scripts\build-asset-bundle.ps1 -Lite      # 仅 lite 变体（仅源码，无依赖）
-.\scripts\build-asset-bundle.ps1 -Cpu       # 仅 cpu 变体（源码 + CPU wheels）
-.\scripts\build-asset-bundle.ps1 -Cuda      # 仅 cu130 变体（源码 + CUDA wheels）
-.\scripts\build-asset-bundle.ps1 -Lite -Cpu # 任意组合，仅构建所选变体
+.\scripts\build-asset-bundle.ps1                    # 终端选择要内置的助手
+.\scripts\build-asset-bundle.ps1 -Agent "香风智乃"   # 直接指定一个助手
+.\scripts\build-asset-bundle.ps1 -Agent "澪","香风智乃" # 指定多个助手
+.\scripts\build-asset-bundle.ps1 -NoGlobalAssets     # 跳过全局通用资产
+.\scripts\build-asset-bundle.ps1 -NoMotion -NoKws    # 跳过指定的运行资产
 ```
 
 产物命名与内容：
 
-| 产物                                  | 内容                                                             |
-| ------------------------------------- | ---------------------------------------------------------------- |
-| `moechat-assets-v{version}-lite.zip`  | 仅内核源码，无依赖。桌面端首次运行时在线安装依赖                 |
-| `moechat-assets-v{version}-cpu.zip`   | 内核源码 + CPU 版 torch / torchaudio / onnxruntime wheels        |
-| `moechat-assets-v{version}-cu130.zip` | 内核源码 + CUDA 13.0 版 torch / torchaudio wheels + onnxruntime  |
+| 产物                                  | 内容                                                                         |
+| ------------------------------------- | ---------------------------------------------------------------------------- |
+| `moechat-assets-v{version}-{win|linux}-lite.zip` | 后端源码、动作数据库、全局 `resources` 资产、指定助手的 `info.yaml` 与完整 `assets`，以及小型 KWS 模型 |
 
 > [!NOTE]
-> 构建 cpu / cuda 变体需要本机安装 [uv](https://docs.astral.sh/uv/) 与 `uvx`，脚本通过 `uvx pip download` 按 Python 3.11 / win_amd64 平台抓取预编译 wheel。包内写入 `manifest.json`（记录版本、构建标识、类型与 wheels 列表），桌面端以它作为版本与内容指纹进行升级判定。
-
-### 构建数据包（模型 / 资源 / 助手 / motion）
-
-```powershell
-.\scripts\build-data-bundle.ps1 -AllAgents                              # 打包全部助手
-.\scripts\build-data-bundle.ps1 -Agent "澪","香风智乃"                   # 仅打包指定助手
-.\scripts\build-data-bundle.ps1                                          # 交互式选择助手
-```
-
-产物命名与内容：
-
-- 产物：`dist/moechat-data-v{version}.zip`（数据包内容为平台/变体无关的通用数据，产物名不带任何后缀；平台与变体区分只存在于资产包 `moechat-assets-*`）
-- 内容（zip 根直接存放，不含 `data/` 外层）：`models/`、`resources/`、`motion.db`（含 `-shm`/`-wal`，若存在）、`agents/`（每个助手仅保留 `info.yaml` 与 `assets/`）、`manifest.json`
-- `manifest.json` 记录 `version`、`type=data` 以及打包进包的 `models` / `resources` / `agents` 目录列表
-
-> [!NOTE]
-> 桌面端会将此包以 `data/` 前缀解压到 `{kernel}/data/`，使后端以 `./data/...` 相对内核根目录读取，因此 zip 内不包一层 `data/` 目录。助手采用选择性打包，避免随包分发无关的模型数据。
+> `build-asset-bundle.ps1` 使用白名单分步复制资源。独立的 `data/models` 目录默认排除，只有 KWS 模型会进入包；`data/resources` 和选定助手的 `assets` 会原样复制，因为其中包含运行所需模型。未传入 `-Agent` 时，脚本会在终端列出可用助手，按编号选择。每个包都包含 `manifest.json`，记录已打包的全局资产、动作数据库、KWS 模型和助手文件。
 
 ### 通用参数
 
-两个脚本均支持 `-OutputDir <路径>` 指定输出目录（默认 `./dist`）、`-Version <版本>` 手动指定版本号（默认自动从 `pyproject.toml` 读取，读不到时回退到脚本内置默认值）。
+脚本支持 `-OutputDir <路径>` 指定输出目录（默认 `./dist`）、`-Version <版本>` 指定版本、`-Platform windows|linux` 指定目标平台。`-NoSource`、`-NoGlobalAssets`、`-NoMotion` 和 `-NoKws` 可按需关闭各白名单步骤。
 
 ## 🤔常见问题
 
@@ -248,15 +231,11 @@ WakeWord:
 - 检查模型目录是否存在且完整，使用脚本下载模型，然后放入data/models目录下。
 - 本地 TTS 模式下，确认 GPT-SoVITS 模型和参考音频路径有效。
 
-
-
 ## 📋开发计划
 
 - [x] 基于 AI 情绪和动作驱动 Live2D
 - [ ] 基于 AI 情绪和动作驱动 3D 模型
 - [ ] 更完善的插件市场与能力扩展
-
-
 
 ## 🙏 致谢
 

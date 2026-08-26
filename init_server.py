@@ -1,3 +1,4 @@
+import asyncio
 import traceback
 import sys
 from my_utils.log import logger
@@ -5,10 +6,8 @@ import os
 from my_utils.logo import print_moechat_logo
 from my_utils.version import get_project_version
 from my_utils.memory_cleanup import cleanup
-from services.assistant_service import AssistantService
 from tool_system.core.registry import get_registry as get_tool_registry
-
-assistant_service = AssistantService()
+from download import check_and_download_models
 
 
 async def init():
@@ -21,7 +20,8 @@ async def init():
         logger.info(f"当前版本为: {get_project_version()}")
 
         await create_data_folder()
-        # await check_and_download_default_assistant()
+        # 下载工作可能耗时较长，放在线程中执行，避免阻塞初始化事件循环。
+        await asyncio.to_thread(check_and_download_models)
         await initialize_assistant()
         await initialize_tools()
 
@@ -53,6 +53,11 @@ async def initialize_assistant():
     加载助手信息并初始化默认助手
     """
     logger.info("开始初始化助手服务...")
+    # AssistantService 的导入链会加载 embedding 模型。必须在模型下载完成后再导入，
+    # 否则首次启动会将尚不存在的本地目录误判为 Hugging Face repo id。
+    from services.assistant_service import AssistantService
+
+    assistant_service = AssistantService()
 
     # 加载所有助手信息
     assistants = assistant_service.load_assistant_info()

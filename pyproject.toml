@@ -27,28 +27,34 @@ dependencies = [
     "shortuuid==1.0.13",
     "soundfile==0.13.1",
     "tiktoken==0.13.0",
-    "torch==2.12.0",
-    "torchaudio==2.11.0",
     "transformers==5.8.1",
     "uvicorn==0.51.0",
     "websockets==16.1.1",
 ]
 
 [project.optional-dependencies]
+cpu = [
+    "torch==2.11.0",
+    "torchaudio==2.11.0",
+]
+cuda = [
+    "torch==2.11.0+cu130",
+    "torchaudio==2.11.0+cu130",
+]
 test = [
     "ipykernel>=6.30.1",
     "ipython>=8.37.0",
     "accelerate",
-]
-gpu = [
-    "onnxruntime-gpu==1.25.0",
 ]
 
 [[tool.uv.index]]
 url = "https://mirrors.ustc.edu.cn/pypi/simple"
 default = true
 
-[[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
-explicit = true
+[tool.uv]
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "cuda" },
+    ],
+]

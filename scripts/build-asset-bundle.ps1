@@ -1,48 +1,29 @@
-﻿<#
+<#
 .SYNOPSIS
-    构建MoeChat资产包（内核源代码+可选依赖）
+    Build MoeChat runtime asset bundle.
 .DESCRIPTION
-    将内核源代码打包到 moechat-assets-v{version}-{platform}-{cpu|cu130}.zip
-    （或 -lite 变体）。三种变体：
-
-    -lite ：moechat-assets-v{ver}-{platform}-lite.zip
-        仅包含内核源代码，无依赖、无模型。桌面应用首次运行时在线安装依赖。
-        注意：lite 为纯源码包，产物名中也带平台标识，用于区分 win/linux 产物。
-
-    -cpu  ：moechat-assets-v{ver}-{platform}-cpu.zip
-        内核源代码 + CPU 版 torch / torchaudio / onnxruntime wheels。
-
-    -cu130：moechat-assets-v{ver}-{platform}-cu130.zip
-        内核源代码 + CUDA 13.0 版 torch / torchaudio wheels + onnxruntime。
-
-    默认无参数时一键构建全部三种变体（lite + cpu + cu130）；
-    也可用 -Lite / -Cpu / -Cuda 快捷开关任意组合，仅构建所选变体。
-
-    平台说明（-Platform 参数）：
-    - windows（默认）：wheels 下载 win_amd64，产物名带 -win-。
-    - linux  ：wheels 下载 manylinux2014_x86_64，产物名带 -linux-。
-    linux wheels 的下载与 zip 打包脚本在 Linux 本机执行时，Python 脚本无需改动
-    （后端代码已跨平台），仅依赖打包的 wheels 平台不同。
+    The bundle contains source, whitelisted runtime assets, KWS, and selected assistants.
+    When -Agent is omitted, assistants are selected interactively in the terminal.
 .PARAMETER OutputDir
-    输出目录，默认 "./dist"。
+    Output directory, default ./dist.
 .PARAMETER Version
-    包版本。自动从 pyproject.toml 读取。
+    Version, read from pyproject.toml by default.
 .PARAMETER Platform
-    目标平台："windows" | "linux"。默认取当前系统平台。
-.PARAMETER Lite
-    构建 Lite 变体（仅源码，无依赖）。可与 -Cpu / -Cuda 组合。
-.PARAMETER Cpu
-    构建 CPU 变体（源码 + CPU wheels）。可与 -Lite / -Cuda 组合。
-.PARAMETER Cuda
-    构建 CUDA 变体（cu130）。可与 -Lite / -Cpu 组合。
+    Target platform, windows or linux.
+.PARAMETER Agent
+    Assistant names; may be repeated.
+.PARAMETER NoGlobalAssets
+    Skip whitelisted global assets.
+.PARAMETER NoMotion
+    Skip motion database files.
+.PARAMETER NoKws
+    Skip KWS model.
+.PARAMETER NoSource
+    Skip backend source.
 .EXAMPLE
-    .\scripts\build-asset-bundle.ps1                       # 一键输出全部三种（lite + cpu + cu130, Windows）
-    .\scripts\build-asset-bundle.ps1 -Platform linux       # 一键输出全部三种（Linux wheels）
-    .\scripts\build-asset-bundle.ps1 -Lite                 # 仅 lite
-    .\scripts\build-asset-bundle.ps1 -Cpu                  # 仅 cpu
-    .\scripts\build-asset-bundle.ps1 -Cuda                 # 仅 CUDA
-    .\scripts\build-asset-bundle.ps1 -Cpu -Cuda            # cpu + cuda
-    .\scripts\build-asset-bundle.ps1 -Lite -Cpu -Cuda      # 等同默认：全部三种
+    .\scripts\build-asset-bundle.ps1 -Agent "assistant-name"
+.EXAMPLE
+    .\scripts\build-asset-bundle.ps1
 #>
 
 param(
@@ -50,215 +31,138 @@ param(
     [string]$Version = "",
     [ValidateSet("windows", "linux", "")]
     [string]$Platform = "",
-    [switch]$Lite = $false,
-    [switch]$Cpu = $false,
-    [switch]$Cuda = $false
+    [string[]]$Agent = @(),
+    [switch]$NoGlobalAssets,
+    [switch]$NoMotion,
+    [switch]$NoKws,
+    [switch]$NoSource
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
+# Keep the script ASCII-compatible with Windows PowerShell 5.1 while displaying Chinese text.
+function Convert-Cn {
+    param([string]$Text)
+    return [regex]::Replace($Text, '\\u([0-9a-fA-F]{4})', {
+        param($Match)
+        [char]([Convert]::ToInt32($Match.Groups[1].Value, 16))
+    })
+}
+
+# ========================= Configuration =========================
+$SourceExcludeDirectories = @(
+    ".git", ".github", ".venv", ".vscode", ".opencode", ".ruff_cache",
+    "__pycache__", "node_modules", "data", "dist", "build", "wheels","config.yaml","uv.lock"
+)
+
+# Global asset whitelist. data/resources is copied as-is, including required models.
+$GlobalAssetWhitelist = @("resources")
+$GlobalAssetExcludedDirectories = @()
+
+# Motion database whitelist.
+$MotionFileWhitelist = @("motion.db", "motion.db-shm", "motion.db-wal")
+
+# Only this KWS model directory is copied from data/models.
+$KwsModelName = "sherpa-onnx-kws-zipformer-zh-en-3M"
+
+# Assistant whitelist: copy info.yaml and assets, including assistant model assets.
+$AgentInfoFiles = @("info.yaml")
+# ================================================================
+
 $ScriptPath = $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptPath)
+$ProjectRootFull = [System.IO.Path]::GetFullPath($ProjectRoot).TrimEnd("\", "/")
+$DataDir = Join-Path -Path $ProjectRoot -ChildPath "data"
 
-# ── 解析版本号（优先 pyproject.toml）───────────────────
 if (-not $Version) {
-    $pyprojectFile = Join-Path $ProjectRoot "pyproject.toml"
-    if (Test-Path $pyprojectFile) {
-        $tomlContent = Get-Content $pyprojectFile -Raw
-        if ($tomlContent -match 'version\s*=\s*"([^"]+)"') {
-            $Version = $matches[1]
-        }
+    $pyprojectPath = Join-Path -Path $ProjectRoot -ChildPath "pyproject.toml"
+    if (Test-Path -LiteralPath $pyprojectPath) {
+        $toml = Get-Content -LiteralPath $pyprojectPath -Raw
+        if ($toml -match 'version\s*=\s*"([^"]+)"') { $Version = $matches[1] }
     }
 }
-if (-not $Version) { $Version = "1.7.0" }
+if (-not $Version) { $Version = "2.0.0" }
 
-# ── 解析目标平台 ────────────────────────────────────────
-# 未显式指定时，以当前系统为准（Windows 构建 win 版、Linux 构建 linux 版）。
-# wheels 与产物名均按平台区分，避免 win/linux 混用导致运行时加载失败。
 if (-not $Platform) {
     $Platform = if ($env:OS -match "Windows") { "windows" } else { "linux" }
 }
-$isWindowsPlatform = ($Platform -eq "windows")
-$platformTag = if ($isWindowsPlatform) { "win" } else { "linux" }
+$PlatformTag = if ($Platform -eq "windows") { "win" } else { "linux" }
 
-# ── 解析要构建的变体列表 ────────────────────────────────
-# 默认（无参数）构建全部三种：lite + cpu + cuda。
-# -Lite / -Cpu / -Cuda 快捷开关可任意组合，仅构建所选变体。
-if ($Lite -or $Cpu -or $Cuda) {
-    $Variants = @()
-    if ($Lite) { $Variants += "lite" }
-    if ($Cpu)  { $Variants += "cpu" }
-    if ($Cuda) { $Variants += "cuda" }
-} else {
-    # 无选择参数：默认全部三种
-    $Variants = @("lite", "cpu", "cuda")
+if (-not (Test-Path -LiteralPath $DataDir -PathType Container)) {
+    throw "data directory not found: $DataDir"
 }
 
-# 完整版（cpu/cuda）依赖 uv/uvx 下载 wheels（uvx 提供 pip download）
-$uvExe = Get-Command "uv" -ErrorAction SilentlyContinue
-$uvxExe = Get-Command "uvx" -ErrorAction SilentlyContinue
-if ($Variants -contains "cpu" -or $Variants -contains "cuda") {
-    if (-not $uvExe -or -not $uvxExe) {
-        Write-Error "uv and uvx are required (https://docs.astral.sh/uv/)"
-        exit 1
-    }
-}
-
-# 输出目录：绝对路径直接用；相对路径基于项目根解析（Join-Path 无法拼接绝对路径）
 if ([System.IO.Path]::IsPathRooted($OutputDir)) {
     $OutputPath = $OutputDir
 } else {
-    $OutputPath = Join-Path $ProjectRoot $OutputDir
+    $OutputPath = Join-Path -Path $ProjectRoot -ChildPath $OutputDir
 }
-if (-not (Test-Path $OutputPath)) {
-    New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+$OutputPath = (Get-Item -LiteralPath $OutputPath).FullName
+
+$TempRoot = [System.IO.Path]::GetTempPath()
+$TempRootFull = [System.IO.Path]::GetFullPath($TempRoot).TrimEnd("\", "/")
+if ($TempRootFull -eq $ProjectRootFull -or $TempRootFull.StartsWith("$ProjectRootFull\", [System.StringComparison]::OrdinalIgnoreCase)) {
+    $TempRoot = Join-Path -Path ([System.IO.Path]::GetPathRoot($ProjectRootFull)) -ChildPath "MoeChat-asset-build-temp"
 }
-$OutputPath = (Get-Item $OutputPath).FullName
+New-Item -ItemType Directory -Path $TempRoot -Force | Out-Null
 
-# ── 构建单个变体的核心逻辑 ──────────────────────────────
-function Invoke-Build-Variant {
-    param([string]$Variant)
-
-    # 变体语义映射：lite=精简版（仅源码）、cuda=CUDA 变体（cu130），其余为 cpu
-    $isLite = ($Variant -eq "lite")
-    $isCuda = ($Variant -eq "cuda")
-
-    # 工作目录：最终 zip 根 = 内核运行目录（按变体独立，避免残留污染）
-    # Linux 环境 temp 路径无大小写问题，Windows 下保留原有命名；此处加入平台标识避免 win/linux 并行构建冲突
-    $WorkDir = Join-Path $env:TEMP "moechat-asset-build-${platformTag}-${Variant}"
-    if (Test-Path $WorkDir) { Remove-Item -Recurse -Force $WorkDir }
-    New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
-
-    Write-Host "============================================" -ForegroundColor Cyan
-    Write-Host "  MoeChat Asset Bundle Builder" -ForegroundColor Cyan
-    Write-Host "  Version: $Version" -ForegroundColor Cyan
-    Write-Host "  Project: $ProjectRoot" -ForegroundColor Cyan
-    Write-Host "  Platform: $Platform" -ForegroundColor Cyan
-    Write-Host "  Variant: $(if ($isLite) { 'N/A (无 wheels)' } elseif ($isCuda) { 'CUDA (cu130)' } else { 'CPU' })" -ForegroundColor $(if ($isCuda) { 'Yellow' } elseif ($isLite) { 'DarkYellow' } else { 'Green' })
-    Write-Host "  Mode   : $(if ($isLite) { 'Lite (仅源码)' } else { 'Full (源码 + wheels)' })" -ForegroundColor $(if ($isLite) { 'Yellow' } else { 'Green' })
-    Write-Host "============================================" -ForegroundColor Cyan
-
-    # ── 步骤 1: 拷贝内核源码（排除运行时产物与数据）─────
-    Write-Host "[1/2] Copying kernel source..." -ForegroundColor Yellow
-
-    $excludeDirs = @(
-        ".venv", "__pycache__", ".git", ".github", ".gitignore",
-        ".opencode", ".vscode", "node_modules", "data", "wheels",
-        "dist", "build", ".ruff_cache", ".python-version",
-        "uv.lock", "config.yaml"
+function Copy-Tree {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [string[]]$ExcludeDirectories = @()
     )
-
-    Get-ChildItem -Path $ProjectRoot -File -Recurse | Where-Object {
-        $relative = $_.FullName.Substring($ProjectRoot.Length + 1)
+    if (-not (Test-Path -LiteralPath $Source -PathType Container)) { return @() }
+    $sourceFull = (Get-Item -LiteralPath $Source).FullName
+    $copied = @()
+    Get-ChildItem -LiteralPath $sourceFull -File -Recurse -Force | ForEach-Object {
+        $relative = $_.FullName.Substring($sourceFull.Length + 1)
         $parts = $relative -split "[\\/]"
-        $shouldExclude = $false
+        $excluded = $false
         foreach ($part in $parts) {
-            if ($part -in $excludeDirs) { $shouldExclude = $true; break }
+            if ($ExcludeDirectories -contains $part) { $excluded = $true; break }
         }
-        if ($_.Extension -in ".pyc", ".pyo", ".pyd") { $shouldExclude = $true }
-        -not $shouldExclude
-    } | ForEach-Object {
-        $relative = $_.FullName.Substring($ProjectRoot.Length + 1)
-        $dest = Join-Path $WorkDir $relative
-        $destDir = Split-Path $dest -Parent
-        if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
-        Copy-Item -Path $_.FullName -Destination $dest -Force
+        if ($excluded) { return }
+        $target = Join-Path -Path $Destination -ChildPath $relative
+        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+        Copy-Item -LiteralPath $_.FullName -Destination $target -Force
+        $copied += $relative.Replace("\", "/")
     }
+    return $copied
+}
 
-    Write-Host "  Kernel source copied" -ForegroundColor Green
-
-    # ── 步骤 2: 下载并打包 wheels（完整版）───────────────
-    Write-Host "[2/2] Packaging assets..." -ForegroundColor Yellow
-
-    $wheelCount = 0
-    if (-not $isLite) {
-        # 每次构建使用独立 wheels 目录，避免变体间（cpu/cuda）互相污染；
-        # 追加平台标识，避免 win/linux 并行构建时 temp 目录冲突
-        $WheelsDir = Join-Path $env:TEMP "moechat-asset-wheels-${platformTag}-${Variant}"
-        if (Test-Path $WheelsDir) { Remove-Item -Recurse -Force $WheelsDir }
-        New-Item -ItemType Directory -Path $WheelsDir -Force | Out-Null
-
-        Write-Host "  Downloading wheels..." -ForegroundColor Yellow
-
-        # 使用 uvx pip download（uvx 自动拉取 pip 运行，无需 venv 内安装 pip），
-        # 按目标 Python 版本 / 平台直接抓取预编译 wheel。
-        # 平台标签：Windows 为 win_amd64；Linux 为 manylinux_2_28_x86_64。
-        # 注意：torch 2.7+ 已停止发布 manylinux2014（glibc 2.17）轮子，仅提供
-        # manylinux_2_28（glibc 2.28，即 Ubuntu 18.04+ / Debian 10+），此处必须用 2_28。
-        $platformTagArg = if ($isWindowsPlatform) { "win_amd64" } else { "manylinux_2_28_x86_64" }
-        $pipArgs = @(
-            "pip", "download"
-            "--only-binary=:all:"
-            "--python-version", "3.11"
-            "--platform", $platformTagArg
-            "--no-deps"
-            "-d", $WheelsDir
-        )
-
-        if ($isCuda) {
-            # torch cu130 wheels 在 Linux 上的文件名为 manylinux...x86_64，与 win_amd64 规则一致
-            $pipArgs += "--index-url", "https://download.pytorch.org/whl/cu130"
-            $pipArgs += "--extra-index-url", "https://pypi.org/simple"
-            $pipArgs += "torch==2.12.0+cu130"
-            $pipArgs += "torchaudio==2.11.0+cu130"
-        } else {
-            $pipArgs += "torch==2.12.0"
-            $pipArgs += "torchaudio==2.11.0"
-        }
-
-        & $uvxExe $pipArgs 2>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
-
-        $wheelCount = (Get-ChildItem -Path "$WheelsDir/*.whl" -Name).Count
-        if ($wheelCount -gt 0) {
-            Copy-Item -Path $WheelsDir -Destination "$WorkDir/wheels" -Recurse -Force
-        }
-        Write-Host "  Wheels: ${wheelCount}" -ForegroundColor Green
-    } else {
-        Write-Host "  Lite 模式：跳过 wheels（运行时在线安装依赖）" -ForegroundColor DarkYellow
+function Copy-FileList {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
+        [Parameter(Mandatory = $true)][string]$DestinationRoot,
+        [Parameter(Mandatory = $true)][string[]]$RelativePaths
+    )
+    $copied = @()
+    foreach ($relative in $RelativePaths) {
+        $source = Join-Path -Path $SourceRoot -ChildPath $relative
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { continue }
+        $target = Join-Path -Path $DestinationRoot -ChildPath $relative
+        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+        Copy-Item -LiteralPath $source -Destination $target -Force
+        $copied += $relative.Replace("\", "/")
     }
+    return $copied
+}
 
-    # 唯一构建标识：使用毫秒级时间戳，保证每次构建（即使版本号不变）必然生成不同值，
-    # 供桌面端在"版本号相同但内容已变更"（如测试场景重复构建同一版本）时识别需要替换内核源码。
-    $buildId = Get-Date -Format "yyyyMMddHHmmssfff"
-
-    # 写入清单（记录版本 / 构建标识 / 类型 / 平台 / wheels，便于诊断与升级判定）
-    $manifest = @{
-        version  = $Version
-        build_id = $buildId
-        platform = $Platform
-        type     = if ($isLite) { "lite" } elseif ($isCuda) { "cuda" } else { "cpu" }
-        mode     = if ($isLite) { "lite" } else { "full" }
-        wheels   = @()
-    }
-    if (-not $isLite) {
-        $manifest.wheels = @(Get-ChildItem -Path "$WorkDir/wheels/*.whl" -Name)
-    }
-    $manifest | ConvertTo-Json | Out-File -FilePath (Join-Path $WorkDir "manifest.json") -Encoding utf8
-
-    # 产物命名：统一内嵌平台标识（win/linux），避免与另一平台同名产物混淆；
-    # 完整版再追加变体后缀（cpu/cu130）。
-    $zipName = if ($isLite) {
-        "moechat-assets-v${Version}-${platformTag}-lite.zip"
-    } else {
-        $suffix = if ($isCuda) { "cu130" } else { "cpu" }
-        "moechat-assets-v${Version}-${platformTag}-${suffix}.zip"
-    }
-    $zipPath = Join-Path $OutputPath $zipName
-
-    if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+function Add-DirectoryToZip {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDir,
+        [Parameter(Mandatory = $true)][string]$ZipPath
+    )
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-
-    # 使用 ZipArchive 手动写入，条目名统一使用正斜杠 "/" 分隔符。
-    # 背景：.NET 的 CreateFromDirectory 在 Windows 上会以反斜杠 "\" 写条目名，
-    # 属于非标准 zip，桌面端 node-stream-zip 会将其判为恶意条目而拒绝解压
-    # （"Malicious entry: api\asr_api.py"）。
-    $zip = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+    $zip = [System.IO.Compression.ZipFile]::Open($ZipPath, [System.IO.Compression.ZipArchiveMode]::Create)
     try {
-        Get-ChildItem -Path $WorkDir -Recurse -File | ForEach-Object {
-            # 相对路径统一转为 "/" 分隔符（兼容 Windows 与跨平台解压）
-            $relative = $_.FullName.Substring($WorkDir.Length + 1).Replace('\', '/')
+        $sourceFull = (Get-Item -LiteralPath $SourceDir).FullName
+        Get-ChildItem -LiteralPath $sourceFull -File -Recurse | ForEach-Object {
+            $relative = $_.FullName.Substring($sourceFull.Length + 1).Replace("\", "/")
             $entry = $zip.CreateEntry($relative, [System.IO.Compression.CompressionLevel]::Optimal)
             $entryStream = $entry.Open()
             try {
@@ -266,29 +170,134 @@ function Invoke-Build-Variant {
                 try { $fileStream.CopyTo($entryStream) } finally { $fileStream.Dispose() }
             } finally { $entryStream.Dispose() }
         }
-    } finally {
-        $zip.Dispose()
+    } finally { $zip.Dispose() }
+}
+
+function Select-Agents {
+    param([string]$AgentsRoot)
+    $available = @(Get-ChildItem -LiteralPath $AgentsRoot -Directory | Sort-Object Name)
+    if ($available.Count -eq 0) { return @() }
+    Write-Host (Convert-Cn "\u53ef\u9009\u52a9\u624b:") -ForegroundColor Cyan
+    for ($i = 0; $i -lt $available.Count; $i++) {
+        Write-Host ("  [{0}] {1}" -f ($i + 1), $available[$i].Name)
     }
-
-    $zipSize = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
-
-    Write-Host ""
-    Write-Host ("=" * 44) -ForegroundColor Green
-    Write-Host "  Build complete!" -ForegroundColor Green
-    Write-Host "  File: $zipPath" -ForegroundColor White
-    Write-Host "  Size: ${zipSize}MB" -ForegroundColor White
-    Write-Host "  Wheels: ${wheelCount}" -ForegroundColor White
-    Write-Host ("=" * 44) -ForegroundColor Green
-
-    # 清理本次构建的临时目录（wheels 目录同样按平台标识命名）
-    Remove-Item -Recurse -Force $WorkDir -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force (Join-Path $env:TEMP "moechat-asset-wheels-${platformTag}-${Variant}") -ErrorAction SilentlyContinue
+    $answer = Read-Host (Convert-Cn "\u8f93\u5165\u7f16\u53f7(\u9017\u53f7\u5206\u9694,\u76f4\u63a5\u56de\u8f66\u8df3\u8fc7)")
+    if ([string]::IsNullOrWhiteSpace($answer)) { return @() }
+    $selected = @()
+    foreach ($token in ($answer -split ",")) {
+        $index = 0
+        if ([int]::TryParse($token.Trim(), [ref]$index) -and $index -ge 1 -and $index -le $available.Count) {
+            $selected += $available[$index - 1].Name
+        } else {
+            Write-Warning (Convert-Cn ("\u5ffd\u7565\u65e0\u6548\u52a9\u624b\u7f16\u53f7: {0}" -f $token))
+        }
+    }
+    return @($selected | Select-Object -Unique)
 }
 
-# ── 主流程：按变体列表逐个构建 ──────────────────────────
-foreach ($variant in $Variants) {
-    Invoke-Build-Variant -Variant $variant
+$agentsRoot = Join-Path -Path $DataDir -ChildPath "agents"
+if ($Agent.Count -gt 0) {
+    $SelectedAgents = @($Agent)
+} elseif (Test-Path -LiteralPath $agentsRoot -PathType Container) {
+    $SelectedAgents = Select-Agents -AgentsRoot $agentsRoot
+} else {
+    $SelectedAgents = @()
 }
 
-Write-Host ""
-Write-Host "All variants built: $($Variants -join ', ')" -ForegroundColor Cyan
+$Include = @{
+    Source = -not $NoSource
+    GlobalAssets = -not $NoGlobalAssets
+    Motion = -not $NoMotion
+    Kws = -not $NoKws
+    Agents = $true
+}
+
+$workDir = Join-Path -Path $TempRoot -ChildPath "moechat-runtime-assets-$([guid]::NewGuid().ToString('N'))"
+$workDirFull = [System.IO.Path]::GetFullPath($workDir).TrimEnd("\", "/")
+if ($workDirFull -eq $ProjectRootFull -or $workDirFull.StartsWith("$ProjectRootFull\", [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Asset work directory must be outside the project directory: $workDirFull"
+}
+New-Item -ItemType Directory -Path $workDir -Force | Out-Null
+
+$manifest = [ordered]@{
+    version = $Version
+    build_id = Get-Date -Format "yyyyMMddHHmmssfff"
+    platform = $Platform
+    type = "runtime"
+    variant = "lite"
+    source_included = $Include.Source
+    global_assets = @()
+    motion_files = @()
+    embedded_models = @()
+    agents = @()
+}
+
+Write-Host "============================================" -ForegroundColor Cyan
+Write-Host (Convert-Cn "  MoeChat \u8fd0\u884c\u65f6\u8d44\u6e90\u6253\u5305") -ForegroundColor Cyan
+Write-Host (Convert-Cn ("  \u7248\u672c: {0}" -f $Version)) -ForegroundColor Cyan
+Write-Host (Convert-Cn ("  \u5e73\u53f0: {0}" -f $Platform)) -ForegroundColor Cyan
+Write-Host (Convert-Cn ("  \u5de5\u4f5c\u76ee\u5f55: {0}" -f $workDir)) -ForegroundColor DarkGray
+Write-Host "============================================" -ForegroundColor Cyan
+
+if ($Include.Source) {
+    Write-Host (Convert-Cn "[1/5] \u6b63\u5728\u590d\u5236\u6e90\u7801...") -ForegroundColor Yellow
+    $sourceFiles = Copy-Tree -Source $ProjectRoot -Destination $workDir -ExcludeDirectories $SourceExcludeDirectories
+    Write-Host (Convert-Cn ("  \u6e90\u7801\u6587\u4ef6: {0}" -f @($sourceFiles).Count)) -ForegroundColor Gray
+} else { Write-Host (Convert-Cn "[1/5] \u8df3\u8fc7\u6e90\u7801") -ForegroundColor DarkGray }
+
+if ($Include.GlobalAssets) {
+    Write-Host (Convert-Cn "[2/5] \u6b63\u5728\u590d\u5236\u5168\u5c40\u8d44\u4ea7...") -ForegroundColor Yellow
+    foreach ($relativeRoot in $GlobalAssetWhitelist) {
+        $source = Join-Path -Path $DataDir -ChildPath $relativeRoot
+        $destination = Join-Path -Path $workDir -ChildPath ("data/{0}" -f $relativeRoot)
+        $files = Copy-Tree -Source $source -Destination $destination -ExcludeDirectories $GlobalAssetExcludedDirectories
+        $manifest.global_assets += @($files | ForEach-Object { "data/$relativeRoot/$_" })
+    }
+    Write-Host (Convert-Cn ("  \u5168\u5c40\u8d44\u4ea7\u6587\u4ef6: {0}" -f @($manifest.global_assets).Count)) -ForegroundColor Gray
+} else { Write-Host (Convert-Cn "[2/5] \u8df3\u8fc7\u5168\u5c40\u8d44\u4ea7") -ForegroundColor DarkGray }
+
+if ($Include.Motion) {
+    Write-Host (Convert-Cn "[3/5] \u6b63\u5728\u590d\u5236\u52a8\u4f5c\u6570\u636e\u5e93...") -ForegroundColor Yellow
+    $motionFiles = Copy-FileList -SourceRoot $DataDir -DestinationRoot (Join-Path $workDir "data") -RelativePaths $MotionFileWhitelist
+    $manifest.motion_files = @($motionFiles)
+} else { Write-Host (Convert-Cn "[3/5] \u8df3\u8fc7\u52a8\u4f5c\u6570\u636e\u5e93") -ForegroundColor DarkGray }
+
+if ($Include.Kws) {
+    Write-Host (Convert-Cn "[4/5] \u6b63\u5728\u590d\u5236\u6a21\u578b...") -ForegroundColor Yellow
+    $kwsSource = Join-Path -Path (Join-Path -Path $DataDir -ChildPath "models") -ChildPath $KwsModelName
+    if (-not (Test-Path -LiteralPath $kwsSource -PathType Container)) { throw (Convert-Cn ("\u6a21\u578b\u76ee\u5f55\u4e0d\u5b58\u5728: {0}" -f $kwsSource)) }
+    $kwsDestination = Join-Path -Path (Join-Path -Path $workDir -ChildPath "data/models") -ChildPath $KwsModelName
+    $kwsFiles = Copy-Tree -Source $kwsSource -Destination $kwsDestination
+    $manifest.embedded_models = @($KwsModelName)
+    Write-Host (Convert-Cn ("  \u6a21\u578b\u6587\u4ef6: {0}" -f @($kwsFiles).Count)) -ForegroundColor Gray
+} else { Write-Host (Convert-Cn "[4/5] \u8df3\u8fc7\u6a21\u578b") -ForegroundColor DarkGray }
+
+Write-Host (Convert-Cn "[5/5] \u6b63\u5728\u590d\u5236\u9009\u5b9a\u52a9\u624b...") -ForegroundColor Yellow
+foreach ($agentName in $SelectedAgents) {
+    $agentSource = Join-Path -Path $agentsRoot -ChildPath $agentName
+    if (-not (Test-Path -LiteralPath $agentSource -PathType Container)) {
+        Write-Warning (Convert-Cn ("\u627e\u4e0d\u5230\u52a9\u624b,\u8df3\u8fc7: {0}" -f $agentName))
+        continue
+    }
+    $agentDestination = Join-Path -Path $workDir -ChildPath "data/agents/$agentName"
+    $infoFiles = Copy-FileList -SourceRoot $agentSource -DestinationRoot $agentDestination -RelativePaths $AgentInfoFiles
+    $assetsSource = Join-Path -Path $agentSource -ChildPath "assets"
+    $assetsDestination = Join-Path -Path $agentDestination -ChildPath "assets"
+    $assetFiles = Copy-Tree -Source $assetsSource -Destination $assetsDestination
+    $manifest.agents += [ordered]@{
+        name = $agentName
+        info_files = @($infoFiles | ForEach-Object { "data/agents/$agentName/$_" })
+        asset_files = @($assetFiles | ForEach-Object { "data/agents/$agentName/assets/$_" })
+    }
+}
+
+$manifestPath = Join-Path -Path $workDir -ChildPath "manifest.json"
+[System.IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
+
+$zipPath = Join-Path -Path $OutputPath -ChildPath "moechat-assets-v${Version}-${PlatformTag}-lite.zip"
+if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+Add-DirectoryToZip -SourceDir $workDir -ZipPath $zipPath
+$zipSize = [math]::Round((Get-Item -LiteralPath $zipPath).Length / 1MB, 1)
+Write-Host ""; Write-Host (Convert-Cn ("\u5b8c\u6210: {0}" -f $zipPath)) -ForegroundColor Green
+Write-Host (Convert-Cn ("\u5927\u5c0f: {0} MB | \u52a9\u624b: {1} | \u6a21\u578b: {2}" -f $zipSize, @($manifest.agents).Count, $Include.Kws)) -ForegroundColor Green
+Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue
